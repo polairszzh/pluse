@@ -1,10 +1,12 @@
 <div align="center">
 
-**<kbd>&nbsp;EN&nbsp;</kbd> · <kbd>&nbsp;中文&nbsp;</kbd>**
+[**EN**](#en) &nbsp;|&nbsp; [**中文**](#cn)
 
 </div>
 
 ---
+
+<a id="en"></a>
 
 ## EN
 
@@ -135,7 +137,11 @@ Maintained by [@polairszzh](https://github.com/polairszzh). Issues, PRs, and fea
 
 MIT License. See [LICENSE](LICENSE).
 
+<sub>[↑ back to top](#en)</sub>
+
 ---
+
+<a id="cn"></a>
 
 ## 中文
 
@@ -267,3 +273,5 @@ bash pluse/install.sh
 ## 开源协议
 
 MIT License。详见 [LICENSE](LICENSE)。
+
+<sub>[↑ 回到顶部](#cn)</sub>
