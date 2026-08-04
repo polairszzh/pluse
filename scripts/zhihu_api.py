@@ -319,10 +319,12 @@ def extract_article_id(url: str) -> Optional[str]:
     >>> extract_article_id('https://www.zhihu.com/answer/123456789')
     '123456789'
     """
-    parts = url.rstrip("/").rsplit("/", 1)
-    if len(parts) == 2:
-        return parts[1]
-    return None
+    parsed = urllib.parse.urlparse(url)
+    path = parsed.path.rstrip("/")
+    if not path or path == "/":
+        return None
+    parts = path.rsplit("/", 1)
+    return parts[-1] if parts[-1] else None
 
 
 def find_article_by_url(
