@@ -1,6 +1,7 @@
 """搜索知乎 API，收集 benchmark 测试用文章"""
 import json
 import os
+import sys
 import time
 import urllib.parse
 from pathlib import Path
@@ -11,12 +12,19 @@ PROJECT_ROOT = Path(__file__).parent.parent
 
 env_path = PROJECT_ROOT / ".env"
 secret = ''
+if not env_path.exists():
+    print(f'❌ 未找到 .env: {env_path}')
+    sys.exit(1)
 with open(env_path, encoding='utf-8') as f:
     for line in f:
         if line.strip() and not line.startswith('#') and '=' in line:
             k, v = line.split('=', 1)
             if k.strip() == 'ZHIHU_ACCESS_SECRET':
                 secret = v.strip()
+
+if not secret:
+    print('❌ ZHIHU_ACCESS_SECRET 为空，请在 .env 中填入')
+    sys.exit(1)
 
 headers = {
     'Authorization': f'Bearer {secret}',
@@ -36,6 +44,7 @@ for query, tag in queries:
     r = requests.get(
         f'https://developer.zhihu.com/api/v1/content/zhihu_search?Query={qs}&Count=10',
         headers=headers,
+        timeout=15,
     )
     data = r.json()
     if data.get('Code') != 0:

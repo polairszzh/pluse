@@ -199,7 +199,9 @@ def _trust(text: str) -> tuple[int, str]:
         score += 15
     if disclosure:
         score += 15
-        return score, "有来源引用 + 信息披露标记，可信度较高"
+        if cite_count:
+            return score, f"有来源引用({cite_count}处) + 信息披露标记，可信度较高"
+        return score, "有信息披露标记（如作者声明），但缺少来源引用"
     return score, f"来源引用 {cite_count} 处" if cite_count else "缺少可验证的来源引用"
 
 

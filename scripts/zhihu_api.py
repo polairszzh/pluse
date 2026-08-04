@@ -251,7 +251,8 @@ def get_all_my_contents(
     """
     all_items = []
     offset = 0
-    while True:
+    max_pages = 20
+    while max_pages > 0:
         result = get_my_contents(
             content_type=content_type,
             limit=50,
@@ -261,7 +262,11 @@ def get_all_my_contents(
         all_items.extend(result.items)
         if result.paging.is_end:
             break
-        offset = int(result.paging.next_offset) if result.paging.next_offset else 0
+        next_off = result.paging.next_offset
+        if not next_off:
+            break
+        offset = int(next_off)
+        max_pages -= 1
     return all_items
 
 
