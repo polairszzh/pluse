@@ -1,0 +1,5 @@
+requests>=2.31
+trafilatura>=1.12
+htmldate>=1.8
+cloudscraper>=1.2
+playwright>=1.48
