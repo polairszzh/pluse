@@ -1,24 +1,33 @@
 """zhihu_api.py 单元测试"""
-import pytest
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 from zhihu_api import (
-    extract_article_id,
-    find_article_by_url,
-    _parse_article,
     ArticleItem,
-    search,
+    AuthError,
+    QuotaExceeded,
+    ZhihuAPIError,
+    _parse_article,
+    extract_article_id,
     get_my_contents,
     get_my_followees,
+    search,
     topic_benchmark,
-    ZhihuAPIError,
-    QuotaExceeded,
-    AuthError,
 )
 
+# ── 环境检查 ────────────────────────────────────────────
+
+_needs_env = pytest.mark.skipif(
+    not (Path(__file__).parent.parent / ".env").exists(),
+    reason="需要 .env 文件（含 ZHIHU_ACCESS_SECRET）",
+)
+
+
+# ── 纯函数测试（不需要 API） ─────────────────────────────
 
 class TestExtractArticleId:
     def test_zhuanlan_url(self):
@@ -78,10 +87,15 @@ class TestParseArticle:
         assert item.vote_count == 0
         assert item.ranking_score == 0.0
 
+    def test_null_content_text(self):
+        item = _parse_article({"Title": "X", "ContentText": None})
+        assert item.content_text == ""
 
+
+# ── API 测试（需要 .env） ────────────────────────────────
+
+@_needs_env
 class TestSearchAPI:
-    """需要 .env 中有有效 ZHIHU_ACCESS_SECRET"""
-
     def test_basic_search(self):
         result = search("AI", count=3)
         assert len(result.items) <= 3
@@ -104,6 +118,7 @@ class TestSearchAPI:
         assert len(result.items) <= 10
 
 
+@_needs_env
 class TestUserContentsAPI:
     def test_get_contents(self):
         result = get_my_contents(content_type="all", limit=5)
@@ -117,6 +132,7 @@ class TestUserContentsAPI:
             get_my_contents(content_type="invalid")
 
 
+@_needs_env
 class TestUserFolloweesAPI:
     def test_get_followees(self):
         result = get_my_followees(limit=5)
@@ -124,6 +140,7 @@ class TestUserFolloweesAPI:
         assert hasattr(result.paging, 'totals')
 
 
+@_needs_env
 class TestTopicBenchmark:
     def test_returns_stats(self):
         result = topic_benchmark("AI搜索优化", count=5)
@@ -133,11 +150,9 @@ class TestTopicBenchmark:
         assert "top3_urls" in result
         assert result["count"] > 0
 
-    def test_empty_query(self):
-        # 知乎搜索即使对无意义关键词也会返回结果（模糊匹配）
+    def test_any_query_returns_valid_scores(self):
         result = topic_benchmark("zzzzzzz_not_a_real_query_99999")
         assert "avg_ranking_score" in result
-        # 搜索本身不报错就算通过——API 的模糊匹配特性
 
 
 class TestErrorClasses:

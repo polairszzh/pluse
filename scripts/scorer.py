@@ -4,16 +4,11 @@ Phase 1: 基于 API 可用字段（ContentText 摘要 + 结构化互动数据）
 评分维度权重、子维度定义来自 docs/design.md 第 5 节。
 """
 import re
-import math
 from dataclasses import dataclass, field
-from typing import Optional
-
 
 # ── 常量 ────────────────────────────────────────────────
 
-PASSAGE_MIN, PASSAGE_MAX = 130, 170               # Passage citability 最优字数区间
 TITLE_OPT_MIN, TITLE_OPT_MAX = 15, 35             # 知乎标题最佳字数区间
-FACTUAL_MARKERS = ["根据", "数据", "研究", "报告", "发现", "显示", "指出", "表明", "统计", "调查"]
 
 
 # ── 打分输出 ────────────────────────────────────────────
@@ -146,7 +141,7 @@ def _data_citability(text: str) -> tuple[int, str]:
     return 30, "缺乏可被 AI 引用的具体数据"
 
 
-def _timeliness(updated_at: Optional[int]) -> tuple[int, str]:
+def _timeliness(updated_at: int | None) -> tuple[int, str]:
     """评估时效性"""
     if updated_at is None:
         return 40, "无更新时间信息"
@@ -164,7 +159,7 @@ def _timeliness(updated_at: Optional[int]) -> tuple[int, str]:
 def score_ai_citability(
     title: str,
     content_text: str,
-    updated_at: Optional[int] = None,
+    updated_at: int | None = None,
 ) -> DimensionScore:
     """AI 可引用性评分（6 子维度加权）"""
     pc_s, pc_d  = _passage_citability(content_text)
@@ -288,7 +283,7 @@ def score_content_quality(
 def score_keyword_coverage(
     title: str,
     content_text: str,
-    keywords: Optional[list[str]] = None,
+    keywords: list[str] | None = None,
 ) -> DimensionScore:
     """关键词覆盖评分"""
     if not keywords:
@@ -401,8 +396,8 @@ def audit_article(
     favorites: int = 0,
     author_name: str = "",
     author_badge: str = "",
-    updated_at: Optional[int] = None,
-    keywords: Optional[list[str]] = None,
+    updated_at: int | None = None,
+    keywords: list[str] | None = None,
     benchmark_avg_votes: float = 0,
 ) -> AuditScores:
     """对单篇文章进行全维度评分

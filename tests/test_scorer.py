@@ -1,20 +1,34 @@
 """scorer.py 单元测试"""
-import sys, json, time
+import json
+import sys
+import time
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from scorer import (
-    grade, clamp, AuditScores, DimensionScore,
-    _passage_citability, _qa_structure, _citation_density,
-    _entity_presence, _data_citability, _timeliness,
-    _trust, _experience, _expertise, _authority,
-    score_ai_citability, score_content_quality,
-    score_keyword_coverage, score_structure, score_engagement,
+    _authority,
+    _citation_density,
+    _data_citability,
+    _entity_presence,
+    _experience,
+    _expertise,
+    _passage_citability,
+    _qa_structure,
+    _timeliness,
+    _trust,
     audit_article,
+    clamp,
+    grade,
+    score_ai_citability,
+    score_content_quality,
+    score_engagement,
+    score_keyword_coverage,
+    score_structure,
 )
-
 
 # ── 基础工具 ────────────────────────────────────────────
 
@@ -291,17 +305,18 @@ class TestBenchmarkArticles:
     def test_benchmark_ranking(self):
         data_path = Path(__file__).parent.parent / "data" / "benchmark_articles.json"
         if not data_path.exists():
-            return
+            pytest.skip("benchmark_articles.json 未生成，运行 fetch_benchmarks.py 创建")
 
         with open(data_path, encoding="utf-8") as f:
             data = json.load(f)
 
         all_scores = []
-        for topic_key, articles in data.items():
+        for articles in data.values():
             for a in articles:
+                content_text = a.get("content_text") or (a.get("title", "") + " " + a.get("title", ""))
                 result = audit_article(
                     title=a["title"],
-                    content_text=a.get("content_text", a.get("title", "") + " " + a.get("title", "")),
+                    content_text=content_text,
                     votes=a["votes"],
                     comments=a["comments"],
                     author_name="",

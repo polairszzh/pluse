@@ -1,14 +1,15 @@
 """知乎 API 连通性测试"""
-import os
+import sys
 import time
-import requests
 from pathlib import Path
+
+import requests
 
 # 加载 .env
 env_path = Path(__file__).parent.parent / ".env"
 if not env_path.exists():
     print("❌ 未找到 .env 文件，请从 .env.example 复制并填入 Access Secret")
-    exit(1)
+    sys.exit(1)
 
 env_vars = {}
 with open(env_path) as f:
@@ -21,7 +22,7 @@ with open(env_path) as f:
 ACCESS_SECRET = env_vars.get("ZHIHU_ACCESS_SECRET", "")
 if not ACCESS_SECRET or ACCESS_SECRET == "your_access_secret_here":
     print("❌ 请在 .env 中填入真实的 ZHIHU_ACCESS_SECRET")
-    exit(1)
+    sys.exit(1)
 
 BASE = "https://developer.zhihu.com/api/v1"
 HEADERS = {
@@ -107,7 +108,7 @@ def test_user_followees():
 
 
 if __name__ == "__main__":
-    print(f"Pulse — 知乎 API 连通性测试")
+    print("Pulse — 知乎 API 连通性测试")
     print(f"时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print()
     test_search()

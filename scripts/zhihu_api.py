@@ -1,12 +1,10 @@
 """知乎开放平台 API 封装 — Pulse 数据层"""
-import os
 import time
-import requests
 import urllib.parse
+from dataclasses import dataclass
 from pathlib import Path
-from dataclasses import dataclass, field, asdict
-from typing import Optional
 
+import requests
 
 # ── 配置加载 ────────────────────────────────────────────
 
@@ -29,7 +27,7 @@ def _load_secret() -> str:
     raise ValueError("请在 .env 中填入真实的 ZHIHU_ACCESS_SECRET")
 
 
-def _headers(secret: Optional[str] = None) -> dict:
+def _headers(secret: str | None = None) -> dict:
     return {
         "Authorization": f"Bearer {secret or _load_secret()}",
         "X-Request-Timestamp": str(int(time.time())),
@@ -56,8 +54,8 @@ class ArticleItem:
     author_avatar: str = ""
     author_badge: str = ""
     ranking_score: float = 0.0
-    created_at: Optional[int] = None   # Unix 时间戳
-    updated_at: Optional[int] = None
+    created_at: int | None = None   # Unix 时间戳
+    updated_at: int | None = None
 
 
 @dataclass
@@ -114,15 +112,13 @@ class ZhihuAPIError(Exception):
 
 class QuotaExceeded(ZhihuAPIError):
     """配额/频率限制"""
-    pass
 
 
 class AuthError(ZhihuAPIError):
     """鉴权失败"""
-    pass
 
 
-def _request(method: str, path: str, params: Optional[dict] = None) -> dict:
+def _request(method: str, path: str, params: dict | None = None) -> dict:
     """统一请求封装，处理错误码"""
     url = f"{BASE}{path}"
     resp = requests.request(
@@ -148,17 +144,17 @@ def _request(method: str, path: str, params: Optional[dict] = None) -> dict:
 def _parse_article(raw: dict) -> ArticleItem:
     """将 API 返回的 Item 转为 ArticleItem"""
     return ArticleItem(
-        title=raw.get("Title", ""),
-        url=raw.get("Url", ""),
-        content_type=raw.get("ContentType", ""),
-        content_text=raw.get("ContentText", raw.get("Summary", "")),
-        vote_count=raw.get("VoteUpCount", raw.get("LikeCount", 0)),
-        comment_count=raw.get("CommentCount", 0),
-        favorite_count=raw.get("FavoriteCount", 0),
-        author_name=raw.get("AuthorName", ""),
-        author_avatar=raw.get("AuthorAvatar", ""),
-        author_badge=raw.get("AuthorBadgeText", ""),
-        ranking_score=float(raw.get("RankingScore", 0)),
+        title=raw.get("Title") or "",
+        url=raw.get("Url") or "",
+        content_type=raw.get("ContentType") or "",
+        content_text=raw.get("ContentText") or raw.get("Summary") or "",
+        vote_count=raw.get("VoteUpCount", raw.get("LikeCount", 0)) or 0,
+        comment_count=raw.get("CommentCount") or 0,
+        favorite_count=raw.get("FavoriteCount") or 0,
+        author_name=raw.get("AuthorName") or "",
+        author_avatar=raw.get("AuthorAvatar") or "",
+        author_badge=raw.get("AuthorBadgeText") or "",
+        ranking_score=float(raw.get("RankingScore") or 0),
         created_at=raw.get("CreatedAt"),
         updated_at=raw.get("EditTime"),
     )
@@ -298,12 +294,10 @@ def get_my_followees(limit: int = 20, offset: int = 0) -> UserFolloweesResult:
     )
 
 
-def get_my_follower_count() -> int:
-    """获取本人的粉丝数（通过关注列表 API 间接获取，返回 totals）
+def get_my_followee_count() -> int:
+    """获取本人关注列表的关注总数
 
-    注意：此方法返回的是「关注列表的用户总数」，而非本人的粉丝数。
-    本人粉丝数需要通过直答 API 或其他方式获取。
-    这里返回关注列表的 totals 作为账号活跃度的参考指标。
+    可用于评估账号活跃度。注意：不是本人的粉丝数。
     """
     result = get_my_followees(limit=1)
     return result.paging.totals
@@ -311,7 +305,7 @@ def get_my_follower_count() -> int:
 
 # ── 辅助工具 ────────────────────────────────────────────
 
-def extract_article_id(url: str) -> Optional[str]:
+def extract_article_id(url: str) -> str | None:
     """从知乎 URL 中提取文章/回答 ID
 
     >>> extract_article_id('https://zhuanlan.zhihu.com/p/1992754233318077903')
@@ -329,7 +323,7 @@ def extract_article_id(url: str) -> Optional[str]:
 
 def find_article_by_url(
     query: str, article_url: str, count: int = 10
-) -> Optional[ArticleItem]:
+) -> ArticleItem | None:
     """在搜索结果中匹配指定 URL 的文章
 
     因为 API 没有「按 URL 查文章」的端点，只能搜索后匹配。

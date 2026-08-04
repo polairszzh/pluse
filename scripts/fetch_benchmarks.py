@@ -1,7 +1,15 @@
 """搜索知乎 API，收集 benchmark 测试用文章"""
-import os, json, time, requests, urllib.parse
+import json
+import os
+import time
+import urllib.parse
+from pathlib import Path
 
-env_path = r'G:\pluse\.env'
+import requests
+
+PROJECT_ROOT = Path(__file__).parent.parent
+
+env_path = PROJECT_ROOT / ".env"
 secret = ''
 with open(env_path, encoding='utf-8') as f:
     for line in f:
@@ -43,6 +51,7 @@ for query, tag in queries:
             'votes': i['VoteUpCount'],
             'comments': i['CommentCount'],
             'type': i['ContentType'],
+            'content_text': i.get('ContentText', i.get('Summary', '')),
         })
 
 for tag, items in results.items():
@@ -51,8 +60,9 @@ for tag, items in results.items():
         print(f'  [{idx+1}] Score:{item["score"]} 赞:{item["votes"]} 评:{item["comments"]}')
         print(f'       {item["title"]}')
         print(f'       {item["url"]}')
+        print(f'       content_text 长度: {len(item["content_text"])} 字')
 
-os.makedirs(r'G:\pluse\data', exist_ok=True)
-with open(r'G:\pluse\data\benchmark_articles.json', 'w', encoding='utf-8') as f:
+os.makedirs(PROJECT_ROOT / "data", exist_ok=True)
+with open(PROJECT_ROOT / "data" / "benchmark_articles.json", 'w', encoding='utf-8') as f:
     json.dump(results, f, ensure_ascii=False, indent=2)
 print('\nSaved to data/benchmark_articles.json')
