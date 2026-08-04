@@ -846,10 +846,43 @@ Phase 3（2周）
 
 ---
 
-## 10. 未解决的问题（待讨论）
+## 10. 数据策略（已验证）
 
-1. **知乎数据采集策略**：API vs 网页抓取？知乎 API 有频率限制，网页抓取需要处理反爬。建议先调研知乎开放 API 的可用性
-2. **AI 平台搜索方式**：DeepSeek 有公开 API，Kimi 和豆包目前没有。fallback 方案是用 Bing/Google 的 `site:` 搜索来推断 AI 引用（不够精确但是可用的起点）
-3. **小红书数据采集**：小红书几乎没有公开 API，抓取难度高。Phase 3 可能需要 Puppeteer/Playwright
-4. **多语言**：先只做中文，英文平台（Reddit、Medium、Quora）后期加
-5. **测试策略**：需要一组固定测试 URL（知乎上不同质量的文章），跑 audit 后人工打分作为 ground truth，然后调 scorer 权重
+> 验证日期：2026-08-04
+
+### 10.1 知乎数据采集
+
+**API 已调通**（使用知乎开放平台 Access Secret）：
+
+| API | 状态 | 给 Pulse 提供什么 |
+|-----|------|------------------|
+| 搜索 API `/content/zhihu_search` | ✅ Code: 0 | 话题文章列表、标题、摘要（300-800字）、赞同数、评论数、排名分、作者信息 |
+| 用户内容 API `/user/contents` | ✅ Code: 0 | 本人所有文章/回答的点赞、评论、收藏数据 |
+| 用户关注 API `/user/followees` | ✅ Code: 0 | 关注列表 + 每个用户的粉丝数 |
+| 直答 API `/chat/completions` | 未测试 | 可用于品牌情感分析（"XX 这个产品怎么样？"），Phase 2 探索 |
+
+**页面全文抓取不可行**（已验证）：
+
+| 方案 | 结果 |
+|------|------|
+| `requests` 直接抓 | ❌ HTTP 403 — 知乎自研反爬 `zh-zse-ck` |
+| `cloudscraper` | ❌ 403 — 只能绕 Cloudflare，绕不过 zh-zse-ck |
+| Playwright + stealth + webdriver 伪装 | ❌ 403 — 知乎识别 headless 浏览器 |
+
+**结论**：Phase 1 使用 API 数据做审计。API 的 `ContentText` 摘要（300-800字）+ 结构化数据（赞同/收藏/评论/排名分）足够支撑粗粒度的审计报告。Passage citability 从"逐段打分"降级为"整篇打分"——这是有意识的取舍，换取零安装门槛（不需要 Chromium）。
+
+全文抓取留给 Phase 3，届时需要用户提供知乎登录 cookie + 非 headless 模式。
+
+### 10.2 AI 平台搜索
+
+**DeepSeek** 有公开 API，可直接查询。
+**Kimi、豆包、元宝** 目前无公开 API。Phase 2 使用搜索引擎推断（Bing/Google `site:` 搜索）作为降级方案。
+
+### 10.3 未解决的问题
+
+1. ~~知乎数据采集策略~~ → 已解决：Phase 1 用 API，Phase 3 考虑全文抓取
+2. **AI 平台搜索方式**：DeepSeek 有公开 API，Kimi 和豆包目前没有
+3. **小红书数据采集**：几乎没有公开 API，Phase 3 可能需要 Playwright
+4. **额度确认**：API 文档写 5000/天，实测入口显示 1000/天。按 1000/天规划
+5. **其他用户数据**：用户 API 需要 OAuth 授权才能看别人的数据，竞品作者分析受限
+6. **测试策略**：需要一组固定测试文章，跑 audit 后人工打分作为 ground truth，调 scorer 权重

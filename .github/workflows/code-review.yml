@@ -1,0 +1,97 @@
+name: AI Code Review
+"on":
+  pull_request:
+    types: [opened, synchronize]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get PR diff
+        run: |
+          git diff origin/${{ github.base_ref }}...HEAD --stat > /tmp/pr.stat
+          git diff origin/${{ github.base_ref }}...HEAD -- . \
+            ':(exclude).github/workflows/*' > /tmp/pr.diff
+
+      - name: Call LLM & post comment
+        uses: actions/github-script@v7
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL || 'https://api.deepseek.com/v1' }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL || 'deepseek-chat' }}
+        with:
+          script: |
+            const fs = require("fs");
+            const stat = fs.existsSync("/tmp/pr.stat")
+              ? fs.readFileSync("/tmp/pr.stat", "utf-8")
+              : "";
+            const MAX_DIFF = 80000;
+            const rawDiff = fs.readFileSync("/tmp/pr.diff", "utf-8");
+            const truncated = rawDiff.length > MAX_DIFF;
+            const diff = rawDiff.slice(0, MAX_DIFF);
+            if (!diff.trim()) {
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner, repo: context.repo.repo,
+                body: "## AI Code Review\n\nNo code changes, skipping.",
+              });
+              return;
+            }
+            const systemMsg = `You are a code review assistant. Review this PR's FULL diff (base...HEAD, including all commits). Write in Chinese.
+
+            Rules (must follow):
+            - Only report issues you can VERIFY within the provided diff. If the relevant code is not visible (definition/call site in another file, or diff truncated), do NOT claim it is missing, unused, or will crash/error; mark it as "待确认" or skip it.
+            - Never speculate about ImportError / KeyError / 500 / race conditions unless the involved code is visible in the diff and the problem is real.
+            - Do not re-report problems the code already handles (e.g., dict.get() with defaults, try/except already present, retry/fallback already implemented).
+            - Focus on the changed lines only; do not invent issues about unchanged code.
+            - If you cannot find any verifiable issue, reply exactly: LGTM
+
+            Format:
+            ## Summary
+            One-line overview.
+            ## Issues
+            - critical: description
+            - suggestion: description
+            ## Highlights
+            - good designs or notable changes
+            Max 500 chars.`;
+            const payload = {
+              model: process.env.LLM_MODEL,
+              messages: [
+                { role: "system", content: systemMsg },
+                {
+                  role: "user",
+                  content:
+                    "Changed files:\n" + stat +
+                    "\n\nPR diff (base...HEAD, truncated at " + MAX_DIFF +
+                    " chars" + (truncated ? "; tail cut off — code not visible in the diff must not be asserted as missing" : "") + "):\n" + diff,
+                },
+              ],
+              temperature: 0.1,
+            };
+            let review = "";
+            try {
+              const resp = await fetch(process.env.LLM_BASE_URL + "/chat/completions", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "Authorization": "Bearer " + process.env.LLM_API_KEY,
+                },
+                body: JSON.stringify(payload),
+              });
+              const data = await resp.json();
+              review = data?.choices?.[0]?.message?.content || "(empty response)";
+            } catch (e) {
+              review = "LLM call failed: " + e.message + ". Check LLM_API_KEY in repo secrets.";
+            }
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner, repo: context.repo.repo,
+              body: "## AI Code Review\n\n" + review + "\n\n---\n_Model: " + process.env.LLM_MODEL + " | via GitHub Actions_",
+            });
