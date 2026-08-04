@@ -127,7 +127,15 @@ def _request(method: str, path: str, params: dict | None = None) -> dict:
         params=params,
         timeout=15,
     )
-    data = resp.json()
+    if not resp.ok:
+        raise ZhihuAPIError(
+            resp.status_code,
+            f"HTTP {resp.status_code}: {resp.text[:200]}",
+        )
+    try:
+        data = resp.json()
+    except ValueError:
+        raise ZhihuAPIError(-1, f"非 JSON 响应: {resp.text[:200]}")
 
     code = data.get("Code", -1)
     if code == 0:
