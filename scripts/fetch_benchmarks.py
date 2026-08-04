@@ -22,8 +22,8 @@ with open(env_path, encoding='utf-8') as f:
             if k.strip() == 'ZHIHU_ACCESS_SECRET':
                 secret = v.strip()
 
-if not secret:
-    print('❌ ZHIHU_ACCESS_SECRET 为空，请在 .env 中填入')
+if not secret or secret == 'your_access_secret_here':
+    print('❌ ZHIHU_ACCESS_SECRET 无效，请在 .env 中填入真实凭证')
     sys.exit(1)
 
 headers = {
@@ -60,7 +60,7 @@ for query, tag in queries:
             'votes': i['VoteUpCount'],
             'comments': i['CommentCount'],
             'type': i['ContentType'],
-            'content_text': i.get('ContentText', i.get('Summary', '')),
+            'content_text': i.get('ContentText') or i.get('Summary') or '',
         })
 
 for tag, items in results.items():
