@@ -46,6 +46,7 @@ for query, tag in queries:
         headers=headers,
         timeout=15,
     )
+    r.raise_for_status()
     data = r.json()
     if data.get('Code') != 0:
         print(f'  {tag}: API error {data.get("Code")}')

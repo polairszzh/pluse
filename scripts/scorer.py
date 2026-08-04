@@ -291,6 +291,10 @@ def score_keyword_coverage(
     if not keywords:
         return DimensionScore(score=50, label="关键词覆盖", details=["未提供目标关键词"])
 
+    keywords = [kw for kw in keywords if kw.strip()]  # 过滤空字符串
+    if not keywords:
+        return DimensionScore(score=50, label="关键词覆盖", details=["所有关键词均为空"])
+
     full_text = title + " " + content_text
     found, missing = [], []
     for kw in keywords:
