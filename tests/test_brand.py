@@ -143,6 +143,7 @@ class TestScores:
                            vote_count=100, comment_count=0, favorite_count=0,
                            author_name="", author_badge="", updated_at=int(time.time()))
         assert score_engagement([rich], 10).score == 90
+        assert score_engagement([rich], 10).raw == 1000.0
 
     def test_engagement_flat(self):
         flat = ArticleItem(title="t", url="u", content_type="Article", content_text="x",
@@ -151,6 +152,8 @@ class TestScores:
         dim = score_engagement([flat], 20)
         assert dim.score == 70
         assert "持平" in dim.detail
+        assert dim.raw == 100.0
+        assert score_engagement([], 20).raw == 0.0
 
     def test_engagement_tolerance(self):
         item = ArticleItem(title="t", url="u", content_type="Article", content_text="x",
@@ -190,6 +193,19 @@ class TestScores:
         overall, _ = combine(dims)
         expected = int(100 * 0.30 + 10 * 0.20 + 100 * 0.30 + 10 * 0.20)
         assert overall == expected
+
+    def test_combine_rounds_half_up(self):
+        low = ArticleItem(title="t", url="u", content_type="Article", content_text="x",
+                          vote_count=0, comment_count=0, favorite_count=0,
+                          author_name="", author_badge="", updated_at=int(time.time()))
+        dims = {
+            "搜索存在率": score_presence(2),
+            "份额占比": score_share(5, 10),
+            "话题覆盖": score_coverage(2, 3),
+            "互动基准": score_engagement([low], 20),
+        }
+        overall, _ = combine(dims)
+        assert overall == 62
 
 
 class TestRunBrand:
@@ -306,8 +322,8 @@ class TestRunBrand:
         )
         result = run_brand("我的品牌", topics=["AI工具"], competitors=[])
         detail = result.dimensions["互动基准"].detail
-        assert "平均赞同（50）" in detail
-        assert "平均赞同（65）" not in detail
+        assert "平均赞同（80）" in detail
+        assert "平均赞同（50）" not in detail
 
     def test_topic_search_failure_degraded(self, monkeypatch, other_item):
         monkeypatch.setattr("brand.build_own_index", lambda: (set(), set(), []))

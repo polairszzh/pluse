@@ -199,9 +199,12 @@ def score_coverage(covered: int, total_topics: int, note: str | None = None) -> 
 
 
 def score_engagement(own_items: list[zhihu_api.ArticleItem], benchmark_avg_votes: float) -> Dimension:
-    """互动基准：自己的内容平均赞同 vs 品牌词话题基准"""
+    """互动基准：自己的内容平均赞同 vs 品牌词话题基准
+
+    raw 为相对基准的百分比（100 = 与基准持平），与份额/覆盖的百分比语义一致。
+    """
     if not own_items:
-        return Dimension("互动基准", 10, "搜索结果里没有你的内容，无互动可评", raw=10.0)
+        return Dimension("互动基准", 10, "搜索结果里没有你的内容，无互动可评", raw=0.0)
     avg_votes = sum(it.vote_count for it in own_items) / len(own_items)
     effective_avg = max(float(benchmark_avg_votes), 5.0)
     ratio = avg_votes / effective_avg if effective_avg else 0.0
@@ -220,12 +223,12 @@ def score_engagement(own_items: list[zhihu_api.ArticleItem], benchmark_avg_votes
     else:
         score = 30
         label = f"你的内容平均赞同（{avg_votes:.0f}）远低于品牌词基准（{effective_avg:.0f}）"
-    return Dimension("互动基准", score, label, raw=float(score))
+    return Dimension("互动基准", score, label, raw=ratio * 100.0)
 
 
 def combine(dimensions: dict[str, Dimension]) -> tuple[int, str]:
     """按权重合成综合分与等级"""
-    overall = int(sum(dim.score * DIMENSION_WEIGHTS[name] for name, dim in dimensions.items()))
+    overall = _round_half_up(sum(dim.score * DIMENSION_WEIGHTS[name] for name, dim in dimensions.items()))
     return overall, grade(overall)
 
 
@@ -368,19 +371,30 @@ def run_brand(
     own_in_brand: list[zhihu_api.ArticleItem] = []
     own_first_rank: int | None = None
     own_seen: dict[str, zhihu_api.ArticleItem] = {}
-    seen_title_keys: set[tuple[str, str]] = set()
+    seen_title_keys: dict[tuple[str, str], str] = {}
 
     def add_own(item: zhihu_api.ArticleItem) -> None:
-        """去重入库：URL 键与「作者|标题」键互通，跨搜索不重复计数"""
+        """去重入库：URL 键与「作者|标题」键互通，跨搜索不重复计数；
+        同一文章带/不带 URL 两种形态重复时，优先保留带 URL 的版本（与搜索顺序无关）"""
         key = _own_key(item)
-        if key in own_seen:
-            return
         title_key = ((item.author_name or "").strip(), (item.title or "").strip())
-        if title_key[0] and title_key in seen_title_keys:
+        dup_key = None
+        if key in own_seen:
+            dup_key = key
+        elif title_key[0] and title_key in seen_title_keys:
+            dup_key = seen_title_keys[title_key]
+        if dup_key is None:
+            own_seen[key] = item
+            if title_key[0]:
+                seen_title_keys[title_key] = key
             return
-        own_seen[key] = item
-        if title_key[0]:
-            seen_title_keys.add(title_key)
+        existing = own_seen[dup_key]
+        if not existing.url and item.url:
+            # 用带 URL 的版本替换无 URL 版本
+            del own_seen[dup_key]
+            own_seen[key] = item
+            if title_key[0]:
+                seen_title_keys[title_key] = key
 
     for idx, item in enumerate(brand_items):
         own = is_own(item, own_url_ids, own_authors)
