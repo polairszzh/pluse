@@ -123,6 +123,14 @@ QUALITY_SUB_RULES = {
 
 PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2}
 
+# 列表/分点结构检测：Markdown 无序列表（-/*）、Unicode 项目符号、数字与中文序号
+LIST_PATTERN = re.compile(
+    r"(?:^|\n)\s*[-*+]\s+|"
+    r"[\u2022\u00b7\u2013\u2014]|"
+    r"[1-9](?:\.\s|[、)])|"
+    r"[一二三四五六七八九十]、"
+)
+
 # 降级路径可接受的失败：任何 API/网络/凭据问题都不应中断整个审计。
 _FALLBACK_ERRORS = (
     zhihu_api.ZhihuAPIError,
@@ -206,7 +214,7 @@ def build_recommendations(
             "改善可读性，降低 AI 跳过概率",
             "重跑 /pulse audit，结构子分提升 10+",
         )
-    if not re.search(r"[\u2022\u00b7\u2013\u2014]|[1-9]\.\s|[一二三四五六七八九十]、", item.content_text):
+    if not LIST_PATTERN.search(item.content_text):
         _push(
             recs,
             "P2",
@@ -473,6 +481,14 @@ def _print_single_summary(
 # --------------------------------------------------------------------------
 
 
+def _positive_int(value: str) -> int:
+    """argparse 类型校验：必须是 >= 1 的整数"""
+    n = int(value)
+    if n < 1:
+        raise argparse.ArgumentTypeError("必须是 >= 1 的整数")
+    return n
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pulse-audit",
@@ -484,9 +500,9 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument("--topic", help="搜索一个话题并审计返回的文章")
     parser.add_argument("--query", help="定位 URL 用的搜索关键词（URL 不在本人内容中时必须提供）")
     parser.add_argument("--keywords", help="目标关键词，逗号分隔")
-    parser.add_argument("--limit", type=int, default=10, help="--me 拉取数量（默认 10，上限 50）")
+    parser.add_argument("--limit", type=_positive_int, default=10, help="--me 拉取数量（默认 10，上限 50）")
     parser.add_argument("--index", type=int, help="--me 时只审计第 N 篇（从 0 开始）")
-    parser.add_argument("--top", type=int, default=1, help="--topic 时审计前 N 篇（默认 1）")
+    parser.add_argument("--top", type=_positive_int, default=1, help="--topic 时审计前 N 篇（默认 1）")
     parser.add_argument("--output", help="输出目录（默认 data/snapshots/）")
     return parser
 
@@ -550,8 +566,11 @@ def main(argv: list[str] | None = None) -> int:
     except (FileNotFoundError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    except (zhihu_api.ZhihuAPIError, requests.exceptions.RequestException, OSError) as exc:
+    except (zhihu_api.ZhihuAPIError, requests.exceptions.RequestException) as exc:
         print(f"知乎 API 调用失败：{exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"本地读写失败：{exc}", file=sys.stderr)
         return 1
 
 

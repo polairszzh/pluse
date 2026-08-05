@@ -129,6 +129,38 @@ class TestBuildRecommendations:
         order = [r.priority for r in recs]
         assert order == sorted(order, key={"P0": 0, "P1": 1, "P2": 2}.get)
 
+    def test_markdown_bullet_list_not_flagged(self):
+        item = ArticleItem(
+            title="随便写写",
+            url="https://zhuanlan.zhihu.com/p/998",
+            content_type="Article",
+            content_text="- 第一点\n- 第二点\n- 第三点\n- 第四点\n- 第五点",
+            vote_count=0,
+            comment_count=0,
+            favorite_count=0,
+            author_name="",
+            author_badge="",
+            updated_at=int(time.time()),
+        )
+        _, _, recs = audit_one(item)
+        assert not any("没有列表/分点结构" in r.action for r in recs)
+
+    def test_plain_text_gets_list_recommendation(self):
+        item = ArticleItem(
+            title="随便写写",
+            url="https://zhuanlan.zhihu.com/p/997",
+            content_type="Article",
+            content_text="随便写写。随便聊聊。没有更多。",
+            vote_count=0,
+            comment_count=0,
+            favorite_count=0,
+            author_name="",
+            author_badge="",
+            updated_at=int(time.time()),
+        )
+        _, _, recs = audit_one(item)
+        assert any("没有列表/分点结构" in r.action for r in recs)
+
 
 class TestReport:
     def test_markdown_contains_key_sections(self, item):
@@ -219,3 +251,20 @@ class TestMain:
     def test_missing_source_arg_exits(self):
         with pytest.raises(SystemExit):
             main(["--query", "q"])
+
+    def test_topic_top_zero_rejected(self):
+        with pytest.raises(SystemExit):
+            main(["--topic", "x", "--top", "0"])
+
+    def test_oserror_reports_local_write(self, item, monkeypatch, capsys):
+        monkeypatch.setattr("audit.resolve_article", lambda u, q: item)
+        monkeypatch.setattr("audit.audit_one", lambda it, q=None, k=None: (None, {}, []))
+
+        def boom(*_args, **_kwargs):
+            raise OSError("磁盘空间不足")
+
+        monkeypatch.setattr("audit.save_report", boom)
+        code = main(["--url", item.url, "--query", "q"])
+        err = capsys.readouterr().err
+        assert code == 1
+        assert "本地读写失败" in err
