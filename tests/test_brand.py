@@ -450,6 +450,16 @@ class TestRunBrand:
         assert not any(r.dimension == "搜索存在率" for r in result.recommendations)
         assert any("好话题" in r.action for r in result.recommendations)
 
+    def test_valueerror_not_silently_degraded(self, monkeypatch):
+        monkeypatch.setattr("brand.build_own_index", lambda: (set(), set(), True, []))
+
+        def boom(query, count=10):
+            raise ValueError("unexpected structure")
+
+        monkeypatch.setattr("brand.zhihu_api.search", boom)
+        with pytest.raises(ValueError):
+            run_brand("我的品牌")
+
     def test_own_index_failure_degraded(self, monkeypatch, other_item):
         monkeypatch.setattr(
             "brand.build_own_index",
@@ -578,6 +588,22 @@ class TestRecommendations:
         mid = next(r for r in recs_for(4) if r.dimension == "搜索存在率")
         assert "前 3" in mid.falsifiability_check
 
+    def test_own_unknown_plus_no_topics_hint(self, own_item):
+        dims = {
+            "搜索存在率": score_presence(1),
+            "份额占比": score_share(1, 10),
+            "话题覆盖": score_coverage(0, 0),
+            "互动基准": score_engagement([own_item], 20),
+        }
+        recs = build_recommendations(
+            "我的品牌", dims, 1, 10, [], [own_item], 20.0,
+            topics_requested=False, coverage_analyzed=False,
+            coverage_unavailable_reason="本人内容识别不可用",
+        )
+        hint = next(r for r in recs if r.dimension == "话题覆盖")
+        assert "识别不可用" in hint.action
+        assert "--topics" in hint.action
+
 
 class TestReport:
     def test_save_report_writes_files(self, tmp_path, monkeypatch, own_item):
@@ -597,6 +623,8 @@ class TestReport:
         data = json.loads(paths[1].read_text(encoding="utf-8"))
         assert data["brand"] == "我的品牌"
         assert data["overall"] == result.overall
+        assert data["brand_search_error"] is None
+        assert data["dimensions"]["份额占比"]["raw"] == 100.0
 
     def test_markdown_no_topics_has_blank_line(self):
         dims = {

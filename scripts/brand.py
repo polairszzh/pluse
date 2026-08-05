@@ -26,12 +26,11 @@ from scorer import grade
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SNAPSHOT_DIR = PROJECT_ROOT / "data" / "snapshots"
 
+# 降级路径只捕获可预期的业务异常；ValueError/结构类编程错误不应被静默吞掉
 _FALLBACK_ERRORS = (
     zhihu_api.ZhihuAPIError,
     requests.exceptions.RequestException,
     FileNotFoundError,
-    ValueError,
-    OSError,
 )
 
 PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2}
@@ -341,15 +340,23 @@ def build_recommendations(
             "+话题覆盖 20-40 分",
             "重跑 /pulse brand，覆盖达到 100%",
         )
-    elif coverage_unavailable_reason:
-        _push(
-            recs, "P2", "话题覆盖",
-            f"{coverage_unavailable_reason}，本次无覆盖数据：稍后重跑或检查配额",
-            "恢复覆盖维度",
-            "重跑 /pulse brand，话题覆盖明细出现数据",
-        )
     elif not coverage_analyzed:
-        if topics_requested:
+        if coverage_unavailable_reason and not topics_requested:
+            _push(
+                recs, "P2", "话题覆盖",
+                f"{coverage_unavailable_reason}，本次无覆盖数据：稍后重跑或检查配额；"
+                "另建议加 --topics 做覆盖与竞品差距分析",
+                "恢复覆盖维度",
+                "重跑 /pulse brand，话题覆盖明细出现数据",
+            )
+        elif coverage_unavailable_reason:
+            _push(
+                recs, "P2", "话题覆盖",
+                f"{coverage_unavailable_reason}，本次无覆盖数据：稍后重跑或检查配额",
+                "恢复覆盖维度",
+                "重跑 /pulse brand，话题覆盖明细出现数据",
+            )
+        elif topics_requested:
             _push(
                 recs, "P2", "话题覆盖",
                 "指定的话题全部搜索失败，本次无覆盖数据：检查配额/网络后重跑，或换用其他话题",
@@ -627,11 +634,12 @@ def render_json(result: BrandResult, competitors: list[str], topics: list[str]) 
     return {
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "brand": result.brand,
+        "brand_search_error": result.brand_search_error,
         "competitors": competitors,
         "topics": topics,
         "overall": result.overall,
         "grade": result.grade,
-        "dimensions": {name: {"score": d.score, "detail": d.detail}
+        "dimensions": {name: {"score": d.score, "raw": d.raw, "detail": d.detail}
                        for name, d in result.dimensions.items()},
         "brand_search": result.brand_search,
         "topic_coverage": result.topic_coverage,
