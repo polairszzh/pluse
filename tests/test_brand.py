@@ -94,6 +94,18 @@ class TestIdentify:
     def test_no_competitor(self, own_item):
         assert is_competitor(own_item, ["Kimi"]) is None
 
+    def test_competitor_short_word_boundary(self):
+        def item(author):
+            return ArticleItem(
+                title="t", url="u", content_type="Article", content_text="x",
+                vote_count=0, comment_count=0, favorite_count=0,
+                author_name=author, author_badge="", updated_at=int(time.time()),
+            )
+
+        assert is_competitor(item("OpenAI 官方"), ["AI"]) is None
+        assert is_competitor(item("AI 搜索助手"), ["AI"]) == "AI"
+        assert is_competitor(item("新智元团队"), ["新智元"]) == "新智元"
+
     def test_is_own_without_url(self, own_item):
         own_item.url = None
         assert is_own(own_item, set(), {"我的名字"})
@@ -268,6 +280,27 @@ class TestRunBrand:
         assert "平均赞同（50）" in detail
         assert "平均赞同（65）" not in detail
 
+    def test_topic_search_failure_degraded(self, monkeypatch, other_item):
+        monkeypatch.setattr("brand.build_own_index", lambda: (set(), set(), []))
+
+        def fake_search(query, count=10):
+            if query == "我的品牌":
+                return SimpleNamespace(items=[other_item])
+            if query == "坏话题":
+                raise zhihu_api.QuotaExceeded(30001, "rate limited")
+            return SimpleNamespace(items=[other_item])
+
+        monkeypatch.setattr("brand.zhihu_api.search", fake_search)
+        monkeypatch.setattr(
+            "brand.zhihu_api.topic_benchmark",
+            lambda q, count=10: {"avg_votes": 10.0},
+        )
+        result = run_brand("我的品牌", topics=["坏话题", "好话题"], competitors=["Kimi"])
+        assert result.dimensions["话题覆盖"].score == 0
+        assert result.topic_coverage[0]["error"]
+        assert any("坏话题" in n for n in result.notes)
+        assert any("好话题" in r.action for r in result.recommendations)
+
 
 class TestBuildOwnIndex:
     def test_returns_sets(self, monkeypatch, own_item):
@@ -390,6 +423,27 @@ class TestReport:
         assert "A\\|B" in md
         assert "作者\\|名" in md
         assert "Kimi\\|X" in md
+
+    def test_markdown_normalizes_topic_and_rec(self):
+        dims = {
+            "搜索存在率": score_presence(1),
+            "份额占比": score_share(1, 10),
+            "话题覆盖": score_coverage(1, 1),
+            "互动基准": score_engagement([], 20),
+        }
+        result = BrandResult(
+            brand="x", overall=60, grade="C", dimensions=dims,
+            brand_search=[],
+            topic_coverage=[{"topic": "A|B\nC", "own_count": 1, "competitors": {}, "avg_votes": 5}],
+            recommendations=[Recommendation(
+                priority="P0", dimension="话题覆盖",
+                action="写一篇关于 A|B\nC 的内容", expected_impact="+10",
+                falsifiability_check="重跑验证",
+            )],
+        )
+        md = render_markdown(result, [], [])
+        assert "### A\\|B C" in md
+        assert "写一篇关于 A\\|B C 的内容" in md
 
 
 class TestMain:

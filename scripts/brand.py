@@ -118,11 +118,29 @@ def _own_key(item: zhihu_api.ArticleItem) -> str:
     return f"{item.author_name}|{item.title}"
 
 
+def _is_word_char(ch: str) -> bool:
+    """ASCII 单词字符（字母/数字/下划线）；中文不算，便于 ASCII 竞品名在中文前后匹配"""
+    return ch.isascii() and (ch.isalnum() or ch == "_")
+
+
 def is_competitor(item: zhihu_api.ArticleItem, competitors: list[str]) -> str | None:
-    """返回命中的竞品名（作者名包含竞品名，不区分大小写），否则 None"""
+    """返回命中的竞品名（作者名包含竞品名，不区分大小写），否则 None
+
+    ASCII 竞品名做边界匹配（避免 "AI" 误命中 "openai"/"detail"），
+    中文竞品名保持子串匹配。
+    """
     author = (item.author_name or "").lower()
     for comp in competitors:
-        if comp.lower() in author:
+        c = comp.lower()
+        if not c:
+            continue
+        if c.isascii() and c.isalnum():
+            for m in re.finditer(re.escape(c), author):
+                before = author[m.start() - 1] if m.start() > 0 else ""
+                after = author[m.end()] if m.end() < len(author) else ""
+                if not _is_word_char(before) and not _is_word_char(after):
+                    return comp
+        elif c in author:
             return comp
     return None
 
@@ -359,9 +377,19 @@ def run_brand(
     # 2) 话题覆盖 + 竞品差距
     topic_coverage: list[dict] = []
     covered_topics = 0
+    searched_topics = 0
     gaps: list[str] = []
     for topic in topics:
-        items = zhihu_api.search(topic, count=10).items
+        try:
+            items = zhihu_api.search(topic, count=10).items
+        except _FALLBACK_ERRORS as exc:
+            notes.append(f"话题「{topic}」搜索失败，已跳过：{exc}")
+            topic_coverage.append({
+                "topic": topic, "own_count": -1, "competitors": {},
+                "avg_votes": 0, "error": str(exc),
+            })
+            continue
+        searched_topics += 1
         own_count = 0
         comp_counts: dict[str, int] = {}
         for item in items:
@@ -397,7 +425,7 @@ def run_brand(
     dimensions = {
         "搜索存在率": score_presence(own_first_rank),
         "份额占比": score_share(len(own_in_brand), len(brand_items)),
-        "话题覆盖": score_coverage(covered_topics, len(topics)),
+        "话题覆盖": score_coverage(covered_topics, searched_topics),
         "互动基准": score_engagement(own_all, benchmark_avg_votes),
     }
     overall, overall_grade = combine(dimensions)
@@ -442,7 +470,7 @@ def render_markdown(result: BrandResult, competitors: list[str], topics: list[st
     lines.append("|---|---|---|")
     for name in ("搜索存在率", "份额占比", "话题覆盖", "互动基准"):
         dim = result.dimensions[name]
-        lines.append(f"| {dim.name} | {dim.score}/100 | {dim.detail} |")
+        lines.append(f"| {_md_cell(dim.name)} | {dim.score}/100 | {_md_cell(dim.detail)} |")
     if result.notes:
         lines.append("")
         lines.append("> " + "\n> ".join(result.notes))
@@ -470,11 +498,15 @@ def render_markdown(result: BrandResult, competitors: list[str], topics: list[st
         lines.append("未指定话题（加 --topics 做覆盖分析）。")
         lines.append("")
     for tc in result.topic_coverage:
-        comp_txt = "、".join(f"{k} {v} 条" for k, v in tc["competitors"].items()) or "-"
-        lines.append(f"### {tc['topic']}")
-        lines.append(
-            f"- 自己：{tc['own_count']} 条 | 竞品：{comp_txt} | Top10 平均赞同：{tc['avg_votes']}"
-        )
+        topic = _md_cell(tc["topic"])
+        lines.append(f"### {topic}")
+        if tc.get("error"):
+            lines.append(f"- 搜索失败已跳过：{_md_cell(tc['error'])}")
+        else:
+            comp_txt = "、".join(f"{_md_cell(k)} {v} 条" for k, v in tc["competitors"].items()) or "-"
+            lines.append(
+                f"- 自己：{tc['own_count']} 条 | 竞品：{comp_txt} | Top10 平均赞同：{tc['avg_votes']}"
+            )
         lines.append("")
 
     lines.append("## 行动清单（每条都带验证方式）")
@@ -489,9 +521,9 @@ def render_markdown(result: BrandResult, competitors: list[str], topics: list[st
         lines.append(f"### {priority} · {label}")
         lines.append("")
         for i, rec in enumerate(bucket, 1):
-            lines.append(f"{i}. **[ {rec.dimension} ]** {rec.action}")
-            lines.append(f"   - 预期效果：{rec.expected_impact}")
-            lines.append(f"   - 验证方式：{rec.falsifiability_check}")
+            lines.append(f"{i}. **[ {_md_cell(rec.dimension)} ]** {_md_cell(rec.action)}")
+            lines.append(f"   - 预期效果：{_md_cell(rec.expected_impact)}")
+            lines.append(f"   - 验证方式：{_md_cell(rec.falsifiability_check)}")
         lines.append("")
 
     lines.append("## 数据说明")
