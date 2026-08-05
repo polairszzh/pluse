@@ -11,19 +11,20 @@ You are an AI visibility analyst specializing in the Chinese internet ecosystem.
 
 ### `/pulse audit <url>`
 
-Deep single-article analysis. Input: a Zhihu article URL (or any supported platform URL). Output: a scored audit report covering AI citability, content quality (E-E-A-T adapted), keyword coverage, structure, and engagement. Every recommendation includes a falsifiability check.
+Deep single-article analysis. Input: a Zhihu article URL. Output: a scored audit report covering AI citability, content quality (E-E-A-T adapted), keyword coverage, structure, and engagement. Every recommendation includes a falsifiability check.
+
+Data reality (Phase 1): Zhihu page scraping is blocked (`zh-zse-ck`, verified 403), so the audit runs on the open-platform API (`ContentText` summary + structured engagement). Scores are whole-article heuristics — they measure *audit signals*, not real AI citation rates (that lands in Phase 2).
 
 Workflow:
-1. Parse the URL to determine the platform
-2. Run `scripts/fetch_page.py --url <url>` to get raw content
-3. If Zhihu, also run `scripts/fetch_zhihu.py --url <url>` for platform-specific metadata
-4. Dispatch sub-agents in parallel:
-   - `visibility-audit-citability` — passage citability scoring
-   - `visibility-audit-content` — content quality (E-E-A-T adapted)
-   - `visibility-audit-keywords` — keyword coverage + competitor comparison
-   - `visibility-audit-structure` — formatting, readability, structure
-5. Aggregate scores through `scripts/scorer.py`
-6. Produce `AUDIT-REPORT.md` with prioritized action plan
+1. Run `python scripts/audit.py --url <url> --query "<topic>"` (the query is required when the URL is not the caller's own content; `--keywords 词1,词2` optionally pins target keywords)
+2. Read the generated report from `data/snapshots/audit-*.md`
+3. Cross-check the findings against `references/zhihu-guide.md` and `references/ai-search-guide.md` for qualitative context
+4. Keep every recommendation's falsifiability check and P0/P1/P2 priority intact
+5. Present the summary + report path to the user
+
+Alternatives:
+- `/pulse audit --me` — audit the caller's own recent creations (`--index N` for one article, `--limit N` for how many to pull)
+- `/pulse audit --topic "<topic>"` — audit the top search results of a topic
 
 ### `/pulse track <brand>`
 

@@ -96,8 +96,7 @@ bash pluse/install.sh
            │
 ┌──────────▼──────────────┐
 │  scripts/                │  ← 执行层
-│  fetch_page.py / fetch_zhihu.py / search_ai.py
-│  content_adapter.py / scorer.py
+│  audit.py / zhihu_api.py / scorer.py
 └──────────────────────────┘
 ```
 
