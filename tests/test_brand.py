@@ -392,6 +392,51 @@ class TestRunBrand:
         assert result.dimensions["份额占比"].score == 50
         assert "1 条" in result.dimensions["份额占比"].detail
 
+    def test_share_dedupe_url_and_no_url_forms(self, monkeypatch):
+        no_url = ArticleItem(
+            title="同一篇", url=None, content_type="Article", content_text="x",
+            vote_count=50, comment_count=0, favorite_count=0, author_name="我的名字",
+            author_badge="", updated_at=int(time.time()),
+        )
+        with_url = ArticleItem(
+            title="同一篇", url="https://zhuanlan.zhihu.com/p/1001",
+            content_type="Article", content_text="x", vote_count=80,
+            comment_count=0, favorite_count=0, author_name="我的名字",
+            author_badge="", updated_at=int(time.time()),
+        )
+        monkeypatch.setattr("brand.build_own_index", lambda: ({"1001"}, {"我的名字"}, []))
+        monkeypatch.setattr(
+            "brand.zhihu_api.search",
+            lambda q, count=10: SimpleNamespace(items=[no_url, with_url]),
+        )
+        monkeypatch.setattr(
+            "brand.zhihu_api.topic_benchmark",
+            lambda q, count=10: {"avg_votes": 10.0},
+        )
+        result = run_brand("我的品牌")
+        assert result.dimensions["份额占比"].score == 50
+        assert "1 条" in result.dimensions["份额占比"].detail
+
+    def test_brand_search_failure_degraded(self, monkeypatch, other_item):
+        monkeypatch.setattr("brand.build_own_index", lambda: (set(), set(), []))
+
+        def fake_search(query, count=10):
+            if query == "我的品牌":
+                raise zhihu_api.QuotaExceeded(30001, "rate limited")
+            return SimpleNamespace(items=[other_item])
+
+        monkeypatch.setattr("brand.zhihu_api.search", fake_search)
+        monkeypatch.setattr(
+            "brand.zhihu_api.topic_benchmark",
+            lambda q, count=10: {"avg_votes": 10.0},
+        )
+        result = run_brand("我的品牌", topics=["好话题"], competitors=["Kimi"])
+        assert result.brand_search_error
+        assert result.dimensions["搜索存在率"].score == 50
+        assert "无法判断" in result.dimensions["搜索存在率"].detail
+        assert not any(r.dimension == "搜索存在率" for r in result.recommendations)
+        assert any("好话题" in r.action for r in result.recommendations)
+
 
 class TestBuildOwnIndex:
     def test_returns_sets(self, monkeypatch, own_item):

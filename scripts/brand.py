@@ -83,6 +83,7 @@ class BrandResult:
     brand: str
     overall: int
     grade: str
+    brand_search_error: str | None = None
     dimensions: dict[str, Dimension] = field(default_factory=dict)
     brand_search: list[dict] = field(default_factory=list)
     topic_coverage: list[dict] = field(default_factory=list)
@@ -126,6 +127,37 @@ def _own_key(item: zhihu_api.ArticleItem) -> str:
             return article_id
         return item.url
     return f"{item.author_name}|{item.title}"
+
+
+class OwnDedupe:
+    """去重索引：URL 键与「作者|标题」键互通；带 URL 版本优先，与搜索顺序无关"""
+
+    def __init__(self) -> None:
+        self.items: dict[str, zhihu_api.ArticleItem] = {}
+        self._titles: dict[tuple[str, str], str] = {}
+
+    def add(self, item: zhihu_api.ArticleItem) -> None:
+        key = _own_key(item)
+        title_key = ((item.author_name or "").strip(), (item.title or "").strip())
+        dup_key = None
+        if key in self.items:
+            dup_key = key
+        elif title_key[0] and title_key in self._titles:
+            dup_key = self._titles[title_key]
+        if dup_key is None:
+            self.items[key] = item
+            if title_key[0]:
+                self._titles[title_key] = key
+            return
+        existing = self.items[dup_key]
+        if not existing.url and item.url:
+            del self.items[dup_key]
+            self.items[key] = item
+            if title_key[0]:
+                self._titles[title_key] = key
+
+    def __len__(self) -> int:
+        return len(self.items)
 
 
 def _is_word_char(ch: str) -> bool:
@@ -258,6 +290,7 @@ def build_recommendations(
     benchmark_avg_votes: float,
     topics_requested: bool = False,
     coverage_analyzed: bool = False,
+    brand_search_ok: bool = True,
 ) -> list[Recommendation]:
     """按维度得分生成带验证方式的行动清单"""
     recs: list[Recommendation] = []
@@ -266,28 +299,29 @@ def build_recommendations(
     coverage = dimensions["话题覆盖"]
     engagement = dimensions["互动基准"]
 
-    if presence.score == 0:
-        _push(
-            recs, "P0", "搜索存在率",
-            f"品牌词「{brand}」搜索结果里没有你的内容：在标题/正文加入品牌词，并回答带品牌词的相关问题",
-            "先解决「搜得到」",
-            f"重跑 /pulse brand --brand {brand}，搜索存在率 > 0（首条排名 ≤ 10）",
-        )
-    elif presence.score < 85:
-        _push(
-            recs, "P1", "搜索存在率",
-            "你的内容在品牌词结果里排名偏后：提升该内容的互动与时效性，或发布更贴品牌词的新内容",
-            "+搜索存在率 15-30 分",
-            "重跑 /pulse brand，首条自己的内容排名进入前 3",
-        )
+    if brand_search_ok:
+        if presence.score == 0:
+            _push(
+                recs, "P0", "搜索存在率",
+                f"品牌词「{brand}」搜索结果里没有你的内容：在标题/正文加入品牌词，并回答带品牌词的相关问题",
+                "先解决「搜得到」",
+                f"重跑 /pulse brand --brand {brand}，搜索存在率 > 0（首条排名 ≤ 10）",
+            )
+        elif presence.score < 85:
+            _push(
+                recs, "P1", "搜索存在率",
+                "你的内容在品牌词结果里排名偏后：提升该内容的互动与时效性，或发布更贴品牌词的新内容",
+                "+搜索存在率 15-30 分",
+                "重跑 /pulse brand，首条自己的内容排名进入前 3",
+            )
 
-    if total_brand_results > 0 and own_count > 0 and share.raw < 20:
-        _push(
-            recs, "P1", "份额占比",
-            f"品牌词 Top {total_brand_results} 里你只占 {own_count} 条（{_fmt_pct(share.raw)}%）：围绕品牌词扩充内容数量",
-            "+份额占比 10-30 分",
-            "重跑 /pulse brand，份额占比 ≥ 20%",
-        )
+        if total_brand_results > 0 and own_count > 0 and share.raw < 20:
+            _push(
+                recs, "P1", "份额占比",
+                f"品牌词 Top {total_brand_results} 里你只占 {own_count} 条（{_fmt_pct(share.raw)}%）：围绕品牌词扩充内容数量",
+                "+份额占比 10-30 分",
+                "重跑 /pulse brand，份额占比 ≥ 20%",
+            )
 
     if gaps:
         _push(
@@ -319,7 +353,7 @@ def build_recommendations(
                 "带 --topics 重跑，报告出现话题覆盖明细",
             )
 
-    if own_items and engagement.score < 60:
+    if brand_search_ok and own_items and engagement.score < 60:
         _push(
             recs, "P1", "互动基准",
             f"你的内容平均赞同（{sum(i.vote_count for i in own_items) / len(own_items):.0f}）"
@@ -365,36 +399,19 @@ def run_brand(
     competitors = competitors or []
     own_url_ids, own_authors, notes = build_own_index()
 
-    # 1) 品牌词搜索结果快照
-    brand_items = zhihu_api.search(brand, count=10).items
+    # 1) 品牌词搜索结果快照（失败降级：存在率/份额/互动置为「无法判断」）
+    brand_search_error: str | None = None
+    brand_items: list[zhihu_api.ArticleItem] = []
+    try:
+        brand_items = zhihu_api.search(brand, count=10).items
+    except _FALLBACK_ERRORS as exc:
+        brand_search_error = str(exc)
+        notes.append(f"品牌词搜索失败：{exc}")
     brand_snapshot: list[dict] = []
     own_in_brand: list[zhihu_api.ArticleItem] = []
     own_first_rank: int | None = None
-    own_seen: dict[str, zhihu_api.ArticleItem] = {}
-    seen_title_keys: dict[tuple[str, str], str] = {}
-
-    def add_own(item: zhihu_api.ArticleItem) -> None:
-        """去重入库：URL 键与「作者|标题」键互通，跨搜索不重复计数；
-        同一文章带/不带 URL 两种形态重复时，优先保留带 URL 的版本（与搜索顺序无关）"""
-        key = _own_key(item)
-        title_key = ((item.author_name or "").strip(), (item.title or "").strip())
-        dup_key = None
-        if key in own_seen:
-            dup_key = key
-        elif title_key[0] and title_key in seen_title_keys:
-            dup_key = seen_title_keys[title_key]
-        if dup_key is None:
-            own_seen[key] = item
-            if title_key[0]:
-                seen_title_keys[title_key] = key
-            return
-        existing = own_seen[dup_key]
-        if not existing.url and item.url:
-            # 用带 URL 的版本替换无 URL 版本
-            del own_seen[dup_key]
-            own_seen[key] = item
-            if title_key[0]:
-                seen_title_keys[title_key] = key
+    brand_dedupe = OwnDedupe()
+    own_dedupe = OwnDedupe()
 
     for idx, item in enumerate(brand_items):
         own = is_own(item, own_url_ids, own_authors)
@@ -402,7 +419,8 @@ def run_brand(
         brand_snapshot.append(_snapshot_item(item, idx, own, competitor))
         if own:
             own_in_brand.append(item)
-            add_own(item)
+            brand_dedupe.add(item)
+            own_dedupe.add(item)
             if own_first_rank is None:
                 own_first_rank = idx + 1
 
@@ -427,7 +445,7 @@ def run_brand(
         for item in items:
             if is_own(item, own_url_ids, own_authors):
                 own_count += 1
-                add_own(item)
+                own_dedupe.add(item)
             comp = is_competitor(item, competitors)
             if comp:
                 comp_counts[comp] = comp_counts.get(comp, 0) + 1
@@ -450,20 +468,28 @@ def run_brand(
     except _FALLBACK_ERRORS:
         notes.append("品牌词基准拉取失败，互动维度按最低基准（5）计算")
 
-    # 同一文章可能在品牌词与多个话题搜索里重复出现，按 URL/文章 ID 去重后再算互动
-    own_all = list(own_seen.values())
-    own_brand_unique = len({_own_key(item) for item in own_in_brand})
+    # 同一文章可能在品牌词与多个话题搜索里重复出现，统一走 OwnDedupe 去重
+    own_all = list(own_dedupe.items.values())
+    own_brand_unique = len(brand_dedupe)
 
     # 4) 维度与综合
     coverage_note = None
     if topics and searched_topics == 0:
         coverage_note = "指定的话题全部搜索失败，覆盖维度按中性处理（详见数据说明）"
-    dimensions = {
-        "搜索存在率": score_presence(own_first_rank),
-        "份额占比": score_share(own_brand_unique, len(brand_items)),
-        "话题覆盖": score_coverage(covered_topics, searched_topics, coverage_note),
-        "互动基准": score_engagement(own_all, benchmark_avg_votes),
-    }
+    if brand_search_error:
+        dimensions = {
+            "搜索存在率": Dimension("搜索存在率", 50, "品牌词搜索失败，存在率无法判断", raw=50.0),
+            "份额占比": Dimension("份额占比", 50, "品牌词搜索失败，份额无法判断", raw=50.0),
+            "话题覆盖": score_coverage(covered_topics, searched_topics, coverage_note),
+            "互动基准": Dimension("互动基准", 50, "品牌词搜索失败，互动无法判断", raw=50.0),
+        }
+    else:
+        dimensions = {
+            "搜索存在率": score_presence(own_first_rank),
+            "份额占比": score_share(own_brand_unique, len(brand_items)),
+            "话题覆盖": score_coverage(covered_topics, searched_topics, coverage_note),
+            "互动基准": score_engagement(own_all, benchmark_avg_votes),
+        }
     overall, overall_grade = combine(dimensions)
     recs = build_recommendations(
         brand,
@@ -475,11 +501,13 @@ def run_brand(
         benchmark_avg_votes,
         topics_requested=bool(topics),
         coverage_analyzed=searched_topics > 0,
+        brand_search_ok=brand_search_error is None,
     )
     return BrandResult(
         brand=brand,
         overall=overall,
         grade=overall_grade,
+        brand_search_error=brand_search_error,
         dimensions=dimensions,
         brand_search=brand_snapshot,
         topic_coverage=topic_coverage,
@@ -515,7 +543,9 @@ def render_markdown(result: BrandResult, competitors: list[str], topics: list[st
 
     lines.append("## 品牌词搜索结果（Top 10 快照）")
     lines.append("")
-    if not result.brand_search:
+    if result.brand_search_error:
+        lines.append(f"品牌词搜索失败，无法获取快照：{_md_cell(result.brand_search_error)}")
+    elif not result.brand_search:
         lines.append("品牌词没有搜到任何结果。")
     else:
         lines.append("| # | 自己 | 竞品 | 标题 | 作者 | 赞同 | 排名分 |")
