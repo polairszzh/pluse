@@ -14,6 +14,8 @@ from audit import Recommendation
 from brand import (
     BrandResult,
     Dimension,
+    _fmt_pct,
+    _md_cell,
     _own_key,
     build_own_index,
     build_recommendations,
@@ -142,6 +144,12 @@ class TestScores:
         assert score_coverage(0, 0).raw == 50.0
         assert score_presence(1).raw == 100.0
 
+    def test_fmt_pct(self):
+        assert _fmt_pct(20.0) == "20"
+        assert _fmt_pct(19.5) == "19.5"
+        assert _fmt_pct(0.0) == "0"
+        assert _md_cell("A|B\nC") == "A\\|B C"
+
 
 class TestRunBrand:
     def test_full_flow_with_gap(self, monkeypatch, own_item, other_item):
@@ -231,6 +239,35 @@ class TestRunBrand:
         result = run_brand("我的品牌")
         assert result.dimensions["搜索存在率"].score == 100
 
+    def test_dedupe_across_url_and_no_url(self, monkeypatch):
+        no_url = ArticleItem(
+            title="同一篇", url=None, content_type="Article", content_text="x",
+            vote_count=50, comment_count=0, favorite_count=0, author_name="我的名字",
+            author_badge="", updated_at=int(time.time()),
+        )
+        with_url = ArticleItem(
+            title="同一篇", url="https://zhuanlan.zhihu.com/p/1001",
+            content_type="Article", content_text="x", vote_count=80,
+            comment_count=0, favorite_count=0, author_name="我的名字",
+            author_badge="", updated_at=int(time.time()),
+        )
+        monkeypatch.setattr("brand.build_own_index", lambda: ({"1001"}, {"我的名字"}, []))
+
+        def fake_search(query, count=10):
+            if query == "我的品牌":
+                return SimpleNamespace(items=[no_url])
+            return SimpleNamespace(items=[with_url])
+
+        monkeypatch.setattr("brand.zhihu_api.search", fake_search)
+        monkeypatch.setattr(
+            "brand.zhihu_api.topic_benchmark",
+            lambda q, count=10: {"avg_votes": 20.0},
+        )
+        result = run_brand("我的品牌", topics=["AI工具"], competitors=[])
+        detail = result.dimensions["互动基准"].detail
+        assert "平均赞同（50）" in detail
+        assert "平均赞同（65）" not in detail
+
 
 class TestBuildOwnIndex:
     def test_returns_sets(self, monkeypatch, own_item):
@@ -281,7 +318,9 @@ class TestRecommendations:
         recs = build_recommendations(
             "我的品牌", dims, 1, 10, [], [own_item], 20.0, has_topics=False
         )
-        assert any(r.dimension == "份额占比" and r.priority == "P1" for r in recs)
+        share_recs = [r for r in recs if r.dimension == "份额占比" and r.priority == "P1"]
+        assert share_recs
+        assert "19.5%" in share_recs[0].action
 
     def test_coverage_threshold_uses_raw(self, own_item):
         dims = {
@@ -293,7 +332,9 @@ class TestRecommendations:
         recs = build_recommendations(
             "我的品牌", dims, 1, 10, [], [own_item], 20.0, has_topics=True
         )
-        assert any(r.dimension == "话题覆盖" and r.priority == "P1" for r in recs)
+        coverage_recs = [r for r in recs if r.dimension == "话题覆盖" and r.priority == "P1"]
+        assert coverage_recs
+        assert "79.5%" in coverage_recs[0].action
 
 
 class TestReport:
@@ -328,6 +369,27 @@ class TestReport:
         )
         md = render_markdown(result, [], [])
         assert "未指定话题（加 --topics 做覆盖分析）。\n\n## 行动清单" in md
+
+    def test_markdown_escapes_pipe(self):
+        dims = {
+            "搜索存在率": score_presence(1),
+            "份额占比": score_share(1, 10),
+            "话题覆盖": score_coverage(0, 0),
+            "互动基准": score_engagement([], 20),
+        }
+        result = BrandResult(
+            brand="x", overall=60, grade="C", dimensions=dims,
+            brand_search=[{
+                "rank": 1, "title": "A|B", "url": "u",
+                "author": "作者|名", "mine": True, "competitor": "Kimi|X",
+                "votes": 1, "ranking_score": 1.0,
+            }],
+            topic_coverage=[], recommendations=[],
+        )
+        md = render_markdown(result, [], [])
+        assert "A\\|B" in md
+        assert "作者\\|名" in md
+        assert "Kimi\\|X" in md
 
 
 class TestMain:

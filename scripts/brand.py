@@ -39,6 +39,18 @@ PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2}
 WEIGHTS = {"presence": 0.30, "share": 0.20, "coverage": 0.30, "engagement": 0.20}
 
 
+def _md_cell(text: object) -> str:
+    """Markdown 表格单元格转义：竖线 -> \\|，换行折叠为空格"""
+    return str(text or "").replace("|", "\\|").replace("\n", " ")
+
+
+def _fmt_pct(pct: float) -> str:
+    """百分比显示：整数不带小数，非整数保留一位（与阈值判断的 raw 一致）"""
+    if abs(pct - round(pct)) < 1e-9:
+        return f"{pct:.0f}"
+    return f"{pct:.1f}"
+
+
 # --------------------------------------------------------------------------
 # 数据模型
 # --------------------------------------------------------------------------
@@ -140,7 +152,7 @@ def score_share(own_count: int, total: int) -> Dimension:
     pct = own_count / total * 100
     return Dimension(
         "份额占比", round(pct),
-        f"品牌词 Top {total} 里你的内容占 {own_count} 条（{pct:.0f}%）",
+        f"品牌词 Top {total} 里你的内容占 {own_count} 条（{_fmt_pct(pct)}%）",
         raw=pct,
     )
 
@@ -241,7 +253,7 @@ def build_recommendations(
     if total_brand_results > 0 and own_count > 0 and share.raw < 20:
         _push(
             recs, "P1", "份额占比",
-            f"品牌词 Top {total_brand_results} 里你只占 {own_count} 条（{share.score}%）：围绕品牌词扩充内容数量",
+            f"品牌词 Top {total_brand_results} 里你只占 {own_count} 条（{_fmt_pct(share.raw)}%）：围绕品牌词扩充内容数量",
             "+份额占比 10-30 分",
             "重跑 /pulse brand，份额占比 ≥ 20%",
         )
@@ -256,7 +268,7 @@ def build_recommendations(
     elif has_topics and coverage.raw < 80:
         _push(
             recs, "P1", "话题覆盖",
-            f"话题覆盖只有 {coverage.score}%：在未覆盖话题发布内容，或改进现有内容的关键词",
+            f"话题覆盖只有 {_fmt_pct(coverage.raw)}%：在未覆盖话题发布内容，或改进现有内容的关键词",
             "+话题覆盖 20-40 分",
             "重跑 /pulse brand，覆盖达到 100%",
         )
@@ -320,13 +332,27 @@ def run_brand(
     own_in_brand: list[zhihu_api.ArticleItem] = []
     own_first_rank: int | None = None
     own_seen: dict[str, zhihu_api.ArticleItem] = {}
+    seen_title_keys: set[tuple[str, str]] = set()
+
+    def add_own(item: zhihu_api.ArticleItem) -> None:
+        """去重入库：URL 键与「作者|标题」键互通，跨搜索不重复计数"""
+        key = _own_key(item)
+        if key in own_seen:
+            return
+        title_key = ((item.author_name or "").strip(), (item.title or "").strip())
+        if title_key[0] and title_key in seen_title_keys:
+            return
+        own_seen[key] = item
+        if title_key[0]:
+            seen_title_keys.add(title_key)
+
     for idx, item in enumerate(brand_items):
         own = is_own(item, own_url_ids, own_authors)
         competitor = is_competitor(item, competitors)
         brand_snapshot.append(_snapshot_item(item, idx, own, competitor))
         if own:
             own_in_brand.append(item)
-            own_seen.setdefault(_own_key(item), item)
+            add_own(item)
             if own_first_rank is None:
                 own_first_rank = idx + 1
 
@@ -341,7 +367,7 @@ def run_brand(
         for item in items:
             if is_own(item, own_url_ids, own_authors):
                 own_count += 1
-                own_seen.setdefault(_own_key(item), item)
+                add_own(item)
             comp = is_competitor(item, competitors)
             if comp:
                 comp_counts[comp] = comp_counts.get(comp, 0) + 1
@@ -431,10 +457,10 @@ def render_markdown(result: BrandResult, competitors: list[str], topics: list[st
         lines.append("|---|---|---|---|---|---|---|")
         for s in result.brand_search:
             mine = "✓" if s["mine"] else ""
-            comp = s["competitor"] or ""
+            comp = _md_cell(s["competitor"] or "")
             lines.append(
-                f"| {s['rank']} | {mine} | {comp} | {s['title'][:38]} | "
-                f"{s['author']} | {s['votes']} | {s['ranking_score']} |"
+                f"| {s['rank']} | {mine} | {comp} | {_md_cell(s['title'][:38])} | "
+                f"{_md_cell(s['author'])} | {s['votes']} | {s['ranking_score']} |"
             )
     lines.append("")
 
