@@ -36,7 +36,12 @@ _FALLBACK_ERRORS = (
 
 PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2}
 
-WEIGHTS = {"presence": 0.30, "share": 0.20, "coverage": 0.30, "engagement": 0.20}
+DIMENSION_WEIGHTS = {
+    "搜索存在率": 0.30,
+    "份额占比": 0.20,
+    "话题覆盖": 0.30,
+    "互动基准": 0.20,
+}
 
 
 def _md_cell(text: object) -> str:
@@ -175,10 +180,11 @@ def score_share(own_count: int, total: int) -> Dimension:
     )
 
 
-def score_coverage(covered: int, total_topics: int) -> Dimension:
+def score_coverage(covered: int, total_topics: int, note: str | None = None) -> Dimension:
     """话题覆盖：指定话题里自己上榜的比例"""
     if total_topics <= 0:
-        return Dimension("话题覆盖", 50, "未指定话题，覆盖维度按中性处理；建议加 --topics 做覆盖分析", raw=50.0)
+        detail = note or "未指定话题，覆盖维度按中性处理；建议加 --topics 做覆盖分析"
+        return Dimension("话题覆盖", 50, detail, raw=50.0)
     pct = covered / total_topics * 100
     return Dimension(
         "话题覆盖", round(pct),
@@ -214,9 +220,7 @@ def score_engagement(own_items: list[zhihu_api.ArticleItem], benchmark_avg_votes
 
 def combine(dimensions: dict[str, Dimension]) -> tuple[int, str]:
     """按权重合成综合分与等级"""
-    weights = {"搜索存在率": WEIGHTS["presence"], "份额占比": WEIGHTS["share"],
-               "话题覆盖": WEIGHTS["coverage"], "互动基准": WEIGHTS["engagement"]}
-    overall = int(sum(dim.score * weights[name] for name, dim in dimensions.items()))
+    overall = int(sum(dim.score * DIMENSION_WEIGHTS[name] for name, dim in dimensions.items()))
     return overall, grade(overall)
 
 
@@ -244,7 +248,8 @@ def build_recommendations(
     gaps: list[str],
     own_items: list[zhihu_api.ArticleItem],
     benchmark_avg_votes: float,
-    has_topics: bool,
+    topics_requested: bool = False,
+    coverage_analyzed: bool = False,
 ) -> list[Recommendation]:
     """按维度得分生成带验证方式的行动清单"""
     recs: list[Recommendation] = []
@@ -283,20 +288,28 @@ def build_recommendations(
             "补齐话题覆盖，兑现竞品差距分析",
             "重跑 /pulse brand，覆盖缺口清零（这些话题搜索 Top 10 出现你的内容）",
         )
-    elif has_topics and coverage.raw < 80:
+    elif coverage_analyzed and coverage.raw < 80:
         _push(
             recs, "P1", "话题覆盖",
             f"话题覆盖只有 {_fmt_pct(coverage.raw)}%：在未覆盖话题发布内容，或改进现有内容的关键词",
             "+话题覆盖 20-40 分",
             "重跑 /pulse brand，覆盖达到 100%",
         )
-    elif not has_topics:
-        _push(
-            recs, "P2", "话题覆盖",
-            "本次未指定话题，覆盖维度没有分析；建议加 --topics 做覆盖与竞品差距分析",
-            "让报告覆盖维度生效",
-            "带 --topics 重跑，报告出现话题覆盖明细",
-        )
+    elif not coverage_analyzed:
+        if topics_requested:
+            _push(
+                recs, "P2", "话题覆盖",
+                "指定的话题全部搜索失败，本次无覆盖数据：检查配额/网络后重跑，或换用其他话题",
+                "恢复覆盖维度",
+                "重跑 /pulse brand，话题覆盖明细出现数据",
+            )
+        else:
+            _push(
+                recs, "P2", "话题覆盖",
+                "本次未指定话题，覆盖维度没有分析；建议加 --topics 做覆盖与竞品差距分析",
+                "让报告覆盖维度生效",
+                "带 --topics 重跑，报告出现话题覆盖明细",
+            )
 
     if own_items and engagement.score < 60:
         _push(
@@ -422,10 +435,13 @@ def run_brand(
     own_all = list(own_seen.values())
 
     # 4) 维度与综合
+    coverage_note = None
+    if topics and searched_topics == 0:
+        coverage_note = "指定的话题全部搜索失败，覆盖维度按中性处理（详见数据说明）"
     dimensions = {
         "搜索存在率": score_presence(own_first_rank),
         "份额占比": score_share(len(own_in_brand), len(brand_items)),
-        "话题覆盖": score_coverage(covered_topics, searched_topics),
+        "话题覆盖": score_coverage(covered_topics, searched_topics, coverage_note),
         "互动基准": score_engagement(own_all, benchmark_avg_votes),
     }
     overall, overall_grade = combine(dimensions)
@@ -437,7 +453,8 @@ def run_brand(
         gaps,
         own_all,
         benchmark_avg_votes,
-        has_topics=bool(topics),
+        topics_requested=bool(topics),
+        coverage_analyzed=searched_topics > 0,
     )
     return BrandResult(
         brand=brand,

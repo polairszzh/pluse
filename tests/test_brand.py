@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 import zhihu_api
 from audit import Recommendation
 from brand import (
+    DIMENSION_WEIGHTS,
     BrandResult,
     Dimension,
     _fmt_pct,
@@ -19,6 +20,7 @@ from brand import (
     _own_key,
     build_own_index,
     build_recommendations,
+    combine,
     is_competitor,
     is_own,
     main,
@@ -162,6 +164,18 @@ class TestScores:
         assert _fmt_pct(0.0) == "0"
         assert _md_cell("A|B\nC") == "A\\|B C"
 
+    def test_combine_uses_single_weight_table(self):
+        assert abs(sum(DIMENSION_WEIGHTS.values()) - 1.0) < 1e-9
+        dims = {
+            "搜索存在率": score_presence(1),
+            "份额占比": score_share(1, 10),
+            "话题覆盖": score_coverage(1, 1),
+            "互动基准": score_engagement([], 20),
+        }
+        overall, _ = combine(dims)
+        expected = int(100 * 0.30 + 10 * 0.20 + 100 * 0.30 + 10 * 0.20)
+        assert overall == expected
+
 
 class TestRunBrand:
     def test_full_flow_with_gap(self, monkeypatch, own_item, other_item):
@@ -301,6 +315,26 @@ class TestRunBrand:
         assert any("坏话题" in n for n in result.notes)
         assert any("好话题" in r.action for r in result.recommendations)
 
+    def test_all_topics_failed_no_misleading_coverage(self, monkeypatch, other_item):
+        monkeypatch.setattr("brand.build_own_index", lambda: (set(), set(), []))
+
+        def fake_search(query, count=10):
+            if query == "我的品牌":
+                return SimpleNamespace(items=[other_item])
+            raise zhihu_api.QuotaExceeded(30001, "rate limited")
+
+        monkeypatch.setattr("brand.zhihu_api.search", fake_search)
+        monkeypatch.setattr(
+            "brand.zhihu_api.topic_benchmark",
+            lambda q, count=10: {"avg_votes": 10.0},
+        )
+        result = run_brand("我的品牌", topics=["坏1", "坏2"], competitors=["Kimi"])
+        cov = result.dimensions["话题覆盖"]
+        assert cov.score == 50
+        assert "全部搜索失败" in cov.detail
+        assert not any(r.dimension == "话题覆盖" and r.priority == "P1" for r in result.recommendations)
+        assert any("全部搜索失败" in r.action for r in result.recommendations)
+
 
 class TestBuildOwnIndex:
     def test_returns_sets(self, monkeypatch, own_item):
@@ -333,7 +367,8 @@ class TestRecommendations:
             "互动基准": score_engagement([own_item], 20),
         }
         recs = build_recommendations(
-            "我的品牌", dims, 1, 10, [], [own_item], 20.0, has_topics=False
+            "我的品牌", dims, 1, 10, [], [own_item], 20.0,
+            topics_requested=False, coverage_analyzed=False,
         )
         assert any("--topics" in r.action for r in recs)
 
@@ -349,7 +384,8 @@ class TestRecommendations:
             "互动基准": score_engagement([own_item], 20),
         }
         recs = build_recommendations(
-            "我的品牌", dims, 1, 10, [], [own_item], 20.0, has_topics=False
+            "我的品牌", dims, 1, 10, [], [own_item], 20.0,
+            topics_requested=False, coverage_analyzed=False,
         )
         share_recs = [r for r in recs if r.dimension == "份额占比" and r.priority == "P1"]
         assert share_recs
@@ -363,11 +399,26 @@ class TestRecommendations:
             "互动基准": score_engagement([own_item], 20),
         }
         recs = build_recommendations(
-            "我的品牌", dims, 1, 10, [], [own_item], 20.0, has_topics=True
+            "我的品牌", dims, 1, 10, [], [own_item], 20.0,
+            topics_requested=True, coverage_analyzed=True,
         )
         coverage_recs = [r for r in recs if r.dimension == "话题覆盖" and r.priority == "P1"]
         assert coverage_recs
         assert "79.5%" in coverage_recs[0].action
+
+    def test_all_topics_failed_hint(self, own_item):
+        dims = {
+            "搜索存在率": score_presence(1),
+            "份额占比": score_share(1, 10),
+            "话题覆盖": score_coverage(0, 0, "指定的话题全部搜索失败，覆盖维度按中性处理"),
+            "互动基准": score_engagement([own_item], 20),
+        }
+        recs = build_recommendations(
+            "我的品牌", dims, 1, 10, [], [own_item], 20.0,
+            topics_requested=True, coverage_analyzed=False,
+        )
+        assert not any(r.dimension == "话题覆盖" and r.priority == "P1" for r in recs)
+        assert any("全部搜索失败" in r.action for r in recs)
 
 
 class TestReport:
