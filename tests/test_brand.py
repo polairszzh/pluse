@@ -116,7 +116,19 @@ class TestIdentify:
 
     def test_own_key_without_url(self, own_item):
         own_item.url = None
-        assert _own_key(own_item) == "我的名字|我的品牌实战总结"
+        key = _own_key(own_item)
+        assert "我的名字" in key
+        assert "我的品牌实战总结" in key
+        assert "|" in key
+
+    def test_own_key_pipe_no_collision(self):
+        a = ArticleItem(title="B|C", url=None, content_type="Article", content_text="x",
+                        vote_count=0, comment_count=0, favorite_count=0,
+                        author_name="A", author_badge="", updated_at=int(time.time()))
+        b = ArticleItem(title="C", url=None, content_type="Article", content_text="x",
+                        vote_count=0, comment_count=0, favorite_count=0,
+                        author_name="A|B", author_badge="", updated_at=int(time.time()))
+        assert _own_key(a) != _own_key(b)
 
 
 class TestScores:
@@ -547,6 +559,24 @@ class TestRecommendations:
         )
         assert not any(r.dimension == "话题覆盖" and r.priority == "P1" for r in recs)
         assert any("全部搜索失败" in r.action for r in recs)
+
+    def test_presence_target_matches_gradient(self, own_item):
+        def recs_for(rank):
+            dims = {
+                "搜索存在率": score_presence(rank),
+                "份额占比": score_share(1, 10),
+                "话题覆盖": score_coverage(0, 0),
+                "互动基准": score_engagement([own_item], 20),
+            }
+            return build_recommendations(
+                "我的品牌", dims, 1, 10, [], [own_item], 20.0,
+                topics_requested=False, coverage_analyzed=False,
+            )
+
+        low = next(r for r in recs_for(7) if r.dimension == "搜索存在率")
+        assert "前 5" in low.falsifiability_check
+        mid = next(r for r in recs_for(4) if r.dimension == "搜索存在率")
+        assert "前 3" in mid.falsifiability_check
 
 
 class TestReport:

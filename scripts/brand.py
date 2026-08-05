@@ -120,13 +120,15 @@ def is_own(item: zhihu_api.ArticleItem, own_url_ids: set[str], own_authors: set[
 
 
 def _own_key(item: zhihu_api.ArticleItem) -> str:
-    """去重键：文章 ID > URL > 作者|标题（URL 可能为空时兜底）"""
+    """去重键：文章 ID > URL > 长度前缀编码的作者|标题（避免字段内含 | 时键碰撞）"""
     if item.url:
         article_id = zhihu_api.extract_article_id(item.url)
         if article_id:
             return article_id
         return item.url
-    return f"{item.author_name}|{item.title}"
+    author = item.author_name or ""
+    title = item.title or ""
+    return f"{len(author)}:{author}|{len(title)}:{title}"
 
 
 class OwnDedupe:
@@ -309,11 +311,12 @@ def build_recommendations(
                 f"重跑 /pulse brand --brand {brand}，搜索存在率 > 0（首条排名 ≤ 10）",
             )
         elif presence.score < 85:
+            target = "前 3" if presence.score >= 70 else "前 5"
             _push(
                 recs, "P1", "搜索存在率",
                 "你的内容在品牌词结果里排名偏后：提升该内容的互动与时效性，或发布更贴品牌词的新内容",
                 "+搜索存在率 15-30 分",
-                "重跑 /pulse brand，首条自己的内容排名进入前 3",
+                f"重跑 /pulse brand，首条自己的内容排名进入{target}",
             )
 
         if total_brand_results > 0 and own_count > 0 and share.raw < 20:
