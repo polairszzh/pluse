@@ -51,6 +51,7 @@ class Dimension:
     name: str
     score: int
     detail: str
+    raw: float = 0.0
 
 
 @dataclass
@@ -111,52 +112,63 @@ def is_competitor(item: zhihu_api.ArticleItem, competitors: list[str]) -> str | 
 def score_presence(own_rank: int | None) -> Dimension:
     """搜索存在率：品牌词结果里自己的首条排名"""
     if own_rank is None:
-        return Dimension("搜索存在率", 0, "品牌词搜索结果里没有你的内容")
+        return Dimension("搜索存在率", 0, "品牌词搜索结果里没有你的内容", raw=0.0)
     if own_rank <= 1:
-        return Dimension("搜索存在率", 100, f"品牌词结果首条就是你的内容（第 {own_rank} 位）")
+        return Dimension("搜索存在率", 100, f"品牌词结果首条就是你的内容（第 {own_rank} 位）", raw=100.0)
     if own_rank <= 3:
-        return Dimension("搜索存在率", 85, f"你的内容排在品牌词结果第 {own_rank} 位")
+        return Dimension("搜索存在率", 85, f"你的内容排在品牌词结果第 {own_rank} 位", raw=85.0)
     if own_rank <= 5:
-        return Dimension("搜索存在率", 70, f"你的内容排在品牌词结果第 {own_rank} 位")
-    return Dimension("搜索存在率", 55, f"你的内容排在品牌词结果第 {own_rank} 位（偏后）")
+        return Dimension("搜索存在率", 70, f"你的内容排在品牌词结果第 {own_rank} 位", raw=70.0)
+    return Dimension("搜索存在率", 55, f"你的内容排在品牌词结果第 {own_rank} 位（偏后）", raw=55.0)
 
 
 def score_share(own_count: int, total: int) -> Dimension:
     """份额占比：品牌词 Top N 里自己占多少"""
     if total <= 0:
-        return Dimension("份额占比", 0, "没有搜索结果可统计")
-    pct = round(own_count / total * 100)
-    return Dimension("份额占比", pct, f"品牌词 Top {total} 里你的内容占 {own_count} 条（{pct}%）")
+        return Dimension("份额占比", 0, "没有搜索结果可统计", raw=0.0)
+    pct = own_count / total * 100
+    return Dimension(
+        "份额占比", round(pct),
+        f"品牌词 Top {total} 里你的内容占 {own_count} 条（{pct:.0f}%）",
+        raw=pct,
+    )
 
 
 def score_coverage(covered: int, total_topics: int) -> Dimension:
     """话题覆盖：指定话题里自己上榜的比例"""
     if total_topics <= 0:
-        return Dimension("话题覆盖", 50, "未指定话题，覆盖维度按中性处理；建议加 --topics 做覆盖分析")
-    pct = round(covered / total_topics * 100)
-    return Dimension("话题覆盖", pct, f"{covered}/{total_topics} 个话题搜索 Top 10 里出现你的内容")
+        return Dimension("话题覆盖", 50, "未指定话题，覆盖维度按中性处理；建议加 --topics 做覆盖分析", raw=50.0)
+    pct = covered / total_topics * 100
+    return Dimension(
+        "话题覆盖", round(pct),
+        f"{covered}/{total_topics} 个话题搜索 Top 10 里出现你的内容",
+        raw=pct,
+    )
 
 
 def score_engagement(own_items: list[zhihu_api.ArticleItem], benchmark_avg_votes: float) -> Dimension:
     """互动基准：自己的内容平均赞同 vs 品牌词话题基准"""
     if not own_items:
-        return Dimension("互动基准", 10, "搜索结果里没有你的内容，无互动可评")
+        return Dimension("互动基准", 10, "搜索结果里没有你的内容，无互动可评", raw=10.0)
     avg_votes = sum(it.vote_count for it in own_items) / len(own_items)
     effective_avg = max(float(benchmark_avg_votes), 5.0)
     ratio = avg_votes / effective_avg if effective_avg else 0.0
     if ratio >= 2.0:
         score = 90
         label = f"你的内容平均赞同（{avg_votes:.0f}）远超品牌词基准（{effective_avg:.0f}）"
-    elif ratio >= 1.0:
+    elif ratio > 1.0:
         score = 70
         label = f"你的内容平均赞同（{avg_votes:.0f}）高于品牌词基准（{effective_avg:.0f}）"
+    elif ratio == 1.0:
+        score = 70
+        label = f"你的内容平均赞同（{avg_votes:.0f}）与品牌词基准持平（{effective_avg:.0f}）"
     elif ratio >= 0.5:
         score = 50
         label = f"你的内容平均赞同（{avg_votes:.0f}）低于品牌词基准（{effective_avg:.0f}）"
     else:
         score = 30
         label = f"你的内容平均赞同（{avg_votes:.0f}）远低于品牌词基准（{effective_avg:.0f}）"
-    return Dimension("互动基准", score, label)
+    return Dimension("互动基准", score, label, raw=float(score))
 
 
 def combine(dimensions: dict[str, Dimension]) -> tuple[int, str]:
@@ -215,7 +227,7 @@ def build_recommendations(
             "重跑 /pulse brand，首条自己的内容排名进入前 3",
         )
 
-    if total_brand_results > 0 and own_count > 0 and share.score < 20:
+    if total_brand_results > 0 and own_count > 0 and share.raw < 20:
         _push(
             recs, "P1", "份额占比",
             f"品牌词 Top {total_brand_results} 里你只占 {own_count} 条（{share.score}%）：围绕品牌词扩充内容数量",
@@ -230,7 +242,7 @@ def build_recommendations(
             "补齐话题覆盖，兑现竞品差距分析",
             "重跑 /pulse brand，覆盖缺口清零（这些话题搜索 Top 10 出现你的内容）",
         )
-    elif has_topics and coverage.score < 80:
+    elif has_topics and coverage.raw < 80:
         _push(
             recs, "P1", "话题覆盖",
             f"话题覆盖只有 {coverage.score}%：在未覆盖话题发布内容，或改进现有内容的关键词",

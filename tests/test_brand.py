@@ -13,6 +13,7 @@ import zhihu_api
 from audit import Recommendation
 from brand import (
     BrandResult,
+    Dimension,
     build_own_index,
     build_recommendations,
     is_competitor,
@@ -115,6 +116,21 @@ class TestScores:
                            vote_count=100, comment_count=0, favorite_count=0,
                            author_name="", author_badge="", updated_at=int(time.time()))
         assert score_engagement([rich], 10).score == 90
+
+    def test_engagement_flat(self):
+        flat = ArticleItem(title="t", url="u", content_type="Article", content_text="x",
+                           vote_count=20, comment_count=0, favorite_count=0,
+                           author_name="", author_badge="", updated_at=int(time.time()))
+        dim = score_engagement([flat], 20)
+        assert dim.score == 70
+        assert "持平" in dim.detail
+
+    def test_raw_values(self):
+        assert score_share(2, 10).raw == 20.0
+        assert score_share(1, 10).raw == 10.0
+        assert score_coverage(3, 4).raw == 75.0
+        assert score_coverage(0, 0).raw == 50.0
+        assert score_presence(1).raw == 100.0
 
 
 class TestRunBrand:
@@ -226,6 +242,30 @@ class TestRecommendations:
     def test_recommendation_fields_match_audit(self):
         fields = set(Recommendation.__dataclass_fields__)
         assert {"priority", "dimension", "action", "expected_impact", "falsifiability_check"} <= fields
+
+    def test_share_threshold_uses_raw(self, own_item):
+        dims = {
+            "搜索存在率": score_presence(1),
+            "份额占比": Dimension("份额占比", 20, "20%", raw=19.5),
+            "话题覆盖": score_coverage(0, 0),
+            "互动基准": score_engagement([own_item], 20),
+        }
+        recs = build_recommendations(
+            "我的品牌", dims, 1, 10, [], [own_item], 20.0, has_topics=False
+        )
+        assert any(r.dimension == "份额占比" and r.priority == "P1" for r in recs)
+
+    def test_coverage_threshold_uses_raw(self, own_item):
+        dims = {
+            "搜索存在率": score_presence(1),
+            "份额占比": score_share(1, 10),
+            "话题覆盖": Dimension("话题覆盖", 80, "4/5", raw=79.5),
+            "互动基准": score_engagement([own_item], 20),
+        }
+        recs = build_recommendations(
+            "我的品牌", dims, 1, 10, [], [own_item], 20.0, has_topics=True
+        )
+        assert any(r.dimension == "话题覆盖" and r.priority == "P1" for r in recs)
 
 
 class TestReport:
