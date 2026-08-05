@@ -451,10 +451,15 @@ class TestRunBrand:
             "brand.zhihu_api.topic_benchmark",
             lambda q, count=10: {"avg_votes": 10.0},
         )
-        result = run_brand("我的品牌")
+        result = run_brand("我的品牌", topics=["好话题"], competitors=["Kimi"])
         assert result.dimensions["搜索存在率"].score == 50
         assert "识别不可用" in result.dimensions["搜索存在率"].detail
+        assert result.dimensions["话题覆盖"].score == 50
+        assert "覆盖无法判断" in result.dimensions["话题覆盖"].detail
+        assert result.topic_coverage[0]["own_unknown"] is True
         assert not any(r.dimension == "搜索存在率" for r in result.recommendations)
+        assert not any(r.dimension == "话题覆盖" and r.priority == "P0" for r in result.recommendations)
+        assert any("识别不可用" in r.action for r in result.recommendations)
 
 
 class TestBuildOwnIndex:

@@ -291,6 +291,7 @@ def build_recommendations(
     topics_requested: bool = False,
     coverage_analyzed: bool = False,
     presence_data_ok: bool = True,
+    coverage_unavailable_reason: str | None = None,
 ) -> list[Recommendation]:
     """按维度得分生成带验证方式的行动清单"""
     recs: list[Recommendation] = []
@@ -336,6 +337,13 @@ def build_recommendations(
             f"话题覆盖只有 {_fmt_pct(coverage.raw)}%：在未覆盖话题发布内容，或改进现有内容的关键词",
             "+话题覆盖 20-40 分",
             "重跑 /pulse brand，覆盖达到 100%",
+        )
+    elif coverage_unavailable_reason:
+        _push(
+            recs, "P2", "话题覆盖",
+            f"{coverage_unavailable_reason}，本次无覆盖数据：稍后重跑或检查配额",
+            "恢复覆盖维度",
+            "重跑 /pulse brand，话题覆盖明细出现数据",
         )
     elif not coverage_analyzed:
         if topics_requested:
@@ -453,6 +461,7 @@ def run_brand(
             "own_count": own_count,
             "competitors": comp_counts,
             "avg_votes": round(sum(i.vote_count for i in items) / len(items), 1) if items else 0,
+            "own_unknown": not own_index_ok,
         })
 
     # 3) 基准：品牌词话题平均赞同
@@ -471,9 +480,18 @@ def run_brand(
     coverage_note = None
     if topics and searched_topics == 0:
         coverage_note = "指定的话题全部搜索失败，覆盖维度按中性处理（详见数据说明）"
-    data_ok = brand_search_error is None and own_index_ok
-    if not data_ok:
-        reason = "品牌词搜索失败" if brand_search_error else "本人内容识别不可用"
+    coverage_unavailable_reason = "本人内容识别不可用" if not own_index_ok else None
+    effective_gaps = gaps if own_index_ok else []
+    if not own_index_ok:
+        reason = "本人内容识别不可用"
+        dimensions = {
+            "搜索存在率": Dimension("搜索存在率", 50, f"{reason}，存在率无法判断", raw=50.0),
+            "份额占比": Dimension("份额占比", 50, f"{reason}，份额无法判断", raw=50.0),
+            "话题覆盖": Dimension("话题覆盖", 50, f"{reason}，覆盖无法判断", raw=50.0),
+            "互动基准": Dimension("互动基准", 50, f"{reason}，互动无法判断", raw=50.0),
+        }
+    elif brand_search_error:
+        reason = "品牌词搜索失败"
         dimensions = {
             "搜索存在率": Dimension("搜索存在率", 50, f"{reason}，存在率无法判断", raw=50.0),
             "份额占比": Dimension("份额占比", 50, f"{reason}，份额无法判断", raw=50.0),
@@ -487,18 +505,20 @@ def run_brand(
             "话题覆盖": score_coverage(covered_topics, searched_topics, coverage_note),
             "互动基准": score_engagement(own_all, benchmark_avg_votes),
         }
+    data_ok = brand_search_error is None and own_index_ok
     overall, overall_grade = combine(dimensions)
     recs = build_recommendations(
         brand,
         dimensions,
         own_brand_unique,
         len(brand_items),
-        gaps,
+        effective_gaps,
         own_all,
         benchmark_avg_votes,
         topics_requested=bool(topics),
-        coverage_analyzed=searched_topics > 0,
+        coverage_analyzed=own_index_ok and searched_topics > 0,
         presence_data_ok=data_ok,
+        coverage_unavailable_reason=coverage_unavailable_reason,
     )
     return BrandResult(
         brand=brand,
@@ -568,8 +588,9 @@ def render_markdown(result: BrandResult, competitors: list[str], topics: list[st
             lines.append(f"- 搜索失败已跳过：{_md_cell(tc['error'])}")
         else:
             comp_txt = "、".join(f"{_md_cell(k)} {v} 条" for k, v in tc["competitors"].items()) or "-"
+            own_txt = "无法识别（本人内容拉取失败）" if tc.get("own_unknown") else f"{tc['own_count']} 条"
             lines.append(
-                f"- 自己：{tc['own_count']} 条 | 竞品：{comp_txt} | Top10 平均赞同：{tc['avg_votes']}"
+                f"- 自己：{own_txt} | 竞品：{comp_txt} | Top10 平均赞同：{tc['avg_votes']}"
             )
         lines.append("")
 
