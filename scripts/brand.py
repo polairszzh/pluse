@@ -56,6 +56,11 @@ def _fmt_pct(pct: float) -> str:
     return f"{pct:.1f}"
 
 
+def _round_half_up(value: float) -> int:
+    """常规四舍五入（避免 round() 的银行家舍入：2.5 -> 3 而非 2）"""
+    return int(value + 0.5) if value >= 0 else int(value - 0.5)
+
+
 # --------------------------------------------------------------------------
 # 数据模型
 # --------------------------------------------------------------------------
@@ -174,7 +179,7 @@ def score_share(own_count: int, total: int) -> Dimension:
         return Dimension("份额占比", 0, "没有搜索结果可统计", raw=0.0)
     pct = own_count / total * 100
     return Dimension(
-        "份额占比", round(pct),
+        "份额占比", _round_half_up(pct),
         f"品牌词 Top {total} 里你的内容占 {own_count} 条（{_fmt_pct(pct)}%）",
         raw=pct,
     )
@@ -187,7 +192,7 @@ def score_coverage(covered: int, total_topics: int, note: str | None = None) -> 
         return Dimension("话题覆盖", 50, detail, raw=50.0)
     pct = covered / total_topics * 100
     return Dimension(
-        "话题覆盖", round(pct),
+        "话题覆盖", _round_half_up(pct),
         f"{covered}/{total_topics} 个话题搜索 Top 10 里出现你的内容",
         raw=pct,
     )
@@ -206,7 +211,7 @@ def score_engagement(own_items: list[zhihu_api.ArticleItem], benchmark_avg_votes
     elif ratio > 1.0:
         score = 70
         label = f"你的内容平均赞同（{avg_votes:.0f}）高于品牌词基准（{effective_avg:.0f}）"
-    elif ratio == 1.0:
+    elif abs(ratio - 1.0) < 1e-9:
         score = 70
         label = f"你的内容平均赞同（{avg_votes:.0f}）与品牌词基准持平（{effective_avg:.0f}）"
     elif ratio >= 0.5:
@@ -433,6 +438,7 @@ def run_brand(
 
     # 同一文章可能在品牌词与多个话题搜索里重复出现，按 URL/文章 ID 去重后再算互动
     own_all = list(own_seen.values())
+    own_brand_unique = len({_own_key(item) for item in own_in_brand})
 
     # 4) 维度与综合
     coverage_note = None
@@ -440,7 +446,7 @@ def run_brand(
         coverage_note = "指定的话题全部搜索失败，覆盖维度按中性处理（详见数据说明）"
     dimensions = {
         "搜索存在率": score_presence(own_first_rank),
-        "份额占比": score_share(len(own_in_brand), len(brand_items)),
+        "份额占比": score_share(own_brand_unique, len(brand_items)),
         "话题覆盖": score_coverage(covered_topics, searched_topics, coverage_note),
         "互动基准": score_engagement(own_all, benchmark_avg_votes),
     }
@@ -448,7 +454,7 @@ def run_brand(
     recs = build_recommendations(
         brand,
         dimensions,
-        len(own_in_brand),
+        own_brand_unique,
         len(brand_items),
         gaps,
         own_all,

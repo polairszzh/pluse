@@ -18,6 +18,7 @@ from brand import (
     _fmt_pct,
     _md_cell,
     _own_key,
+    _round_half_up,
     build_own_index,
     build_recommendations,
     combine,
@@ -151,6 +152,14 @@ class TestScores:
         assert dim.score == 70
         assert "持平" in dim.detail
 
+    def test_engagement_tolerance(self):
+        item = ArticleItem(title="t", url="u", content_type="Article", content_text="x",
+                           vote_count=10, comment_count=0, favorite_count=0,
+                           author_name="", author_badge="", updated_at=int(time.time()))
+        dim = score_engagement([item], 10.000000001)
+        assert dim.score == 70
+        assert "持平" in dim.detail
+
     def test_raw_values(self):
         assert score_share(2, 10).raw == 20.0
         assert score_share(1, 10).raw == 10.0
@@ -163,6 +172,12 @@ class TestScores:
         assert _fmt_pct(19.5) == "19.5"
         assert _fmt_pct(0.0) == "0"
         assert _md_cell("A|B\nC") == "A\\|B C"
+
+    def test_round_half_up(self):
+        assert _round_half_up(2.5) == 3
+        assert _round_half_up(3.5) == 4
+        assert _round_half_up(19.5) == 20
+        assert score_coverage(1, 40).score == 3
 
     def test_combine_uses_single_weight_table(self):
         assert abs(sum(DIMENSION_WEIGHTS.values()) - 1.0) < 1e-9
@@ -334,6 +349,32 @@ class TestRunBrand:
         assert "全部搜索失败" in cov.detail
         assert not any(r.dimension == "话题覆盖" and r.priority == "P1" for r in result.recommendations)
         assert any("全部搜索失败" in r.action for r in result.recommendations)
+
+    def test_share_deduplicated_in_brand_results(self, monkeypatch):
+        own_a = ArticleItem(
+            title="重复文章", url="https://zhuanlan.zhihu.com/p/1001",
+            content_type="Article", content_text="x", vote_count=50,
+            comment_count=0, favorite_count=0, author_name="我的名字",
+            author_badge="", updated_at=int(time.time()),
+        )
+        own_b = ArticleItem(
+            title="重复文章", url="https://zhuanlan.zhihu.com/p/1001",
+            content_type="Article", content_text="x", vote_count=80,
+            comment_count=0, favorite_count=0, author_name="我的名字",
+            author_badge="", updated_at=int(time.time()),
+        )
+        monkeypatch.setattr("brand.build_own_index", lambda: ({"1001"}, {"我的名字"}, []))
+        monkeypatch.setattr(
+            "brand.zhihu_api.search",
+            lambda q, count=10: SimpleNamespace(items=[own_a, own_b]),
+        )
+        monkeypatch.setattr(
+            "brand.zhihu_api.topic_benchmark",
+            lambda q, count=10: {"avg_votes": 10.0},
+        )
+        result = run_brand("我的品牌")
+        assert result.dimensions["份额占比"].score == 50
+        assert "1 条" in result.dimensions["份额占比"].detail
 
 
 class TestBuildOwnIndex:
