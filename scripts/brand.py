@@ -96,18 +96,18 @@ class BrandResult:
 # --------------------------------------------------------------------------
 
 
-def build_own_index() -> tuple[set[str], set[str], list[str]]:
-    """拉本人内容，返回 (URL id 集合, 作者名集合, 提示信息)"""
+def build_own_index() -> tuple[set[str], set[str], bool, list[str]]:
+    """拉本人内容，返回 (URL id 集合, 作者名集合, 是否可用, 提示信息)"""
     notes: list[str] = []
     try:
         items = zhihu_api.get_my_contents(content_type="all", limit=50).items
     except _FALLBACK_ERRORS as exc:
-        return set(), set(), [f"本人内容拉取失败，「自己」识别不可用：{exc}"]
+        return set(), set(), False, [f"本人内容拉取失败，「自己」识别不可用：{exc}"]
     url_ids = {zhihu_api.extract_article_id(it.url) for it in items if it.url}
     authors = {it.author_name for it in items if it.author_name}
     if not url_ids and not authors:
         notes.append("本人账号暂无创作内容（get_my_contents 为空），所有结果都标记为「不是自己」")
-    return url_ids, authors, notes
+    return url_ids, authors, True, notes
 
 
 def is_own(item: zhihu_api.ArticleItem, own_url_ids: set[str], own_authors: set[str]) -> bool:
@@ -239,7 +239,7 @@ def score_engagement(own_items: list[zhihu_api.ArticleItem], benchmark_avg_votes
         return Dimension("互动基准", 10, "搜索结果里没有你的内容，无互动可评", raw=0.0)
     avg_votes = sum(it.vote_count for it in own_items) / len(own_items)
     effective_avg = max(float(benchmark_avg_votes), 5.0)
-    ratio = avg_votes / effective_avg if effective_avg else 0.0
+    ratio = avg_votes / effective_avg
     if ratio >= 2.0:
         score = 90
         label = f"你的内容平均赞同（{avg_votes:.0f}）远超品牌词基准（{effective_avg:.0f}）"
@@ -290,7 +290,7 @@ def build_recommendations(
     benchmark_avg_votes: float,
     topics_requested: bool = False,
     coverage_analyzed: bool = False,
-    brand_search_ok: bool = True,
+    presence_data_ok: bool = True,
 ) -> list[Recommendation]:
     """按维度得分生成带验证方式的行动清单"""
     recs: list[Recommendation] = []
@@ -299,7 +299,7 @@ def build_recommendations(
     coverage = dimensions["话题覆盖"]
     engagement = dimensions["互动基准"]
 
-    if brand_search_ok:
+    if presence_data_ok:
         if presence.score == 0:
             _push(
                 recs, "P0", "搜索存在率",
@@ -353,7 +353,7 @@ def build_recommendations(
                 "带 --topics 重跑，报告出现话题覆盖明细",
             )
 
-    if brand_search_ok and own_items and engagement.score < 60:
+    if presence_data_ok and own_items and engagement.score < 60:
         _push(
             recs, "P1", "互动基准",
             f"你的内容平均赞同（{sum(i.vote_count for i in own_items) / len(own_items):.0f}）"
@@ -397,7 +397,7 @@ def run_brand(
     """执行品牌可见度审计"""
     topics = topics or []
     competitors = competitors or []
-    own_url_ids, own_authors, notes = build_own_index()
+    own_url_ids, own_authors, own_index_ok, notes = build_own_index()
 
     # 1) 品牌词搜索结果快照（失败降级：存在率/份额/互动置为「无法判断」）
     brand_search_error: str | None = None
@@ -408,19 +408,15 @@ def run_brand(
         brand_search_error = str(exc)
         notes.append(f"品牌词搜索失败：{exc}")
     brand_snapshot: list[dict] = []
-    own_in_brand: list[zhihu_api.ArticleItem] = []
     own_first_rank: int | None = None
     brand_dedupe = OwnDedupe()
-    own_dedupe = OwnDedupe()
 
     for idx, item in enumerate(brand_items):
         own = is_own(item, own_url_ids, own_authors)
         competitor = is_competitor(item, competitors)
         brand_snapshot.append(_snapshot_item(item, idx, own, competitor))
         if own:
-            own_in_brand.append(item)
             brand_dedupe.add(item)
-            own_dedupe.add(item)
             if own_first_rank is None:
                 own_first_rank = idx + 1
 
@@ -445,7 +441,6 @@ def run_brand(
         for item in items:
             if is_own(item, own_url_ids, own_authors):
                 own_count += 1
-                own_dedupe.add(item)
             comp = is_competitor(item, competitors)
             if comp:
                 comp_counts[comp] = comp_counts.get(comp, 0) + 1
@@ -468,20 +463,22 @@ def run_brand(
     except _FALLBACK_ERRORS:
         notes.append("品牌词基准拉取失败，互动维度按最低基准（5）计算")
 
-    # 同一文章可能在品牌词与多个话题搜索里重复出现，统一走 OwnDedupe 去重
-    own_all = list(own_dedupe.items.values())
+    # 互动基准只看品牌词结果里的自己内容（去重后），不混入话题搜索
+    own_all = list(brand_dedupe.items.values())
     own_brand_unique = len(brand_dedupe)
 
     # 4) 维度与综合
     coverage_note = None
     if topics and searched_topics == 0:
         coverage_note = "指定的话题全部搜索失败，覆盖维度按中性处理（详见数据说明）"
-    if brand_search_error:
+    data_ok = brand_search_error is None and own_index_ok
+    if not data_ok:
+        reason = "品牌词搜索失败" if brand_search_error else "本人内容识别不可用"
         dimensions = {
-            "搜索存在率": Dimension("搜索存在率", 50, "品牌词搜索失败，存在率无法判断", raw=50.0),
-            "份额占比": Dimension("份额占比", 50, "品牌词搜索失败，份额无法判断", raw=50.0),
+            "搜索存在率": Dimension("搜索存在率", 50, f"{reason}，存在率无法判断", raw=50.0),
+            "份额占比": Dimension("份额占比", 50, f"{reason}，份额无法判断", raw=50.0),
             "话题覆盖": score_coverage(covered_topics, searched_topics, coverage_note),
-            "互动基准": Dimension("互动基准", 50, "品牌词搜索失败，互动无法判断", raw=50.0),
+            "互动基准": Dimension("互动基准", 50, f"{reason}，互动无法判断", raw=50.0),
         }
     else:
         dimensions = {
@@ -501,7 +498,7 @@ def run_brand(
         benchmark_avg_votes,
         topics_requested=bool(topics),
         coverage_analyzed=searched_topics > 0,
-        brand_search_ok=brand_search_error is None,
+        presence_data_ok=data_ok,
     )
     return BrandResult(
         brand=brand,
@@ -642,7 +639,7 @@ def save_report(
 
 def re_slug(brand: str, max_len: int = 40) -> str:
     """品牌名 -> 文件名 slug（保留中文）"""
-    slug = re.sub(r"[^\w\u4e00-\u9fff]+", "-", brand or "untitled").strip("-")
+    slug = re.sub(r"[^\w]+", "-", brand or "untitled").strip("-")
     return slug[:max_len] or "untitled"
 
 
@@ -677,12 +674,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = run_brand(args.brand, topics, competitors)
         paths = save_report(result, competitors, topics, out_dir)
-    except zhihu_api.AuthError as exc:
-        print(f"知乎鉴权失败：{exc}", file=sys.stderr)
-        return 1
-    except zhihu_api.QuotaExceeded as exc:
-        print(f"知乎配额/频率限制：{exc}", file=sys.stderr)
-        return 1
     except (FileNotFoundError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1

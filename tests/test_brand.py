@@ -210,7 +210,7 @@ class TestScores:
 
 class TestRunBrand:
     def test_full_flow_with_gap(self, monkeypatch, own_item, other_item):
-        monkeypatch.setattr("brand.build_own_index", lambda: ({"1001"}, {"我的名字"}, []))
+        monkeypatch.setattr("brand.build_own_index", lambda: ({"1001"}, {"我的名字"}, True, []))
 
         def fake_search(query, count=10):
             if query == "我的品牌":
@@ -233,7 +233,7 @@ class TestRunBrand:
     def test_no_own_content(self, monkeypatch, other_item):
         monkeypatch.setattr(
             "brand.build_own_index",
-            lambda: (set(), set(), ["本人账号暂无创作内容"]),
+            lambda: (set(), set(), True, ["本人账号暂无创作内容"]),
         )
         monkeypatch.setattr(
             "brand.zhihu_api.search",
@@ -261,7 +261,7 @@ class TestRunBrand:
             comment_count=8, favorite_count=4, author_name="我的名字",
             author_badge="", updated_at=int(time.time()),
         )
-        monkeypatch.setattr("brand.build_own_index", lambda: ({"1001"}, {"我的名字"}, []))
+        monkeypatch.setattr("brand.build_own_index", lambda: ({"1001"}, {"我的名字"}, True, []))
 
         def fake_search(query, count=10):
             if query == "我的品牌":
@@ -284,7 +284,7 @@ class TestRunBrand:
             vote_count=5, comment_count=0, favorite_count=0, author_name="我的名字",
             author_badge="", updated_at=int(time.time()),
         )
-        monkeypatch.setattr("brand.build_own_index", lambda: (set(), {"我的名字"}, []))
+        monkeypatch.setattr("brand.build_own_index", lambda: (set(), {"我的名字"}, True, []))
         monkeypatch.setattr(
             "brand.zhihu_api.search",
             lambda q, count=10: SimpleNamespace(items=[item]),
@@ -296,7 +296,7 @@ class TestRunBrand:
         result = run_brand("我的品牌")
         assert result.dimensions["搜索存在率"].score == 100
 
-    def test_dedupe_across_url_and_no_url(self, monkeypatch):
+    def test_engagement_uses_brand_results_only(self, monkeypatch):
         no_url = ArticleItem(
             title="同一篇", url=None, content_type="Article", content_text="x",
             vote_count=50, comment_count=0, favorite_count=0, author_name="我的名字",
@@ -308,7 +308,7 @@ class TestRunBrand:
             comment_count=0, favorite_count=0, author_name="我的名字",
             author_badge="", updated_at=int(time.time()),
         )
-        monkeypatch.setattr("brand.build_own_index", lambda: ({"1001"}, {"我的名字"}, []))
+        monkeypatch.setattr("brand.build_own_index", lambda: ({"1001"}, {"我的名字"}, True, []))
 
         def fake_search(query, count=10):
             if query == "我的品牌":
@@ -322,11 +322,11 @@ class TestRunBrand:
         )
         result = run_brand("我的品牌", topics=["AI工具"], competitors=[])
         detail = result.dimensions["互动基准"].detail
-        assert "平均赞同（80）" in detail
-        assert "平均赞同（50）" not in detail
+        assert "平均赞同（50）" in detail
+        assert "平均赞同（80）" not in detail
 
     def test_topic_search_failure_degraded(self, monkeypatch, other_item):
-        monkeypatch.setattr("brand.build_own_index", lambda: (set(), set(), []))
+        monkeypatch.setattr("brand.build_own_index", lambda: (set(), set(), True, []))
 
         def fake_search(query, count=10):
             if query == "我的品牌":
@@ -347,7 +347,7 @@ class TestRunBrand:
         assert any("好话题" in r.action for r in result.recommendations)
 
     def test_all_topics_failed_no_misleading_coverage(self, monkeypatch, other_item):
-        monkeypatch.setattr("brand.build_own_index", lambda: (set(), set(), []))
+        monkeypatch.setattr("brand.build_own_index", lambda: (set(), set(), True, []))
 
         def fake_search(query, count=10):
             if query == "我的品牌":
@@ -379,7 +379,7 @@ class TestRunBrand:
             comment_count=0, favorite_count=0, author_name="我的名字",
             author_badge="", updated_at=int(time.time()),
         )
-        monkeypatch.setattr("brand.build_own_index", lambda: ({"1001"}, {"我的名字"}, []))
+        monkeypatch.setattr("brand.build_own_index", lambda: ({"1001"}, {"我的名字"}, True, []))
         monkeypatch.setattr(
             "brand.zhihu_api.search",
             lambda q, count=10: SimpleNamespace(items=[own_a, own_b]),
@@ -404,7 +404,7 @@ class TestRunBrand:
             comment_count=0, favorite_count=0, author_name="我的名字",
             author_badge="", updated_at=int(time.time()),
         )
-        monkeypatch.setattr("brand.build_own_index", lambda: ({"1001"}, {"我的名字"}, []))
+        monkeypatch.setattr("brand.build_own_index", lambda: ({"1001"}, {"我的名字"}, True, []))
         monkeypatch.setattr(
             "brand.zhihu_api.search",
             lambda q, count=10: SimpleNamespace(items=[no_url, with_url]),
@@ -416,9 +416,10 @@ class TestRunBrand:
         result = run_brand("我的品牌")
         assert result.dimensions["份额占比"].score == 50
         assert "1 条" in result.dimensions["份额占比"].detail
+        assert "平均赞同（80）" in result.dimensions["互动基准"].detail
 
     def test_brand_search_failure_degraded(self, monkeypatch, other_item):
-        monkeypatch.setattr("brand.build_own_index", lambda: (set(), set(), []))
+        monkeypatch.setattr("brand.build_own_index", lambda: (set(), set(), True, []))
 
         def fake_search(query, count=10):
             if query == "我的品牌":
@@ -437,6 +438,24 @@ class TestRunBrand:
         assert not any(r.dimension == "搜索存在率" for r in result.recommendations)
         assert any("好话题" in r.action for r in result.recommendations)
 
+    def test_own_index_failure_degraded(self, monkeypatch, other_item):
+        monkeypatch.setattr(
+            "brand.build_own_index",
+            lambda: (set(), set(), False, ["本人内容拉取失败，「自己」识别不可用：boom"]),
+        )
+        monkeypatch.setattr(
+            "brand.zhihu_api.search",
+            lambda q, count=10: SimpleNamespace(items=[other_item]),
+        )
+        monkeypatch.setattr(
+            "brand.zhihu_api.topic_benchmark",
+            lambda q, count=10: {"avg_votes": 10.0},
+        )
+        result = run_brand("我的品牌")
+        assert result.dimensions["搜索存在率"].score == 50
+        assert "识别不可用" in result.dimensions["搜索存在率"].detail
+        assert not any(r.dimension == "搜索存在率" for r in result.recommendations)
+
 
 class TestBuildOwnIndex:
     def test_returns_sets(self, monkeypatch, own_item):
@@ -444,9 +463,10 @@ class TestBuildOwnIndex:
             "brand.zhihu_api.get_my_contents",
             lambda **_: SimpleNamespace(items=[own_item]),
         )
-        url_ids, authors, notes = build_own_index()
+        url_ids, authors, ok, notes = build_own_index()
         assert url_ids == {"1001"}
         assert authors == {"我的名字"}
+        assert ok is True
         assert notes == []
 
     def test_api_error_falls_back(self, monkeypatch):
@@ -454,9 +474,10 @@ class TestBuildOwnIndex:
             raise zhihu_api.AuthError(20001, "invalid secret")
 
         monkeypatch.setattr("brand.zhihu_api.get_my_contents", boom)
-        url_ids, authors, notes = build_own_index()
+        url_ids, authors, ok, notes = build_own_index()
         assert url_ids == set()
         assert authors == set()
+        assert ok is False
         assert any("拉取失败" in n for n in notes)
 
 
@@ -525,7 +546,7 @@ class TestRecommendations:
 
 class TestReport:
     def test_save_report_writes_files(self, tmp_path, monkeypatch, own_item):
-        monkeypatch.setattr("brand.build_own_index", lambda: ({"1001"}, set(), []))
+        monkeypatch.setattr("brand.build_own_index", lambda: ({"1001"}, set(), True, []))
         monkeypatch.setattr(
             "brand.zhihu_api.search",
             lambda q, count=10: SimpleNamespace(items=[own_item]),
@@ -605,7 +626,7 @@ class TestMain:
             main([])
 
     def test_happy_path(self, tmp_path, monkeypatch, own_item):
-        monkeypatch.setattr("brand.build_own_index", lambda: ({"1001"}, set(), []))
+        monkeypatch.setattr("brand.build_own_index", lambda: ({"1001"}, set(), True, []))
         monkeypatch.setattr(
             "brand.zhihu_api.search",
             lambda q, count=10: SimpleNamespace(items=[own_item]),
@@ -618,9 +639,22 @@ class TestMain:
         assert code == 0
         assert list(tmp_path.glob("brand-*.md"))
 
-    def test_auth_error_returns_1(self, monkeypatch):
-        def boom(*_args, **_kwargs):
-            raise zhihu_api.AuthError(20001, "invalid secret")
+    def test_save_oserror_reports_local_write(self, monkeypatch, own_item, capsys):
+        monkeypatch.setattr("brand.build_own_index", lambda: ({"1001"}, {"我的名字"}, True, []))
+        monkeypatch.setattr(
+            "brand.zhihu_api.search",
+            lambda q, count=10: SimpleNamespace(items=[own_item]),
+        )
+        monkeypatch.setattr(
+            "brand.zhihu_api.topic_benchmark",
+            lambda q, count=10: {"avg_votes": 10.0},
+        )
 
-        monkeypatch.setattr("brand.run_brand", boom)
-        assert main(["--brand", "x"]) == 1
+        def boom(*_args, **_kwargs):
+            raise OSError("磁盘空间不足")
+
+        monkeypatch.setattr("brand.save_report", boom)
+        code = main(["--brand", "我的品牌"])
+        err = capsys.readouterr().err
+        assert code == 1
+        assert "本地读写失败" in err
