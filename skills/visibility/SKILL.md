@@ -26,6 +26,19 @@ Alternatives:
 - `/pulse audit --me` — audit the caller's own recent creations (`--index N` for one article, `--limit N` for how many to pull)
 - `/pulse audit --topic "<topic>"` — audit the top search results of a topic
 
+### `/pulse brand <brand>`
+
+Brand visibility on Zhihu. Input: a brand name (your name or product). Output: a visibility snapshot — search presence, share of voice, topic coverage gaps vs competitors, and engagement benchmark — with falsifiable P0/P1/P2 actions.
+
+Workflow:
+1. Run `python scripts/brand.py --brand "<brand>" [--topics 话题1,话题2] [--competitors 甲,乙]`
+2. Read the generated report from `data/snapshots/brand-*.md`
+3. Present the summary + report path; keep every recommendation's falsifiability check intact
+
+Notes:
+- "Mine" is detected by cross-referencing the caller's own contents (URL id first, author name fallback)
+- Competitors are matched by author name containing the competitor string (v1, manual list)
+
 ### `/pulse track <brand>`
 
 Monitor brand mentions across AI platforms. Input: a brand name or keyword. Output: a tracking report showing whether the brand is cited on DeepSeek, Kimi, Doubao, and Yuanbao, with sentiment and context for each.
