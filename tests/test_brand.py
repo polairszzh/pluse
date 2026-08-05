@@ -688,6 +688,12 @@ class TestMain:
         with pytest.raises(SystemExit):
             main([])
 
+    def test_empty_brand_rejected(self):
+        with pytest.raises(SystemExit):
+            main(["--brand", " "])
+        with pytest.raises(SystemExit):
+            main(["--brand", ""])
+
     def test_happy_path(self, tmp_path, monkeypatch, own_item):
         monkeypatch.setattr("brand.build_own_index", lambda: ({"1001"}, set(), True, []))
         monkeypatch.setattr(
@@ -721,3 +727,14 @@ class TestMain:
         err = capsys.readouterr().err
         assert code == 1
         assert "本地读写失败" in err
+
+    def test_valueerror_prints_traceback(self, monkeypatch, capsys):
+        def boom(*_args, **_kwargs):
+            raise ValueError("unexpected structure")
+
+        monkeypatch.setattr("brand.run_brand", boom)
+        code = main(["--brand", "我的品牌"])
+        err = capsys.readouterr().err
+        assert code == 1
+        assert "数据/配置异常" in err
+        assert "Traceback" in err

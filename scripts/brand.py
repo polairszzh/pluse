@@ -14,6 +14,7 @@ import argparse
 import json
 import re
 import sys
+import traceback
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -58,6 +59,14 @@ def _fmt_pct(pct: float) -> str:
 def _round_half_up(value: float) -> int:
     """常规四舍五入（避免 round() 的银行家舍入：2.5 -> 3 而非 2）"""
     return int(value + 0.5) if value >= 0 else int(value - 0.5)
+
+
+def _non_empty_brand(value: str) -> str:
+    """argparse 校验：品牌名去除首尾空白后不能为空"""
+    value = value.strip()
+    if not value:
+        raise argparse.ArgumentTypeError("品牌名不能为空")
+    return value
 
 
 # --------------------------------------------------------------------------
@@ -685,7 +694,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="pulse-brand",
         description="Pulse 品牌可见度 — 品牌在知乎搜索里的存在率/份额/覆盖缺口/互动基准",
     )
-    parser.add_argument("--brand", required=True, help="品牌名（个人名或产品名）")
+    parser.add_argument("--brand", required=True, type=_non_empty_brand, help="品牌名（个人名或产品名）")
     parser.add_argument("--topics", help="要分析的话题，逗号分隔")
     parser.add_argument("--competitors", help="竞品名单，逗号分隔（按作者名匹配）")
     parser.add_argument("--output", help="输出目录（默认 data/snapshots/）")
@@ -706,8 +715,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = run_brand(args.brand, topics, competitors)
         paths = save_report(result, competitors, topics, out_dir)
-    except (FileNotFoundError, ValueError) as exc:
+    except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        # 编程/结构类异常保留 traceback，避免被「静默吞掉」掩盖调试线索
+        print(f"数据/配置异常：{exc}", file=sys.stderr)
+        traceback.print_exc()
         return 1
     except (zhihu_api.ZhihuAPIError, requests.exceptions.RequestException) as exc:
         print(f"知乎 API 调用失败：{exc}", file=sys.stderr)
