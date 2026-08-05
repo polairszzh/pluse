@@ -11,6 +11,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 import zhihu_api
 from audit import (
+    CITABILITY_SUB_RULES,
+    QUALITY_SUB_RULES,
     audit_one,
     main,
     make_slug,
@@ -177,6 +179,13 @@ class TestDimensionCoverage:
         )
         _, _, recs = audit_one(weak)
         assert any("完善知乎作者主页" in r.action for r in recs)
+
+    def test_sub_rule_keys_match_scorer(self, item):
+        scores, _, _ = audit_one(item)
+        citability_subs = scores.sub_scores["AI 可引用性"].sub_scores
+        quality_subs = scores.sub_scores["内容质量"].sub_scores
+        assert set(CITABILITY_SUB_RULES) <= set(citability_subs)
+        assert set(QUALITY_SUB_RULES) <= set(quality_subs)
 
 
 class TestMain:

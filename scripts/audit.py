@@ -441,7 +441,7 @@ def save_report(
     """报告落盘：Markdown + JSON，返回生成的文件路径列表"""
     out_dir = Path(out_dir) if out_dir else SNAPSHOT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
+    ts = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S-%f")
     slug = make_slug(item.title)
     md_path = out_dir / f"audit-{slug}-{ts}.md"
     json_path = out_dir / f"audit-{slug}-{ts}.json"
@@ -549,6 +549,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except (FileNotFoundError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
+        return 1
+    except (zhihu_api.ZhihuAPIError, requests.exceptions.RequestException, OSError) as exc:
+        print(f"知乎 API 调用失败：{exc}", file=sys.stderr)
         return 1
 
 
