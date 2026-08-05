@@ -89,10 +89,21 @@ def build_own_index() -> tuple[set[str], set[str], list[str]]:
 
 def is_own(item: zhihu_api.ArticleItem, own_url_ids: set[str], own_authors: set[str]) -> bool:
     """URL 交叉引用优先，作者名兜底"""
-    article_id = zhihu_api.extract_article_id(item.url)
-    if article_id and article_id in own_url_ids:
-        return True
+    if item.url:
+        article_id = zhihu_api.extract_article_id(item.url)
+        if article_id and article_id in own_url_ids:
+            return True
     return bool(item.author_name and item.author_name in own_authors)
+
+
+def _own_key(item: zhihu_api.ArticleItem) -> str:
+    """去重键：文章 ID > URL > 作者|标题（URL 可能为空时兜底）"""
+    if item.url:
+        article_id = zhihu_api.extract_article_id(item.url)
+        if article_id:
+            return article_id
+        return item.url
+    return f"{item.author_name}|{item.title}"
 
 
 def is_competitor(item: zhihu_api.ArticleItem, competitors: list[str]) -> str | None:
@@ -315,7 +326,7 @@ def run_brand(
         brand_snapshot.append(_snapshot_item(item, idx, own, competitor))
         if own:
             own_in_brand.append(item)
-            own_seen.setdefault(zhihu_api.extract_article_id(item.url) or item.url, item)
+            own_seen.setdefault(_own_key(item), item)
             if own_first_rank is None:
                 own_first_rank = idx + 1
 
@@ -330,7 +341,7 @@ def run_brand(
         for item in items:
             if is_own(item, own_url_ids, own_authors):
                 own_count += 1
-                own_seen.setdefault(zhihu_api.extract_article_id(item.url) or item.url, item)
+                own_seen.setdefault(_own_key(item), item)
             comp = is_competitor(item, competitors)
             if comp:
                 comp_counts[comp] = comp_counts.get(comp, 0) + 1

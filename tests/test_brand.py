@@ -14,6 +14,7 @@ from audit import Recommendation
 from brand import (
     BrandResult,
     Dimension,
+    _own_key,
     build_own_index,
     build_recommendations,
     is_competitor,
@@ -90,6 +91,15 @@ class TestIdentify:
 
     def test_no_competitor(self, own_item):
         assert is_competitor(own_item, ["Kimi"]) is None
+
+    def test_is_own_without_url(self, own_item):
+        own_item.url = None
+        assert is_own(own_item, set(), {"我的名字"})
+        assert not is_own(own_item, {"1001"}, set())
+
+    def test_own_key_without_url(self, own_item):
+        own_item.url = None
+        assert _own_key(own_item) == "我的名字|我的品牌实战总结"
 
 
 class TestScores:
@@ -202,6 +212,24 @@ class TestRunBrand:
         detail = result.dimensions["互动基准"].detail
         assert "平均赞同（50）" in detail
         assert "平均赞同（65）" not in detail
+
+    def test_run_brand_with_missing_url(self, monkeypatch):
+        item = ArticleItem(
+            title="无链接文章", url=None, content_type="Article", content_text="x",
+            vote_count=5, comment_count=0, favorite_count=0, author_name="我的名字",
+            author_badge="", updated_at=int(time.time()),
+        )
+        monkeypatch.setattr("brand.build_own_index", lambda: (set(), {"我的名字"}, []))
+        monkeypatch.setattr(
+            "brand.zhihu_api.search",
+            lambda q, count=10: SimpleNamespace(items=[item]),
+        )
+        monkeypatch.setattr(
+            "brand.zhihu_api.topic_benchmark",
+            lambda q, count=10: {"avg_votes": 10.0},
+        )
+        result = run_brand("我的品牌")
+        assert result.dimensions["搜索存在率"].score == 100
 
 
 class TestBuildOwnIndex:

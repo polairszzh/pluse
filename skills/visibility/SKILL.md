@@ -26,7 +26,7 @@ Alternatives:
 - `/pulse audit --me` — audit the caller's own recent creations (`--index N` for one article, `--limit N` for how many to pull)
 - `/pulse audit --topic "<topic>"` — audit the top search results of a topic
 
-### `/pulse brand <brand>`
+### `/pulse brand --brand <brand>`
 
 Brand visibility on Zhihu. Input: a brand name (your name or product). Output: a visibility snapshot — search presence, share of voice, topic coverage gaps vs competitors, and engagement benchmark — with falsifiable P0/P1/P2 actions.
 
