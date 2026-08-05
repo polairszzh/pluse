@@ -174,7 +174,13 @@ def combine(dimensions: dict[str, Dimension]) -> tuple[int, str]:
 
 def _push(recs: list[Recommendation], priority: str, dimension: str, action: str,
           impact: str, verify: str) -> None:
-    recs.append(Recommendation(priority, dimension, action, impact, verify))
+    recs.append(Recommendation(
+        priority=priority,
+        dimension=dimension,
+        action=action,
+        expected_impact=impact,
+        falsifiability_check=verify,
+    ))
 
 
 def build_recommendations(
@@ -290,18 +296,19 @@ def run_brand(
     brand_snapshot: list[dict] = []
     own_in_brand: list[zhihu_api.ArticleItem] = []
     own_first_rank: int | None = None
+    own_seen: dict[str, zhihu_api.ArticleItem] = {}
     for idx, item in enumerate(brand_items):
         own = is_own(item, own_url_ids, own_authors)
         competitor = is_competitor(item, competitors)
         brand_snapshot.append(_snapshot_item(item, idx, own, competitor))
         if own:
             own_in_brand.append(item)
+            own_seen.setdefault(zhihu_api.extract_article_id(item.url) or item.url, item)
             if own_first_rank is None:
                 own_first_rank = idx + 1
 
     # 2) 话题覆盖 + 竞品差距
     topic_coverage: list[dict] = []
-    own_all: list[zhihu_api.ArticleItem] = list(own_in_brand)
     covered_topics = 0
     gaps: list[str] = []
     for topic in topics:
@@ -311,7 +318,7 @@ def run_brand(
         for item in items:
             if is_own(item, own_url_ids, own_authors):
                 own_count += 1
-                own_all.append(item)
+                own_seen.setdefault(zhihu_api.extract_article_id(item.url) or item.url, item)
             comp = is_competitor(item, competitors)
             if comp:
                 comp_counts[comp] = comp_counts.get(comp, 0) + 1
@@ -333,6 +340,9 @@ def run_brand(
         benchmark_avg_votes = benchmark.get("avg_votes", 0) or 0.0
     except _FALLBACK_ERRORS:
         notes.append("品牌词基准拉取失败，互动维度按最低基准（5）计算")
+
+    # 同一文章可能在品牌词与多个话题搜索里重复出现，按 URL/文章 ID 去重后再算互动
+    own_all = list(own_seen.values())
 
     # 4) 维度与综合
     dimensions = {
@@ -409,6 +419,7 @@ def render_markdown(result: BrandResult, competitors: list[str], topics: list[st
     lines.append("")
     if not result.topic_coverage:
         lines.append("未指定话题（加 --topics 做覆盖分析）。")
+        lines.append("")
     for tc in result.topic_coverage:
         comp_txt = "、".join(f"{k} {v} 条" for k, v in tc["competitors"].items()) or "-"
         lines.append(f"### {tc['topic']}")

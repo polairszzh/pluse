@@ -10,13 +10,16 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 import zhihu_api
+from audit import Recommendation
 from brand import (
+    BrandResult,
     build_own_index,
     build_recommendations,
     is_competitor,
     is_own,
     main,
     re_slug,
+    render_markdown,
     run_brand,
     save_report,
     score_coverage,
@@ -154,6 +157,36 @@ class TestRunBrand:
         assert any(r.priority == "P0" for r in result.recommendations)
         assert result.notes
 
+    def test_own_deduplicated_across_searches(self, monkeypatch):
+        own_a = ArticleItem(
+            title="重复文章", url="https://zhuanlan.zhihu.com/p/1001",
+            content_type="Article", content_text="x", vote_count=50,
+            comment_count=5, favorite_count=3, author_name="我的名字",
+            author_badge="", updated_at=int(time.time()),
+        )
+        own_b = ArticleItem(
+            title="重复文章", url="https://zhuanlan.zhihu.com/p/1001",
+            content_type="Article", content_text="x", vote_count=80,
+            comment_count=8, favorite_count=4, author_name="我的名字",
+            author_badge="", updated_at=int(time.time()),
+        )
+        monkeypatch.setattr("brand.build_own_index", lambda: ({"1001"}, {"我的名字"}, []))
+
+        def fake_search(query, count=10):
+            if query == "我的品牌":
+                return SimpleNamespace(items=[own_a])
+            return SimpleNamespace(items=[own_b])
+
+        monkeypatch.setattr("brand.zhihu_api.search", fake_search)
+        monkeypatch.setattr(
+            "brand.zhihu_api.topic_benchmark",
+            lambda q, count=10: {"avg_votes": 20.0},
+        )
+        result = run_brand("我的品牌", topics=["AI工具"], competitors=[])
+        detail = result.dimensions["互动基准"].detail
+        assert "平均赞同（50）" in detail
+        assert "平均赞同（65）" not in detail
+
 
 class TestBuildOwnIndex:
     def test_returns_sets(self, monkeypatch, own_item):
@@ -190,6 +223,10 @@ class TestRecommendations:
         )
         assert any("--topics" in r.action for r in recs)
 
+    def test_recommendation_fields_match_audit(self):
+        fields = set(Recommendation.__dataclass_fields__)
+        assert {"priority", "dimension", "action", "expected_impact", "falsifiability_check"} <= fields
+
 
 class TestReport:
     def test_save_report_writes_files(self, tmp_path, monkeypatch, own_item):
@@ -209,6 +246,20 @@ class TestReport:
         data = json.loads(paths[1].read_text(encoding="utf-8"))
         assert data["brand"] == "我的品牌"
         assert data["overall"] == result.overall
+
+    def test_markdown_no_topics_has_blank_line(self):
+        dims = {
+            "搜索存在率": score_presence(1),
+            "份额占比": score_share(1, 10),
+            "话题覆盖": score_coverage(0, 0),
+            "互动基准": score_engagement([], 20),
+        }
+        result = BrandResult(
+            brand="x", overall=60, grade="C", dimensions=dims,
+            brand_search=[], topic_coverage=[], recommendations=[],
+        )
+        md = render_markdown(result, [], [])
+        assert "未指定话题（加 --topics 做覆盖分析）。\n\n## 行动清单" in md
 
 
 class TestMain:
