@@ -36,6 +36,7 @@ bash pluse/install.sh
 
 ```bash
 /pulse audit https://zhuanlan.zhihu.com/p/123456
+/pulse brand --brand <品牌名> --topics 话题1,话题2 --competitors 竞品A,竞品B
 /pulse track <品牌名>
 /pulse adapt <主题> --source article.md --platforms zhihu,xiaohongshu,ai
 /pulse compare <品牌A> <品牌B>
@@ -48,6 +49,7 @@ bash pluse/install.sh
 | `/pulse setup` | 安装 Python 依赖，初始化数据目录 |
 | `/pulse doctor` | 检查运行环境（不做任何修改） |
 | `/pulse audit <url>` | 单篇文章深度分析：内容质量、AI 可引用性、关键词覆盖、竞品对比 |
+| `/pulse brand --brand <品牌名>` | 品牌在知乎的整体可见度：搜索存在率、份额占比、话题覆盖缺口、互动基准 |
 | `/pulse track <品牌>` | 监控品牌在 AI 平台上的引用情况 |
 | `/pulse adapt <主题>` | 生成多平台适配内容：知乎长文、小红书笔记、AI 优化版 |
 | `/pulse compare <A> <B>` | 品牌可见度横向对比 |
@@ -63,7 +65,7 @@ bash pluse/install.sh
 
 **多平台内容适配（Phase 3 · 规划中）** — 一篇原稿 → 三个版本。知乎：2000-4000 字，H2/H3 层级。小红书：300-800 字，短句 emoji。AI 优化版：130-170 字自包含段落，问答结构。
 
-**竞品差距分析（Phase 1 · 开发中，/pulse brand）** — 不只比分数。Pulse 将指出竞品覆盖了哪些话题而你没有——让你知道下一篇该写什么。
+**竞品差距分析（Phase 1 · 已上线，/pulse brand）** — 不只比分数。Pulse 指出竞品覆盖了哪些话题而你没有——让你知道下一篇该写什么。
 
 **本地仪表盘（Phase 2 · 规划中）** — `localhost:8766`。趋势折线图、雷达图、行动队列。所有数据留在本地。
 
@@ -96,7 +98,7 @@ bash pluse/install.sh
            │
 ┌──────────▼──────────────┐
 │  scripts/                │  ← 执行层
-│  audit.py / zhihu_api.py / scorer.py
+│  audit.py / brand.py / zhihu_api.py / scorer.py
 └──────────────────────────┘
 ```
 
