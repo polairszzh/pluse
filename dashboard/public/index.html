@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pulse 仪表盘 · AI 可见度</title>
+  <link rel="stylesheet" href="/style.css">
+  <!-- Chart.js 已内嵌到本地 vendor，仪表盘离线可用 -->
+  <script src="/vendor/chart.umd.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <h1>Pulse 仪表盘</h1>
+    <div class="controls">
+      <select id="query-select" aria-label="监测对象"></select>
+      <button id="refresh-btn" type="button">刷新</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="error-banner" class="error-banner" hidden></div>
+    <section id="overview" class="cards"></section>
+
+    <section class="panel">
+      <h2>被提及趋势</h2>
+      <div class="chart-wrap">
+        <canvas id="trend-chart"></canvas>
+      </div>
+      <p class="hint">纵轴 1 = 被提及，0 = 未被提及，空点 = 该次探测无有效数据（未配置密钥/失败）。</p>
+    </section>
+
+    <section class="panel">
+      <h2>最近一次快照</h2>
+      <table id="latest-table">
+        <thead>
+          <tr><th>平台</th><th>状态</th><th>被提及</th><th>情感</th><th>上下文 / 说明</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <p class="hint">Kimi / 豆包 / 元宝 各自用 Bing 对同一查询词做搜索引擎存在信号推断（结果通常相同），不等同于平台真实引用。</p>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
