@@ -138,6 +138,9 @@ class TestDetectMine:
     def test_surrounding_spaces_stripped(self):
         assert _detect_mine("参考我的昵称 写的文章", [" 我的昵称 "]) == ["我的昵称"]
 
+    def test_deduplicates_matched_ids(self):
+        assert _detect_mine("文本 A 和 B", ["A", "A", "B"]) == ["A", "B"]
+
 
 class TestDeepSeekProbe:
     def test_load_key_strips_quotes(self, tmp_path, monkeypatch):

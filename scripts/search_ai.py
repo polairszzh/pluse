@@ -80,7 +80,8 @@ def _detect_mine(text: str, mine_ids: list[str]) -> list[str]:
         return []
     lower_text = str(text or "").lower()
     stripped = [mid.strip() for mid in mine_ids if mid.strip()]
-    return [mid for mid in stripped if mid.lower() in lower_text]
+    matched = [mid for mid in stripped if mid.lower() in lower_text]
+    return list(dict.fromkeys(matched))
 
 
 def _non_empty_query(value: str) -> str:
@@ -370,7 +371,7 @@ def probe_search_inference(
         )
 
     text_blobs = [f"{item['title']} {item['snippet']}" for item in results]
-    mine_blobs = [f"{item['title']} {item['url']} {item['snippet']}" for item in results]
+    mine_blobs = [f"{item['title']} {item.get('url', '')} {item['snippet']}" for item in results]
 
     # cited 只看标题+摘要：URL 常含关键词（如 github.com/openai/codex），拼入会误判「被提及」
     cited = False
@@ -797,6 +798,7 @@ def render_markdown(
     lines.append("- Kimi / 豆包 / 元宝 各自用 Bing 对同一查询词做搜索推断（结果通常相同），是检索库存在信号，不代表各平台各自的真实引用。")
     lines.append("- 传 --mine <你的内容标识>（URL/标题/作者名，可重复传多次，一次一个）时，额外判断 AI 回答/Bing 结果里是否出现你的内容；"
                  "URL 在搜索推断里更有效，标题/作者名在 AI 回答里更常见。")
+    lines.append("- 行动清单里的重跑命令为 POSIX shell 风格；Windows PowerShell 中单引号内容同样按字面处理，可直接复制使用。")
     lines.append("- 每次运行写入 data/monitor.db，趋势来自同品牌的历史快照对比。")
     lines.append("")
     return "\n".join(lines)
