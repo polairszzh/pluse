@@ -67,7 +67,7 @@ async function loadOverview(query) {
   }
   const deltaCls = data.cited_delta > 0 ? "up" : data.cited_delta < 0 ? "down" : "flat";
   const deltaTxt = data.cited_delta == null
-    ? "首次快照"
+    ? (data.has_previous ? "无重叠有效平台" : "首次快照")
     : data.cited_delta > 0 ? `较上次 +${data.cited_delta}` : `较上次 ${data.cited_delta}`;
 
   const cards = [

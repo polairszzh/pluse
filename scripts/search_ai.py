@@ -46,11 +46,17 @@ POSITIVE_WORDS = (
     "好评", "值得", "高效", "出色", "首选",
 )
 NEGATIVE_WORDS = (
-    "不推荐", "不太推荐", "失望", "投诉", "诈骗", "骗局", "糟糕", "劣质",
-    "后悔", "差评", "坑人", "翻车", "踩坑",
+    "不推荐", "不太推荐", "谈不上推荐", "说不上推荐", "算不上推荐",
+    "失望", "投诉", "诈骗", "骗局", "糟糕", "劣质", "后悔", "差评", "坑人", "翻车", "踩坑",
 )
 
 PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2}
+
+# 否定前缀：正面词被这些前缀修饰时不计分；负面词只用直接否定集合（避免「并不」反向消掉负面词）
+_NEG_1CHAR = ("不", "没", "无", "未")
+_NEG_2CHAR_POSITIVE = ("不太", "并不", "并非", "没有", "并无")
+_NEG_2CHAR_NEGATIVE = ("没有", "并无")
+_NEG_3CHAR = ("谈不上", "说不上", "算不上")
 
 
 def _md_cell(text: object) -> str:
@@ -134,28 +140,44 @@ def _load_key() -> str | None:
 def classify_sentiment(text: str) -> str:
     """关键词启发式情感分类：正面词命中 >= 负面词 -> positive；否则 negative；都没有 -> neutral
 
-    正面词若紧邻否定前缀（不/没/无/未，或 不太/并不/并非/谈不上）则视为被否定，
-    不计数（避免「不推荐」「不太推荐」被误判为正面）。
+    正面词/负面词若紧邻否定前缀则视为被否定、不计数：
+      - 正面词：不/没/无/未、不太/并不/并非/没有/并无、谈不上/说不上/算不上
+      - 负面词：不/没/无/未、没有/并无、谈不上/说不上/算不上
+    （「并不」「并非」会加强负面语义，不能反向消掉「不推荐」这类负面词。）
     """
-    pos = 0
-    for w in POSITIVE_WORDS:
-        start = 0
-        while True:
-            idx = text.find(w, start)
-            if idx < 0:
-                break
-            before1 = text[idx - 1] if idx > 0 else ""
-            before2 = text[idx - 2:idx] if idx > 1 else ""
-            negated = before1 in ("不", "没", "无", "未") or before2 in ("不太", "并不", "并非", "谈不上")
-            if not negated:
-                pos += 1
-            start = idx + len(w)
-    neg = sum(1 for w in NEGATIVE_WORDS if w in text)
+    pos = _count_mentions(text, POSITIVE_WORDS, _NEG_2CHAR_POSITIVE)
+    neg = _count_mentions(text, NEGATIVE_WORDS, _NEG_2CHAR_NEGATIVE)
     if pos and pos >= neg:
         return "positive"
     if neg and neg > pos:
         return "negative"
     return "neutral"
+
+
+def _is_negated(text: str, idx: int, two_char_prefixes: tuple[str, ...]) -> bool:
+    before1 = text[idx - 1] if idx > 0 else ""
+    before2 = text[idx - 2:idx] if idx > 1 else ""
+    before3 = text[idx - 3:idx] if idx > 2 else ""
+    return (
+        before1 in _NEG_1CHAR
+        or before2 in two_char_prefixes
+        or before3 in _NEG_3CHAR
+    )
+
+
+def _count_mentions(text: str, words: tuple[str, ...], two_char_prefixes: tuple[str, ...]) -> int:
+    """统计关键词出现次数，紧邻否定前缀的命中不计入"""
+    count = 0
+    for w in words:
+        start = 0
+        while True:
+            idx = text.find(w, start)
+            if idx < 0:
+                break
+            if not _is_negated(text, idx, two_char_prefixes):
+                count += 1
+            start = idx + len(w)
+    return count
 
 
 def probe_deepseek(query: str, timeout: int = 60, session: requests.Session | None = None) -> ProbeResult:
@@ -205,7 +227,16 @@ def probe_deepseek(query: str, timeout: int = 60, session: requests.Session | No
                 error="unexpected_message_shape",
                 meta={"note": "message 应为对象（含 content），保留原始响应便于排查"},
             )
-        answer = message.get("content") or ""
+        content = message.get("content")
+        if content is not None and not isinstance(content, str):
+            return ProbeResult(
+                query=query, platform="deepseek", status="error", cited=None,
+                sentiment=None, context="DeepSeek 响应结构异常（content 非字符串）",
+                source="api", degraded=True,
+                error="unexpected_content_type",
+                meta={"note": "content 应为字符串或空，保留原始响应便于排查"},
+            )
+        answer = content or ""
     except requests.exceptions.RequestException as exc:
         return ProbeResult(
             query=query, platform="deepseek", status="error", cited=None,
@@ -689,7 +720,7 @@ def _parse_platforms(raw: str | None) -> list[str]:
         raise argparse.ArgumentTypeError(
             f"未知平台: {'、'.join(bad)}（可用: {'、'.join(PLATFORMS)}）"
         )
-    return parts
+    return list(dict.fromkeys(parts))
 
 
 def build_parser() -> argparse.ArgumentParser:

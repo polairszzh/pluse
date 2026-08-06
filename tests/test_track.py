@@ -92,6 +92,14 @@ class TestSentiment:
         assert classify_sentiment("不太推荐") == "negative"
         assert classify_sentiment("并不推荐") == "negative"
 
+    def test_three_char_negation(self):
+        assert classify_sentiment("谈不上推荐") == "negative"
+        assert classify_sentiment("说不上推荐") == "negative"
+
+    def test_negated_negative_word_is_not_negative(self):
+        assert classify_sentiment("没有投诉") == "neutral"
+        assert classify_sentiment("并无差评") == "neutral"
+
     def test_conflict_positive_wins(self):
         assert classify_sentiment("整体好评，但有个别差评") == "positive"
 
@@ -185,6 +193,14 @@ class TestDeepSeekProbe:
             monkeypatch.setattr(requests, "post", fake_post)
             result = probe_deepseek("测试品牌")
             assert result.status == "error"
+
+    def test_content_not_string(self, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
+        payload = {"choices": [{"message": {"content": [1, 2]}}]}
+        monkeypatch.setattr(requests, "post", lambda *a, **kw: FakeResponse(data=payload))
+        result = probe_deepseek("测试品牌")
+        assert result.status == "error"
+        assert "unexpected_content_type" in result.error
 
 
 class TestSearchInference:
@@ -394,6 +410,7 @@ class TestCLI:
     def test_platform_defaults(self):
         assert _parse_platforms(None) == ["deepseek", "kimi", "doubao", "yuanbao"]
         assert _parse_platforms(" deepseek, Kimi ") == ["deepseek", "kimi"]
+        assert _parse_platforms("deepseek,kimi,deepseek") == ["deepseek", "kimi"]
 
 
 class TestMisc:

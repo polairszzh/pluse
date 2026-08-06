@@ -139,6 +139,7 @@ function apiOverview(query) {
     return {
       query,
       last_run: fmtRunAt(lastRun),
+      has_previous: runs.length > 1,
       platforms: rows.length,
       ok_platforms: okRows.length,
       cited,
