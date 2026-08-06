@@ -907,16 +907,16 @@ def main(argv: list[str] | None = None) -> int:
     print(f"监测对象：{args.query}")
     for r in results:
         label = PLATFORMS[r.platform]["label"]
+        mine = ""
+        if r.mine_ids:
+            mine = " · 我的内容 " + {True: "是", False: "否", None: "—"}.get(r.mine_cited, "—")
         if r.status == "ok":
             cited = "是" if r.cited else "否"
             extra = f" · 情感 {SENTIMENT_LABEL.get(r.sentiment or '', '—')}" if r.sentiment else ""
             degraded = " · Bing 推断" if r.degraded else ""
-            mine = ""
-            if r.mine_ids:
-                mine = " · 我的内容 " + {True: "是", False: "否", None: "—"}.get(r.mine_cited, "—")
             print(f"  {label}：{STATUS_LABEL[r.status]} · 被提及 {cited}{extra}{degraded}{mine}")
         else:
-            print(f"  {label}：{STATUS_LABEL.get(r.status, r.status)} · {_md_cell(r.context)}")
+            print(f"  {label}：{STATUS_LABEL.get(r.status, r.status)} · {_md_cell(r.context)}{mine}")
     print(f"趋势对比：{trend['total_runs']} 次快照 · {len(trend['changes'])} 处引用状态变化")
     print(f"行动建议：{len(recs)} 条（P0={sum(1 for r in recs if r.priority == 'P0')}）")
     for p in paths:
