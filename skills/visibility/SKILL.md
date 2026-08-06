@@ -45,7 +45,7 @@ Monitor brand mentions across AI platforms. Input: a brand name or keyword. Outp
 
 Workflow:
 1. Run `python scripts/search_ai.py --query <topic>` (optionally `--platforms deepseek,kimi` to limit)
-2. To check whether **your content** is cited (not just the topic mentioned), add `--mine <URL或标题或作者名>` (comma-separated for multiple): `python scripts/search_ai.py --query "codex 如何安装" --mine "https://zhuanlan.zhihu.com/p/xxx,我的昵称"`
+2. To check whether **your content** is cited (not just the topic mentioned), add `--mine <URL或标题或作者名>` (repeatable, one identifier per flag): `python scripts/search_ai.py --query "codex 如何安装" --mine "https://zhuanlan.zhihu.com/p/xxx" --mine "我的昵称"`
 3. Results are stored in `data/monitor.db` (SQLite) automatically
 4. Read the generated report from `data/snapshots/track-*.md` (JSON snapshot sits next to it); the 本次快照 table gains a 我的内容 column when `--mine` is passed
 5. Compare the 趋势对比 section against previous snapshots to show trends

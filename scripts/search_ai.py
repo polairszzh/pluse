@@ -546,6 +546,7 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
                 "sentiment": r["sentiment"],
                 "mine_cited": bool(r["mine_cited"]) if r["mine_cited"] is not None else None,
                 "mine_checked": bool(json.loads(r["mine_ids"])) if r["mine_ids"] else False,
+                "mine_ids": json.loads(r["mine_ids"]) if r["mine_ids"] else [],
             }
             for r in ordered
         ]
@@ -738,15 +739,22 @@ def render_markdown(
                 for p in points
             )
             line = f"- **{label}**（{len(points)} 次）：{states}"
-            # 只要历史里有任何一次检查过 mine，就展示完整序列：
-            # 是/否/未知（检查过但无结论），未检查的运行显式标「未检查」
+            # 只要历史里有任何一次检查过 mine，就按 mine_ids 分组展示：
+            # 不同次用不同标识时不会显示成假回归；未检查的运行显式标次数
             if any(p.get("mine_checked") for p in points):
-                mine_txt = " → ".join(
-                    "是" if p["mine_cited"] else "否" if p["mine_cited"] is False
-                    else "未知" if p.get("mine_checked") else "未检查"
-                    for p in points
-                )
-                line += f"；我的内容：{mine_txt}"
+                groups: dict[tuple, list] = {}
+                for p in points:
+                    key = tuple(sorted(p.get("mine_ids") or []))
+                    groups.setdefault(key, []).append(p)
+                for key, group in groups.items():
+                    states = " → ".join(
+                        "是" if p["mine_cited"] else "否" if p["mine_cited"] is False else "未知"
+                        for p in group
+                    )
+                    if key:
+                        line += f"；我的内容({'、'.join(key)})：{states}"
+                    else:
+                        line += f"；未检查 {len(group)} 次"
             lines.append(line)
         if trend["changes"]:
             lines.append("")
@@ -784,7 +792,7 @@ def render_markdown(
     lines.append("- DeepSeek：真实 API 探测，被提及 = 回答正文出现品牌名（精确匹配），原始回答可在 JSON 快照的 meta.answer 复核。")
     lines.append("- Kimi / 豆包 / 元宝：无公开 API，使用 Bing 搜索结果推断检索库中的存在信号，**不等同于该平台真实引用**。")
     lines.append("- Kimi / 豆包 / 元宝 各自用 Bing 对同一查询词做搜索推断（结果通常相同），是检索库存在信号，不代表各平台各自的真实引用。")
-    lines.append("- 传 --mine <你的内容标识>（URL/标题/作者名，逗号分隔可多个）时，额外判断 AI 回答/Bing 结果里是否出现你的内容；"
+    lines.append("- 传 --mine <你的内容标识>（URL/标题/作者名，可重复传多次，一次一个）时，额外判断 AI 回答/Bing 结果里是否出现你的内容；"
                  "URL 在搜索推断里更有效，标题/作者名在 AI 回答里更常见。")
     lines.append("- 每次运行写入 data/monitor.db，趋势来自同品牌的历史快照对比。")
     lines.append("")
@@ -847,12 +855,6 @@ def _parse_platforms(raw: str | None) -> list[str]:
     return list(dict.fromkeys(parts))
 
 
-def _parse_list(raw: str | None) -> list[str]:
-    if not raw:
-        return []
-    return [s.strip() for s in raw.split(",") if s.strip()]
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pulse-track",
@@ -862,7 +864,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--query", required=True, type=_non_empty_query, help="品牌名或关键词")
     parser.add_argument(
         "--mine",
-        help="你的内容标识（URL/标题/作者名），逗号分隔可多个；传了才会额外判断 AI 回答/搜索结果里是否出现你的内容",
+        action="append",
+        default=[],
+        help="你的内容标识（URL/标题/作者名），可重复传多次（--mine <URL> --mine <昵称>），一次一个；"
+             "传了才会额外判断 AI 回答/搜索结果里是否出现你的内容",
     )
     parser.add_argument(
         "--platforms",
@@ -877,7 +882,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     platforms = args.platforms or list(PLATFORMS)
-    mine_ids = _parse_list(args.mine)
+    mine_ids = [m.strip() for m in args.mine if m.strip()]
     db_path = Path(args.db) if args.db else DEFAULT_DB
     out_dir = Path(args.output) if args.output else None
 

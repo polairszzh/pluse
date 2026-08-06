@@ -50,7 +50,7 @@ bash pluse/install.sh
 | `/pulse doctor` | 检查运行环境（不做任何修改） |
 | `/pulse audit <url>` | 单篇文章深度分析：内容质量、AI 可引用性、关键词覆盖、竞品对比 |
 | `/pulse brand --brand <品牌名>` | 品牌在知乎的整体可见度：搜索存在率、份额占比、话题覆盖缺口、互动基准 |
-| `/pulse track <品牌/话题>` | 监控品牌/话题在 AI 平台上的被提及情况；`--mine <URL/标题/作者名>` 额外判断你的内容是否被引用 |
+| `/pulse track <品牌/话题>` | 监控品牌/话题在 AI 平台上的被提及情况；`--mine <URL/标题/作者名>`（可重复）额外判断你的内容是否被引用 |
 | `/pulse adapt <主题>` | 生成多平台适配内容：知乎长文、小红书笔记、AI 优化版 |
 | `/pulse compare <A> <B>` | 品牌可见度横向对比 |
 | `/pulse dashboard` | 启动本地 Web 仪表盘（端口 8766） |
