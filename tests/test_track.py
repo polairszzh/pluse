@@ -777,6 +777,19 @@ class TestCLI:
         history = load_history("codex 安装", db_path=db)
         assert json.loads(history[0]["mine_ids"]) == ["https://a.com/1,2", "我的昵称"]
 
+    def test_main_dedupes_mine(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: None)
+        db = tmp_path / "monitor.db"
+        out = tmp_path / "snap"
+        code = main([
+            "--query", "codex", "--platforms", "deepseek",
+            "--mine", "https://a.com/1", "--mine", "https://a.com/1",
+            "--db", str(db), "--output", str(out),
+        ])
+        assert code == 0
+        history = load_history("codex", db_path=db)
+        assert json.loads(history[0]["mine_ids"]) == ["https://a.com/1"]
+
     def test_main_prints_mine_for_no_key(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr("search_ai._load_key", lambda: None)
         db = tmp_path / "monitor.db"

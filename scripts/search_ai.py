@@ -958,7 +958,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     platforms = args.platforms or list(PLATFORMS)
-    mine_ids = [m.strip() for m in args.mine if m.strip()]
+    mine_ids = list(dict.fromkeys(m.strip() for m in args.mine if m.strip()))
     db_path = Path(args.db) if args.db else DEFAULT_DB
     out_dir = Path(args.output) if args.output else None
 
