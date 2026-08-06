@@ -1,4 +1,16 @@
 const state = { chart: null };
+const errorBanner = document.getElementById("error-banner");
+
+function showError(message) {
+  if (!message) return;
+  errorBanner.textContent = message;
+  errorBanner.hidden = false;
+}
+
+function clearError() {
+  errorBanner.hidden = true;
+  errorBanner.textContent = "";
+}
 
 async function fetchJSON(url) {
   const res = await fetch(url);
@@ -27,7 +39,15 @@ function citedText(cited) {
 }
 
 async function loadQueries(preferred) {
-  const { queries } = await fetchJSON("/api/queries");
+  clearError();
+  let queries;
+  try {
+    ({ queries } = await fetchJSON("/api/queries"));
+  } catch (err) {
+    showError(`加载品牌列表失败：${err.message}`);
+    console.error(err);
+    return;
+  }
   const select = document.getElementById("query-select");
   select.innerHTML = "";
   if (!queries.length) {
@@ -152,9 +172,11 @@ async function loadLatest(query) {
 }
 
 async function loadAll(query) {
+  clearError();
   try {
     await Promise.all([loadOverview(query), loadTrends(query), loadLatest(query)]);
   } catch (err) {
+    showError(`加载数据失败：${err.message}`);
     console.error(err);
   }
 }
@@ -165,4 +187,7 @@ document.getElementById("refresh-btn").addEventListener("click", () => {
   loadQueries(select.value);
 });
 
-loadQueries().catch((err) => console.error(err));
+loadQueries().catch((err) => {
+  showError(`初始化失败：${err.message}`);
+  console.error(err);
+});
