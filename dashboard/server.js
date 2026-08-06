@@ -121,17 +121,20 @@ function apiOverview(query) {
     const cited = okRows.filter((r) => r.cited === 1).length;
     const negative = okRows.filter((r) => r.sentiment === "negative").length;
 
-    // 变化量只在两次运行都覆盖的平台之间对比（口径一致才可比较）
-    const currentPlatforms = new Set(rows.map((r) => r.platform));
-    const prevPlatforms = new Set(prevRows.map((r) => r.platform));
-    const commonPlatforms = [...currentPlatforms].filter((p) => prevPlatforms.has(p));
+    // 变化量只在两次运行均有效（status=ok）的平台之间对比：
+    // no_key/error 是「未知」而非「未被提及」，混入会把未知误算成引用下降/上升
+    const okCurrentPlatforms = new Set(okRows.map((r) => r.platform));
+    const okPrevPlatforms = new Set(
+      prevRows.filter((r) => r.status === "ok").map((r) => r.platform)
+    );
+    const comparablePlatforms = [...okCurrentPlatforms].filter((p) => okPrevPlatforms.has(p));
     const prevCited = prevRows.filter(
-      (r) => commonPlatforms.includes(r.platform) && r.status === "ok" && r.cited === 1
+      (r) => comparablePlatforms.includes(r.platform) && r.status === "ok" && r.cited === 1
     ).length;
     const citedSame = okRows.filter(
-      (r) => commonPlatforms.includes(r.platform) && r.cited === 1
+      (r) => comparablePlatforms.includes(r.platform) && r.cited === 1
     ).length;
-    const citedDelta = rows.length === 0 || !commonPlatforms.length ? null : citedSame - prevCited;
+    const citedDelta = !comparablePlatforms.length ? null : citedSame - prevCited;
 
     return {
       query,
