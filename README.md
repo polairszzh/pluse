@@ -57,7 +57,7 @@ bash pluse/install.sh
 
 ## 功能亮点
 
-**AI 搜索引用监控（Phase 2 · 规划中）** — 在 DeepSeek、Kimi、豆包、元宝上用核心关键词提问，追踪品牌是否被引用。每次记录：是否被引用、具体上下文、情感倾向、替代你被提到的是谁。
+**AI 搜索引用监控（Phase 2 · 已上线 MVP）** — 在 DeepSeek、Kimi、豆包、元宝上追踪品牌是否被提及。DeepSeek 用真实 API 探测（回答正文是否出现品牌名，含情感倾向与上下文）；Kimi/豆包/元宝无公开 API，用搜索引擎存在信号推断（报告中如实标注，不等同于真实引用）。每次运行写入 `data/monitor.db`，同品牌重跑自动生成趋势对比。
 
 **AI 可引用性评分（Phase 1 · 已上线：整篇粒度）** — AI 偏好引用 130-170 字的自包含内容块。基于 API 摘要对整篇打分（段落信息量、问答结构、引用密度、实体覆盖、数据、时效）；逐段「精确指出哪几段要改」依赖全文抓取，全文能力排在 Phase 3（多平台适配阶段），届时升级为逐段分析。
 
@@ -67,7 +67,7 @@ bash pluse/install.sh
 
 **竞品差距分析（Phase 1 · 已上线，/pulse brand）** — 不只比分数。Pulse 指出竞品覆盖了哪些话题而你没有——让你知道下一篇该写什么。
 
-**本地仪表盘（Phase 2 · 规划中）** — `localhost:8766`。趋势折线图、雷达图、行动队列。所有数据留在本地。
+**本地仪表盘（Phase 2 · 已上线 MVP）** — `node dashboard/server.js` 启动，`localhost:8766`。概览卡片、各平台被提及趋势折线图、最近快照表。所有数据留在本地。
 
 ## 与企业 GEO 工具对比
 
@@ -98,7 +98,7 @@ bash pluse/install.sh
            │
 ┌──────────▼──────────────┐
 │  scripts/                │  ← 执行层
-│  audit.py / brand.py / zhihu_api.py / scorer.py
+│  audit.py / brand.py / search_ai.py / zhihu_api.py / scorer.py
 └──────────────────────────┘
 ```
 
@@ -108,7 +108,7 @@ bash pluse/install.sh
 
 **知乎数据获取** — 使用知乎开放平台 API（搜索、用户内容、用户关注）。API 返回摘要而非全文，Phase 1 的 AI 可引用性评分为整篇粒度（非逐段）。每日配额约 1000-5000 次，个人使用完全够。知乎页面有严格的反爬机制，全文抓取计划在 Phase 3 通过用户登录态 + 浏览器渲染实现。
 
-**AI 平台覆盖** — DeepSeek 有公开 API。Kimi 和豆包目前没有，Pulse 使用搜索引擎推断作为降级方案。
+**AI 平台覆盖** — DeepSeek 有公开 API，直接探测真实回答。Kimi、豆包、元宝目前没有公开 API，Pulse 用 Bing 搜索结果推断其检索库中的存在信号（已实现，报告中如实标注为推断而非真实引用）。
 
 **小红书和抖音** — 几乎没有公开 API，完整支持计划在 Phase 3 实现（需要 Playwright 浏览器渲染）。
 
@@ -117,7 +117,7 @@ bash pluse/install.sh
 | 阶段 | 内容 | 状态 |
 |------|------|------|
 | **Phase 1** | `/pulse audit` — 知乎文章分析、内容评分、竞品对比 | 开发中 |
-| **Phase 2** | `/pulse track` — AI 平台品牌监控 + 本地仪表盘 MVP | 计划中 |
+| **Phase 2** | `/pulse track` — AI 平台品牌监控 + 本地仪表盘 MVP | 已上线（MVP） |
 | **Phase 3** | `/pulse adapt` — 多平台内容适配 | 计划中 |
 
 ## 参与贡献

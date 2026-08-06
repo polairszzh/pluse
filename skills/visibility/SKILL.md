@@ -41,13 +41,18 @@ Notes:
 
 ### `/pulse track <brand>`
 
-Monitor brand mentions across AI platforms. Input: a brand name or keyword. Output: a tracking report showing whether the brand is cited on DeepSeek, Kimi, Doubao, and Yuanbao, with sentiment and context for each.
+Monitor brand mentions across AI platforms. Input: a brand name or keyword. Output: a tracking report showing whether the brand is cited on DeepSeek, Kimi, Doubao, and Yuanbao, with sentiment and context for each, plus a trend comparison against previous snapshots.
 
 Workflow:
-1. Run `scripts/search_ai.py --query <brand> --platforms deepseek,kimi,doubao,yuanbao`
-2. Store results in `data/monitor.db`
-3. Compare against previous snapshots to show trends
-4. Produce `TRACK-REPORT.md`
+1. Run `python scripts/search_ai.py --query <brand>` (optionally `--platforms deepseek,kimi` to limit)
+2. Results are stored in `data/monitor.db` (SQLite) automatically
+3. Read the generated report from `data/snapshots/track-*.md` (JSON snapshot sits next to it)
+4. Compare the 趋势对比 section against previous snapshots to show trends
+5. Present the per-platform summary + changes + P0 recommendations + report path
+
+Data honesty (Phase 2):
+- DeepSeek is a real API probe (answer body contains the brand name, exact match; raw answer in `meta.answer` for review). No key configured → status is `no_key`, never faked.
+- Kimi / Doubao / Yuanbao have no public API; Pulse uses Bing search results as an **inference signal** of retrieval-library presence, NOT a real citation. Keep this limitation in the report.
 
 ### `/pulse adapt <topic>`
 
@@ -66,6 +71,11 @@ Side-by-side visibility comparison between two brands. Covers platform presence,
 ### `/pulse dashboard`
 
 Start the local web dashboard on `http://localhost:8766`.
+
+Workflow:
+1. Run `node dashboard/server.js` (zero-dependency Node server, port 8766)
+2. Open `http://localhost:8766`; pick a monitored brand from the dropdown
+3. The page shows overview cards, a per-platform cited trend line (Chart.js), and the latest snapshot table
 
 ### `/pulse doctor`
 
