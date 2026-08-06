@@ -57,6 +57,7 @@ const SENTIMENT_LABELS = { positive: "正面", neutral: "中性", negative: "负
 
 function openDb() {
   if (!fs.existsSync(DB_PATH)) return null;
+  ensureMigrated();
   try {
     return new DatabaseSync(DB_PATH, { readOnly: true });
   } catch (err) {
@@ -65,9 +66,10 @@ function openDb() {
   }
 }
 
-function migrateDb() {
+function ensureMigrated() {
   // 与 scripts/search_ai.py 的 _migrate 等价：旧库自动补 mine_cited / mine_ids 列，
-  // 让「只开仪表盘、还没重跑过 track」的旧库也能展示我的内容列
+  // 让「只开仪表盘、还没重跑过 track」的旧库也能展示我的内容列；
+  // 启动时与每次 openDb 都执行，覆盖「启动后 DB 才创建/被迁移」的场景
   if (!fs.existsSync(DB_PATH)) return;
   let conn;
   try {
@@ -86,7 +88,7 @@ function migrateDb() {
   }
 }
 
-migrateDb();
+ensureMigrated();
 
 function fmtRunAt(value) {
   return String(value || "").replace(/\.\d+/, "");

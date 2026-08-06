@@ -77,7 +77,9 @@ def _parse_mine_ids(raw: str | None) -> list[str]:
         parsed = json.loads(raw)
     except (ValueError, TypeError):
         return []
-    return parsed if isinstance(parsed, list) else []
+    if not isinstance(parsed, list):
+        return []
+    return [item for item in parsed if isinstance(item, str)]
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -111,7 +113,9 @@ def _url_present(url: str, text: str) -> bool:
 
     带边界检查，避免前缀误匹配：
       - https://example.com 不命中 https://example.com.evil.com（主机边界）
-      - /p/123 不命中 /p/1234（路径边界）
+      - /p/123 不命中 /p/1234、/p/123/456（路径边界，含 / 与所有路径延续字符）
+      - https://example.com（无 path）不命中 https://example.com/p（根域不匹配子路径）
+      - URL 后紧跟英文句号等句子标点且其后为空白/结尾 → 视为句子标点，正常命中
     """
     try:
         parts = urlsplit(url)
@@ -123,6 +127,12 @@ def _url_present(url: str, text: str) -> bool:
     rest = parts.path or ""
     if parts.query:
         rest += "?" + parts.query
+    # 尾斜杠等价：/p 与 /p/ 视为同一路径
+    candidates = {rest}
+    if rest.endswith("/"):
+        candidates.add(rest[:-1])
+    elif rest:
+        candidates.add(rest + "/")
     lower_text = text.lower()
     idx = 0
     while True:
@@ -135,14 +145,33 @@ def _url_present(url: str, text: str) -> bool:
         if next_host and (next_host.isalnum() or next_host in "-._:"):
             idx = start
             continue
-        end = start + len(rest)
-        if text[start:end] == rest:
-            # 路径边界：rest 结束后不能紧跟路径延续字符
+        for candidate in candidates:
+            end = start + len(candidate)
+            if text[start:end] != candidate:
+                continue
             tail = text[end:end + 1]
-            if not tail or not (tail.isalnum() or tail in "-._~%"):
+            if not tail or _is_sentence_tail(text, end) or not _is_path_continuation(tail):
                 return True
         idx = start
     return False
+
+
+_URL_PATH_CHARS = "-._~%!$&'()*+,;=:@"
+_SENTENCE_TAIL = ".。，,;:!?！？)]}）】」』》\"'"
+
+
+def _is_path_continuation(ch: str) -> bool:
+    """URL 路径/query 延续字符：字母数字、路径保留字符、/（新路径段）"""
+    return bool(ch) and (ch.isalnum() or ch in _URL_PATH_CHARS or ch == "/")
+
+
+def _is_sentence_tail(text: str, end: int) -> bool:
+    """URL 结束后紧跟句子标点且其后为空白/结尾/标点 → 该标点是句子标点而非 URL 一部分"""
+    ch = text[end:end + 1]
+    if not ch or ch not in _SENTENCE_TAIL:
+        return False
+    after = text[end + 1:end + 2]
+    return after == "" or after.isspace() or after in "，。；：！？)]}）】」』》"
 
 
 def _non_empty_query(value: str) -> str:

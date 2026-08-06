@@ -158,8 +158,24 @@ class TestDetectMine:
         assert _detect_mine("https://example.com.evil.com", ["https://example.com"]) == []
         # 路径前缀：/p/123 不命中 /p/1234
         assert _detect_mine("https://a.com/p/1234", ["https://a.com/p/123"]) == []
+        # critical：/p/123 不命中 /p/123/456（路径边界含 /）
+        assert _detect_mine("https://a.com/p/123/456", ["https://a.com/p/123"]) == []
+        # 根域标识不命中子路径
+        assert _detect_mine("https://example.com/p", ["https://example.com"]) == []
         # 精确路径命中
         assert _detect_mine("https://a.com/p/123", ["https://a.com/p/123"]) == ["https://a.com/p/123"]
+
+    def test_url_sentence_period_and_slash_equivalence(self):
+        # URL 后跟英文句号（其后为空白/结尾）→ 句子标点，正常命中
+        assert _detect_mine("见 https://a.com/p. 接着", ["https://a.com/p"]) == ["https://a.com/p"]
+        # 字面点路径：/p.x 命中自身，但不命中 /p.x/y
+        assert _detect_mine("https://a.com/p.x", ["https://a.com/p.x"]) == ["https://a.com/p.x"]
+        assert _detect_mine("https://a.com/p.x/y", ["https://a.com/p.x"]) == []
+        # 尾斜杠等价：/p 与 /p/ 互为匹配
+        assert _detect_mine("https://a.com/p/", ["https://a.com/p"]) == ["https://a.com/p"]
+        assert _detect_mine("https://a.com/p", ["https://a.com/p/"]) == ["https://a.com/p/"]
+        # 根域精确匹配
+        assert _detect_mine("https://example.com", ["https://example.com"]) == ["https://example.com"]
 
 
 class TestDeepSeekProbe:
@@ -524,6 +540,24 @@ class TestDB:
         conn.close()
         trend = build_trend("品牌A", db_path=db)  # 坏数据不崩
         assert trend["series"]["deepseek"][0]["mine_checked"] is False
+
+    def test_trend_filters_non_string_mine_ids(self, tmp_path):
+        db = tmp_path / "monitor.db"
+        store_results(
+            [ProbeResult(
+                "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+                mine_cited=True, mine_ids=["https://a.com/1"],
+            )],
+            db_path=db, run_at="2026-08-06T10:00:00+08:00",
+        )
+        conn = connect(db)
+        conn.execute("UPDATE probes SET mine_ids='[1, 2]' WHERE query='品牌A'")
+        conn.commit()
+        conn.close()
+        trend = build_trend("品牌A", db_path=db)  # 非字符串元素被过滤，不抛 TypeError
+        point = trend["series"]["deepseek"][0]
+        assert point["mine_ids"] == []
+        assert point["mine_checked"] is False
 
     def test_no_history(self, tmp_path):
         db = tmp_path / "monitor.db"
