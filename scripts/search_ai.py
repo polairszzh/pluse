@@ -46,16 +46,14 @@ POSITIVE_WORDS = (
     "好评", "值得", "高效", "出色", "首选",
 )
 NEGATIVE_WORDS = (
-    "不推荐", "不太推荐", "谈不上推荐", "说不上推荐", "算不上推荐",
     "失望", "投诉", "诈骗", "骗局", "糟糕", "劣质", "后悔", "差评", "坑人", "翻车", "踩坑",
 )
 
 PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2}
 
-# 否定前缀：正面词被这些前缀修饰时不计分；负面词只用直接否定集合（避免「并不」反向消掉负面词）
+# 否定前缀（正面词/负面词共用）：1 字、2 字、3 字三档
 _NEG_1CHAR = ("不", "没", "无", "未")
-_NEG_2CHAR_POSITIVE = ("不太", "并不", "并非", "没有", "并无")
-_NEG_2CHAR_NEGATIVE = ("没有", "并无")
+_NEG_2CHAR = ("不太", "并不", "并非", "没有", "并无")
 _NEG_3CHAR = ("谈不上", "说不上", "算不上")
 
 
@@ -138,35 +136,38 @@ def _load_key() -> str | None:
 
 
 def classify_sentiment(text: str) -> str:
-    """关键词启发式情感分类：正面词命中 >= 负面词 -> positive；否则 negative；都没有 -> neutral
+    """关键词启发式情感分类。
 
-    正面词/负面词若紧邻否定前缀则视为被否定、不计数：
-      - 正面词：不/没/无/未、不太/并不/并非/没有/并无、谈不上/说不上/算不上
-      - 负面词：不/没/无/未、没有/并无、谈不上/说不上/算不上
-    （「并不」「并非」会加强负面语义，不能反向消掉「不推荐」这类负面词。）
+    模型：
+      - 未被否定的正面词计正面（「优秀」「值得推荐」）；
+      - 被否定的正面词计负面（「并不优秀」= 批评、「不推荐」= 负面）；
+      - 被否定的负面词不计（「并非差评」「没有投诉」= 中性，不是负面）。
+    正面分 >= 负面分 -> positive；负面分更大 -> negative；都没有 -> neutral。
     """
-    pos = _count_mentions(text, POSITIVE_WORDS, _NEG_2CHAR_POSITIVE)
-    neg = _count_mentions(text, NEGATIVE_WORDS, _NEG_2CHAR_NEGATIVE)
-    if pos and pos >= neg:
+    pos = _count_mentions(text, POSITIVE_WORDS, negated=False)
+    negated_pos = _count_mentions(text, POSITIVE_WORDS, negated=True)
+    neg = _count_mentions(text, NEGATIVE_WORDS, negated=False)
+    total_neg = neg + negated_pos
+    if pos and pos >= total_neg:
         return "positive"
-    if neg and neg > pos:
+    if total_neg and total_neg > pos:
         return "negative"
     return "neutral"
 
 
-def _is_negated(text: str, idx: int, two_char_prefixes: tuple[str, ...]) -> bool:
+def _is_negated(text: str, idx: int) -> bool:
     before1 = text[idx - 1] if idx > 0 else ""
     before2 = text[idx - 2:idx] if idx > 1 else ""
     before3 = text[idx - 3:idx] if idx > 2 else ""
     return (
         before1 in _NEG_1CHAR
-        or before2 in two_char_prefixes
+        or before2 in _NEG_2CHAR
         or before3 in _NEG_3CHAR
     )
 
 
-def _count_mentions(text: str, words: tuple[str, ...], two_char_prefixes: tuple[str, ...]) -> int:
-    """统计关键词出现次数，紧邻否定前缀的命中不计入"""
+def _count_mentions(text: str, words: tuple[str, ...], negated: bool) -> int:
+    """统计关键词出现次数；negated=True 只计紧邻否定前缀的命中，False 只计未被否定的"""
     count = 0
     for w in words:
         start = 0
@@ -174,7 +175,7 @@ def _count_mentions(text: str, words: tuple[str, ...], two_char_prefixes: tuple[
             idx = text.find(w, start)
             if idx < 0:
                 break
-            if not _is_negated(text, idx, two_char_prefixes):
+            if _is_negated(text, idx) == negated:
                 count += 1
             start = idx + len(w)
     return count
@@ -511,7 +512,6 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
 def build_recommendations(
     query: str,
     results: list[ProbeResult],
-    trend: dict,
 ) -> list[Recommendation]:
     """根据探测结果生成带验证方式的 P0/P1/P2 行动清单"""
     recs: list[Recommendation] = []
@@ -750,7 +750,7 @@ def main(argv: list[str] | None = None) -> int:
         results = [PLATFORMS[p]["probe"](args.query) for p in platforms]
         store_results(results, db_path=db_path)
         trend = build_trend(args.query, db_path=db_path)
-        recs = build_recommendations(args.query, results, trend)
+        recs = build_recommendations(args.query, results)
         paths = save_report(args.query, results, trend, recs, out_dir)
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)

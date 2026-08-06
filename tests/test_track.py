@@ -100,6 +100,10 @@ class TestSentiment:
         assert classify_sentiment("没有投诉") == "neutral"
         assert classify_sentiment("并无差评") == "neutral"
 
+    def test_negated_positive_word_is_negative(self):
+        assert classify_sentiment("并不优秀") == "negative"
+        assert classify_sentiment("并非差评") == "neutral"
+
     def test_conflict_positive_wins(self):
         assert classify_sentiment("整体好评，但有个别差评") == "positive"
 
@@ -326,28 +330,28 @@ class TestDB:
 class TestRecommendations:
     def test_deepseek_not_cited_p0(self):
         results = [ProbeResult("品牌A", "deepseek", "ok", False, "neutral", "c", "api", False)]
-        recs = build_recommendations("品牌A", results, {"series": {}})
+        recs = build_recommendations("品牌A", results)
         assert any(r.priority == "P0" and r.dimension == "AI 引用" for r in recs)
         assert all(r.falsifiability_check for r in recs)
 
     def test_no_key_p1(self):
         results = [ProbeResult("品牌A", "deepseek", "no_key", None, None, "c", "api", False)]
-        recs = build_recommendations("品牌A", results, {"series": {}})
+        recs = build_recommendations("品牌A", results)
         assert any(r.priority == "P1" and "DEEPSEEK_API_KEY" in r.action for r in recs)
 
     def test_negative_p0(self):
         results = [ProbeResult("品牌A", "deepseek", "ok", True, "negative", "c", "api", False)]
-        recs = build_recommendations("品牌A", results, {"series": {}})
+        recs = build_recommendations("品牌A", results)
         assert any(r.priority == "P0" and r.dimension == "舆情" for r in recs)
 
     def test_error_p1(self):
         results = [ProbeResult("品牌A", "kimi", "error", None, None, "c", "search_inference", True, error="x")]
-        recs = build_recommendations("品牌A", results, {"series": {}})
+        recs = build_recommendations("品牌A", results)
         assert any(r.priority == "P1" and r.dimension == "数据可用性" for r in recs)
 
     def test_cited_positive_p2(self):
         results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]
-        recs = build_recommendations("品牌A", results, {"series": {}})
+        recs = build_recommendations("品牌A", results)
         assert any(r.priority == "P2" and r.dimension == "持续监测" for r in recs)
 
 

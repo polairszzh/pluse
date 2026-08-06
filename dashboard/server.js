@@ -24,7 +24,10 @@ try {
   process.exit(1);
 }
 
-const PORT = Number(process.env.PULSE_PORT || 8766);
+const RAW_PORT = Number(process.env.PULSE_PORT || 8766);
+const PORT = Number.isInteger(RAW_PORT) && RAW_PORT >= 1 && RAW_PORT <= 65535
+  ? RAW_PORT
+  : 8766;
 const HOST = "127.0.0.1";
 const PROJECT_ROOT = path.join(__dirname, "..");
 const PUBLIC_DIR = path.join(__dirname, "public");
