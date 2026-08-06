@@ -216,6 +216,18 @@ class TestDeepSeekProbe:
         assert result.cited is None
         assert "network down" in result.error
 
+    def test_error_branch_carries_mine_ids(self, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
+
+        def boom(*a, **kw):
+            raise requests.exceptions.ConnectionError("down")
+
+        monkeypatch.setattr(requests, "post", boom)
+        result = probe_deepseek("测试品牌", mine_ids=["https://a.com/1"])
+        assert result.status == "error"
+        assert result.mine_ids == ["https://a.com/1"]
+        assert result.mine_cited is None
+
     def test_bad_json(self, monkeypatch):
         monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
         monkeypatch.setattr(
@@ -309,6 +321,16 @@ class TestSearchInference:
         monkeypatch.setattr(requests, "get", boom)
         result = probe_search_inference("AI搜索优化", "yuanbao")
         assert result.status == "error"
+
+    def test_inference_error_carries_mine_ids(self, monkeypatch):
+        def boom(*a, **kw):
+            raise requests.exceptions.Timeout("slow")
+
+        monkeypatch.setattr(requests, "get", boom)
+        result = probe_search_inference("AI搜索优化", "kimi", mine_ids=["https://a.com/1"])
+        assert result.status == "error"
+        assert result.mine_ids == ["https://a.com/1"]
+        assert result.mine_cited is None
 
     def test_unparseable(self, monkeypatch):
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text="<html>anti-bot</html>"))

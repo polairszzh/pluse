@@ -226,6 +226,7 @@ def probe_deepseek(
                 degraded=True,
                 error=f"unexpected_json_type:{type(data).__name__}",
                 meta={"note": "响应应为 JSON 对象（含 choices 数组），保留原始类型便于排查"},
+                mine_ids=mine_ids,
             )
         choices = data.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
@@ -235,6 +236,7 @@ def probe_deepseek(
                 source="api", degraded=True,
                 error="unexpected_choices_shape",
                 meta={"note": "choices 应为非空列表且首个元素为对象，保留原始响应便于排查"},
+                mine_ids=mine_ids,
             )
         message = choices[0].get("message")
         if not isinstance(message, dict):
@@ -244,6 +246,7 @@ def probe_deepseek(
                 source="api", degraded=True,
                 error="unexpected_message_shape",
                 meta={"note": "message 应为对象（含 content），保留原始响应便于排查"},
+                mine_ids=mine_ids,
             )
         content = message.get("content")
         if content is not None and not isinstance(content, str):
@@ -253,6 +256,7 @@ def probe_deepseek(
                 source="api", degraded=True,
                 error="unexpected_content_type",
                 meta={"note": "content 应为字符串或空，保留原始响应便于排查"},
+                mine_ids=mine_ids,
             )
         answer = content or ""
     except requests.exceptions.RequestException as exc:
@@ -260,12 +264,14 @@ def probe_deepseek(
             query=query, platform="deepseek", status="error", cited=None,
             sentiment=None, context="DeepSeek API 调用失败", source="api", degraded=True,
             error=str(exc), meta={"note": "网络或服务异常，未写入有效探测"},
+            mine_ids=mine_ids,
         )
     except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
         return ProbeResult(
             query=query, platform="deepseek", status="error", cited=None,
             sentiment=None, context="DeepSeek 响应解析失败", source="api", degraded=True,
             error=str(exc), meta={"note": "响应结构与预期不符，保留原始响应便于排查"},
+            mine_ids=mine_ids,
         )
     cited = query.lower() in answer.lower()
     mine_matched = _detect_mine(answer, mine_ids)
@@ -343,6 +349,7 @@ def probe_search_inference(
             sentiment=None, context="Bing 搜索请求失败", source="search_inference",
             degraded=True, error=str(exc),
             meta={"note": "网络或反爬拦截，未写入有效推断"},
+            mine_ids=mine_ids,
         )
 
     results = _parse_bing(html_text)
@@ -352,6 +359,7 @@ def probe_search_inference(
             sentiment=None, context="未解析到搜索结果（页面结构变化或触发反爬）",
             source="search_inference", degraded=True,
             error="no_results_parsed", meta={"html_len": len(html_text)},
+            mine_ids=mine_ids,
         )
 
     text_blobs = [f"{item['title']} {item['snippet']}" for item in results]
