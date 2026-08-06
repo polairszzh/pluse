@@ -10,11 +10,18 @@
 //
 // 设计取舍：Phase 2 MVP 用 Node 内置 http + node:sqlite，零安装即可跑；
 // 后续若引入 Express，只需替换服务层，API 形态保持不变。
+// 需要 Node >= 22.5（node:sqlite）；启动失败时请先升级 Node。
 
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const { DatabaseSync } = require("node:sqlite");
+let DatabaseSync;
+try {
+  ({ DatabaseSync } = require("node:sqlite"));
+} catch (err) {
+  console.error("启动失败：需要 Node >= 22.5（node:sqlite 内置模块）。当前版本不支持，请升级 Node 后重试。");
+  process.exit(1);
+}
 
 const PORT = Number(process.env.PULSE_PORT || 8766);
 const HOST = "127.0.0.1";

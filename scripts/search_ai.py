@@ -132,8 +132,22 @@ def _load_key() -> str | None:
 
 
 def classify_sentiment(text: str) -> str:
-    """关键词启发式情感分类：正面词命中 >= 负面词 -> positive；否则 negative；都没有 -> neutral"""
-    pos = sum(1 for w in POSITIVE_WORDS if w in text)
+    """关键词启发式情感分类：正面词命中 >= 负面词 -> positive；否则 negative；都没有 -> neutral
+
+    正面词若紧邻「不/没/无/未」前缀则视为被否定，不计数（避免「不推荐」同时命中
+    「推荐」与「不推荐」而被误判为正面）。
+    """
+    pos = 0
+    for w in POSITIVE_WORDS:
+        start = 0
+        while True:
+            idx = text.find(w, start)
+            if idx < 0:
+                break
+            before = text[idx - 1] if idx > 0 else ""
+            if before not in ("不", "没", "无", "未"):
+                pos += 1
+            start = idx + len(w)
     neg = sum(1 for w in NEGATIVE_WORDS if w in text)
     if pos and pos >= neg:
         return "positive"
@@ -575,6 +589,7 @@ def render_markdown(
     lines.append("")
     lines.append("- DeepSeek：真实 API 探测，被提及 = 回答正文出现品牌名（精确匹配），原始回答可在 JSON 快照的 meta.answer 复核。")
     lines.append("- Kimi / 豆包 / 元宝：无公开 API，使用 Bing 搜索结果推断检索库中的存在信号，**不等同于该平台真实引用**。")
+    lines.append("- Kimi / 豆包 / 元宝 共用同一次 Bing 搜索推断（三行结果相同），是检索库存在信号，不代表各平台各自的真实引用。")
     lines.append("- 每次运行写入 data/monitor.db，趋势来自同品牌的历史快照对比。")
     lines.append("")
     return "\n".join(lines)

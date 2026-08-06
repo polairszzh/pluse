@@ -81,6 +81,12 @@ class TestSentiment:
     def test_neutral(self):
         assert classify_sentiment("简单介绍，没有倾向") == "neutral"
 
+    def test_not_recommended_is_negative(self):
+        assert classify_sentiment("不推荐") == "negative"
+
+    def test_not_recommended_with_detail(self):
+        assert classify_sentiment("该产品不推荐，存在差评") == "negative"
+
     def test_conflict_positive_wins(self):
         assert classify_sentiment("整体好评，但有个别差评") == "positive"
 
