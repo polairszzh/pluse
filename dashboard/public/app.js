@@ -163,6 +163,11 @@ async function loadLatest(query) {
     const tdCited = el("td");
     tdCited.innerHTML = citedText(item.cited);
     tr.appendChild(tdCited);
+    const tdMine = el("td");
+    tdMine.innerHTML = item.mine_cited == null
+      ? `<span class="pill">—</span>`
+      : citedText(item.mine_cited);
+    tr.appendChild(tdMine);
     tr.appendChild(el("td", "", item.sentiment_label));
     const tdCtx = el("td", "context", item.context || item.error || "—");
     tdCtx.title = item.context || item.error || "";

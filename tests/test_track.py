@@ -1,5 +1,6 @@
 """search_ai.py 单元测试 —— mock 所有网络调用，不触网"""
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -13,11 +14,13 @@ from audit import Recommendation
 from search_ai import (
     PLATFORMS,
     ProbeResult,
+    _detect_mine,
     _parse_bing,
     _parse_platforms,
     build_recommendations,
     build_trend,
     classify_sentiment,
+    connect,
     load_history,
     main,
     probe_deepseek,
@@ -120,6 +123,18 @@ class TestParseBing:
         assert _parse_bing("<html>no results</html>") == []
 
 
+class TestDetectMine:
+    def test_url_title_author(self):
+        text = "可参考 https://zhuanlan.zhihu.com/p/123 和「我的昵称」写的教程"
+        assert _detect_mine(text, ["https://zhuanlan.zhihu.com/p/123"]) == ["https://zhuanlan.zhihu.com/p/123"]
+        assert _detect_mine(text, ["我的昵称"]) == ["我的昵称"]
+        assert _detect_mine(text, ["https://other.com/x"]) == []
+
+    def test_empty_inputs(self):
+        assert _detect_mine("", ["a"]) == []
+        assert _detect_mine("任意文本", []) == []
+
+
 class TestDeepSeekProbe:
     def test_load_key_strips_quotes(self, tmp_path, monkeypatch):
         monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
@@ -156,6 +171,38 @@ class TestDeepSeekProbe:
         assert result.status == "ok"
         assert result.cited is False
         assert result.sentiment == "neutral"
+
+    def test_mine_cited(self, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
+        answer = "可参考 https://zhuanlan.zhihu.com/p/123 的教程"
+        monkeypatch.setattr(
+            requests, "post",
+            lambda *a, **kw: FakeResponse(data={"choices": [{"message": {"content": answer}}]}),
+        )
+        result = probe_deepseek("codex 安装", mine_ids=["https://zhuanlan.zhihu.com/p/123"])
+        assert result.mine_cited is True
+        assert result.meta["mine_matched"] == ["https://zhuanlan.zhihu.com/p/123"]
+
+    def test_mine_not_cited(self, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
+        answer = "可参考 https://zhuanlan.zhihu.com/p/123 的教程"
+        monkeypatch.setattr(
+            requests, "post",
+            lambda *a, **kw: FakeResponse(data={"choices": [{"message": {"content": answer}}]}),
+        )
+        result = probe_deepseek("codex 安装", mine_ids=["https://other.com/x"])
+        assert result.mine_cited is False
+        assert result.meta["mine_matched"] == []
+
+    def test_no_mine_returns_none(self, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
+        monkeypatch.setattr(
+            requests, "post",
+            lambda *a, **kw: FakeResponse(data=_deepseek_answer(True, "优秀", "测试品牌")),
+        )
+        result = probe_deepseek("测试品牌", mine_ids=[])
+        assert result.mine_cited is None
+        assert result.mine_ids == []
 
     def test_request_error(self, monkeypatch):
         monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
@@ -228,6 +275,18 @@ class TestSearchInference:
         assert result.cited is False
         assert result.context
 
+    def test_mine_cited(self, monkeypatch):
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=BING_HTML))
+        result = probe_search_inference("AI搜索优化", "kimi", mine_ids=["https://example.com/1"])
+        assert result.mine_cited is True
+        assert result.meta["mine_matched"] == ["https://example.com/1"]
+
+    def test_mine_not_cited(self, monkeypatch):
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=BING_HTML))
+        result = probe_search_inference("AI搜索优化", "kimi", mine_ids=["https://nope.example/x"])
+        assert result.mine_cited is False
+        assert result.meta["mine_matched"] == []
+
     def test_request_error(self, monkeypatch):
         def boom(*a, **kw):
             raise requests.exceptions.Timeout("slow")
@@ -244,6 +303,23 @@ class TestSearchInference:
 
 
 class TestDB:
+    def test_migration_adds_mine_columns(self, tmp_path):
+        db = tmp_path / "old.db"
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "CREATE TABLE probes (id INTEGER PRIMARY KEY AUTOINCREMENT, query TEXT NOT NULL,"
+            " platform TEXT NOT NULL, run_at TEXT NOT NULL, status TEXT NOT NULL, cited INTEGER,"
+            " sentiment TEXT, context TEXT, source TEXT NOT NULL,"
+            " degraded INTEGER NOT NULL DEFAULT 0, error TEXT, meta TEXT)"
+        )
+        conn.commit()
+        conn.close()
+        conn = connect(db)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(probes)").fetchall()}
+        assert "mine_cited" in cols
+        assert "mine_ids" in cols
+        conn.close()
+
     def test_store_and_load(self, tmp_path):
         db = tmp_path / "monitor.db"
         rows = [
@@ -264,6 +340,17 @@ class TestDB:
         meta = json.loads(by_platform["kimi"]["meta"])
         assert meta["note"] == "搜索引擎存在信号"
         assert json.loads(by_platform["deepseek"]["meta"]) == {}
+
+    def test_store_and_load_mine_fields(self, tmp_path):
+        db = tmp_path / "monitor.db"
+        row = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=True, mine_ids=["https://a.com/1", "我的昵称"],
+        )
+        store_results([row], db_path=db, run_at="2026-08-06T10:00:00+08:00")
+        history = load_history("品牌A", db_path=db)
+        assert history[0]["mine_cited"] == 1
+        assert json.loads(history[0]["mine_ids"]) == ["https://a.com/1", "我的昵称"]
 
     def test_default_run_at_has_microsecond_precision(self, tmp_path):
         db = tmp_path / "monitor.db"
@@ -354,6 +441,31 @@ class TestRecommendations:
         recs = build_recommendations("品牌A", results)
         assert any(r.priority == "P2" and r.dimension == "持续监测" for r in recs)
 
+    def test_mine_not_cited_p0(self):
+        results = [ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=False, mine_ids=["https://a.com/1"],
+        )]
+        recs = build_recommendations("品牌A", results)
+        assert any(r.priority == "P0" and r.dimension == "内容引用归属" for r in recs)
+        assert all(r.falsifiability_check for r in recs)
+
+    def test_inference_mine_missing_p1(self):
+        results = [ProbeResult(
+            "品牌A", "kimi", "ok", True, None, "c", "search_inference", True,
+            mine_cited=False, mine_ids=["https://a.com/1"],
+        )]
+        recs = build_recommendations("品牌A", results)
+        assert any(r.priority == "P1" and r.dimension == "内容收录" for r in recs)
+
+    def test_mine_cited_no_p0(self):
+        results = [ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=True, mine_ids=["https://a.com/1"],
+        )]
+        recs = build_recommendations("品牌A", results)
+        assert not any(r.dimension == "内容引用归属" for r in recs)
+
 
 class TestReport:
     def test_render_markdown(self):
@@ -382,6 +494,15 @@ class TestReport:
         # 只保留本次运行平台（deepseek）的变化点，kimi 的旧变化不混入
         assert md.count("由「否」变为「是」") == 1
 
+    def test_render_markdown_with_mine_column(self):
+        results = [ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=True, mine_ids=["https://a.com/1"],
+        )]
+        md = render_markdown("品牌A", results, {"series": {}, "changes": []}, [])
+        assert "我的内容" in md
+        assert "https://a.com/1" not in md or "--mine" in md
+
     def test_save_report(self, tmp_path):
         results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]
         paths = save_report("品牌A", results, {"series": {}}, [], out_dir=tmp_path)
@@ -405,6 +526,19 @@ class TestCLI:
         assert len(list(out.glob("track-*.md"))) == 1
         history = load_history("测试品牌", db_path=db)
         assert history[0]["status"] == "no_key"
+
+    def test_main_with_mine(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: None)
+        db = tmp_path / "monitor.db"
+        out = tmp_path / "snap"
+        code = main([
+            "--query", "codex 安装", "--platforms", "deepseek",
+            "--mine", "https://a.com/1", "--db", str(db), "--output", str(out),
+        ])
+        assert code == 0
+        history = load_history("codex 安装", db_path=db)
+        assert json.loads(history[0]["mine_ids"]) == ["https://a.com/1"]
+        assert history[0]["mine_cited"] is None  # no_key → mine 未知
 
     def test_invalid_platform_rejected(self, tmp_path):
         with pytest.raises(SystemExit) as exc:

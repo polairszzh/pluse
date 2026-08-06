@@ -208,6 +208,7 @@ function apiLatest(query) {
         status: r.status,
         status_label: STATUS_LABELS[r.status] || r.status,
         cited: r.cited === 1 ? true : r.cited === 0 ? false : null,
+        mine_cited: r.mine_cited === 1 ? true : r.mine_cited === 0 ? false : null,
         sentiment: r.sentiment,
         sentiment_label: SENTIMENT_LABELS[r.sentiment] || "—",
         context: r.context || "",
