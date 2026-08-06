@@ -20,7 +20,8 @@ instructions = """
 2. 运行执行层脚本：
    - 监测全部平台：python scripts/search_ai.py --query "<品牌/关键词>"
    - 指定平台：python scripts/search_ai.py --query "<品牌>" --platforms deepseek,kimi
-3. 打开 data/snapshots/ 下刚生成的 track-*.md 报告，核对各平台状态、趋势与行动清单。
+   - 检查「你的内容是否被引用」（不只看话题是否被提及）：python scripts/search_ai.py --query "<话题>" --mine "<文章URL>" --mine "<作者名/标题>"
+3. 打开 data/snapshots/ 下刚生成的 track-*.md 报告，核对各平台状态、「我的内容」列、趋势与行动清单。
 4. 如需可视化：提示用户运行 node dashboard/server.js 后访问 http://localhost:8766。
 5. 向用户呈现：各平台被提及情况 + 与上次对比的变化 + P0 建议 + 报告文件路径。
 
@@ -28,6 +29,6 @@ instructions = """
 
 1. 每条建议必须带验证方式（falsifiability check）——说不出怎么验证就别说。
 2. 优先级 P0 > P1 > P2：P0 是直接影响被检索/被引用的硬伤，P2 是顺手优化。
-3. 诚实标注数据来源：DeepSeek = 真实 API；Kimi/豆包/元宝 = 搜索引擎存在信号推断。
+3. 诚实标注数据来源：DeepSeek = 真实 API；Kimi/豆包/元宝 = 搜索引擎存在信号推断；--mine 的「我的内容」是子串匹配，结果为否 = 尚未被引用（如实报告，不夸大）。
 4. 具体，不空谈：不是「提升内容质量」，而是「补充一段 130-170 字自包含品牌段落（结论前置 + 数据支撑）」。
 """

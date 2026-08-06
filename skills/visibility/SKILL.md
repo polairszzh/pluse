@@ -44,15 +44,17 @@ Notes:
 Monitor brand mentions across AI platforms. Input: a brand name or keyword. Output: a tracking report showing whether the brand is cited on DeepSeek, Kimi, Doubao, and Yuanbao, with sentiment and context for each, plus a trend comparison against previous snapshots.
 
 Workflow:
-1. Run `python scripts/search_ai.py --query <brand>` (optionally `--platforms deepseek,kimi` to limit)
-2. Results are stored in `data/monitor.db` (SQLite) automatically
-3. Read the generated report from `data/snapshots/track-*.md` (JSON snapshot sits next to it)
-4. Compare the 趋势对比 section against previous snapshots to show trends
-5. Present the per-platform summary + changes + P0 recommendations + report path
+1. Run `python scripts/search_ai.py --query <topic>` (optionally `--platforms deepseek,kimi` to limit)
+2. To check whether **your content** is cited (not just the topic mentioned), add `--mine <URL或标题或作者名>` (repeatable, one identifier per flag): `python scripts/search_ai.py --query "codex 如何安装" --mine "https://zhuanlan.zhihu.com/p/xxx" --mine "我的昵称"`
+3. Results are stored in `data/monitor.db` (SQLite) automatically
+4. Read the generated report from `data/snapshots/track-*.md` (JSON snapshot sits next to it); the 本次快照 table gains a 我的内容 column when `--mine` is passed
+5. Compare the 趋势对比 section against previous snapshots to show trends
+6. Present the per-platform summary + changes + P0 recommendations + report path
 
 Data honesty (Phase 2):
 - DeepSeek is a real API probe (answer body contains the brand name, exact match; raw answer in `meta.answer` for review). No key configured → status is `no_key`, never faked.
 - Kimi / Doubao / Yuanbao have no public API; Pulse uses Bing search results as an **inference signal** of retrieval-library presence, NOT a real citation. Keep this limitation in the report.
+- `--mine` matching is substring-based: URL matching works best in search inference, title/author name matching is more common in AI answers. A negative result is honest (not cited yet), not a guarantee.
 
 ### `/pulse adapt <topic>`
 

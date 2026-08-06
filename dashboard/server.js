@@ -57,6 +57,7 @@ const SENTIMENT_LABELS = { positive: "正面", neutral: "中性", negative: "负
 
 function openDb() {
   if (!fs.existsSync(DB_PATH)) return null;
+  ensureMigrated();
   try {
     return new DatabaseSync(DB_PATH, { readOnly: true });
   } catch (err) {
@@ -64,6 +65,30 @@ function openDb() {
     return null;
   }
 }
+
+function ensureMigrated() {
+  // 与 scripts/search_ai.py 的 _migrate 等价：旧库自动补 mine_cited / mine_ids 列，
+  // 让「只开仪表盘、还没重跑过 track」的旧库也能展示我的内容列；
+  // 启动时与每次 openDb 都执行，覆盖「启动后 DB 才创建/被迁移」的场景
+  if (!fs.existsSync(DB_PATH)) return;
+  let conn;
+  try {
+    conn = new DatabaseSync(DB_PATH);
+    const cols = conn.prepare("PRAGMA table_info(probes)").all().map((c) => c.name);
+    if (!cols.includes("mine_cited")) {
+      conn.exec("ALTER TABLE probes ADD COLUMN mine_cited INTEGER");
+    }
+    if (!cols.includes("mine_ids")) {
+      conn.exec("ALTER TABLE probes ADD COLUMN mine_ids TEXT");
+    }
+  } catch (err) {
+    console.error("monitor.db 迁移失败（不影响仪表盘启动）：", err.message);
+  } finally {
+    if (conn) conn.close();
+  }
+}
+
+ensureMigrated();
 
 function fmtRunAt(value) {
   return String(value || "").replace(/\.\d+/, "");
@@ -208,6 +233,7 @@ function apiLatest(query) {
         status: r.status,
         status_label: STATUS_LABELS[r.status] || r.status,
         cited: r.cited === 1 ? true : r.cited === 0 ? false : null,
+        mine_cited: r.mine_cited === 1 ? true : r.mine_cited === 0 ? false : null,
         sentiment: r.sentiment,
         sentiment_label: SENTIMENT_LABELS[r.sentiment] || "—",
         context: r.context || "",

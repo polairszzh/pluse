@@ -20,11 +20,13 @@ import html as html_module
 import json
 import os
 import re
+import shlex
 import sqlite3
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
 from audit import Recommendation
@@ -62,10 +64,89 @@ def _md_cell(text: object) -> str:
     return str(text or "").replace("|", "\\|").replace("\n", " ")
 
 
+def _shell_quote(value: str) -> str:
+    """用 shlex.quote 生成可安全复现的 shell 参数（单引号包裹，$、反引号、反斜杠、引号均安全）"""
+    return shlex.quote(str(value or ""))
+
+
+def _parse_mine_ids(raw: str | None) -> list[str]:
+    """解析 DB 里的 mine_ids JSON；空值/坏数据一律按 [] 处理，不让趋势功能崩溃"""
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [item for item in parsed if isinstance(item, str)]
+
+
 def _truncate(text: str, limit: int) -> str:
     """折叠空白并截断到 limit 字符"""
     compact = " ".join(str(text or "").split())
     return compact[:limit]
+
+
+def _detect_mine(text: str, mine_ids: list[str]) -> list[str]:
+    """在文本中查找我的内容标识（URL/标题/作者名）
+
+    URL 标识：域名大小写不敏感、路径大小写敏感（URL 路径区分大小写，避免误报）；
+    标题/作者名：不区分大小写。
+    """
+    if not mine_ids:
+        return []
+    lower_text = str(text or "").lower()
+    stripped = [mid.strip() for mid in mine_ids if mid.strip()]
+    matched = []
+    for mid in stripped:
+        if mid.lower().startswith(("http://", "https://")):
+            if _url_present(mid, text):
+                matched.append(mid)
+        elif mid.lower() in lower_text:
+            matched.append(mid)
+    return list(dict.fromkeys(matched))
+
+
+_URL_TOKEN_RE = re.compile(r"https?://[^\s<>\"'，。；：！？（）【】「」『』《》]+", re.IGNORECASE)
+_URL_TRAIL = ".,;:!?)]}"
+
+
+def _url_identity(url: str) -> tuple[str, str, str] | None:
+    """URL 规范化身份：(scheme, netloc, path) —— scheme/host 大小写不敏感，path 大小写敏感；
+    尾斜杠等价（/p 与 /p/、根域与根域加斜杠），query 不参与比较（跟踪参数不造成漏报）"""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return None
+    if not parts.scheme or not parts.netloc:
+        return None
+    path = parts.path or ""
+    if path in ("", "/"):
+        path = ""
+    elif path.endswith("/"):
+        path = path[:-1]
+    return (parts.scheme.lower(), parts.netloc.lower(), path)
+
+
+def _url_present(url: str, text: str) -> bool:
+    """URL 是否出现在文本中：抽取文本里的 URL token 后按规范化身份比较
+
+    原则性实现，一次覆盖整类边界问题：
+      - 前缀误匹配（example.com vs example.com.evil.com、/p/123 vs /p/1234 vs /p/123/456）
+      - 根域不匹配子路径，但根域尾斜杠等价
+      - 尾部句子标点（.,;:!?)]} 及中文标点）不参与比较
+      - query 跟踪参数不参与比较
+    """
+    # 配置标识按原样规范化（不做尾部标点剥离）：用户明确给的 URL 末尾标点是路径的一部分；
+    # 只有文本里抽取的 token 才剥离尾部标点（那里才有句子标点歧义）
+    target = _url_identity(url)
+    if target is None:
+        return False
+    for token in _URL_TOKEN_RE.findall(str(text or "")):
+        if _url_identity(token.rstrip(_URL_TRAIL)) == target:
+            return True
+    return False
 
 
 def _non_empty_query(value: str) -> str:
@@ -101,6 +182,8 @@ class ProbeResult:
     degraded: bool               # 是否为降级信号（非真实引用）
     error: str | None = None
     meta: dict = field(default_factory=dict)
+    mine_cited: bool | None = None      # 我的内容标识是否出现在探测结果中
+    mine_ids: list[str] = field(default_factory=list)  # 本次检查的我的内容标识
 
 
 # --------------------------------------------------------------------------
@@ -181,8 +264,14 @@ def _count_mentions(text: str, words: tuple[str, ...], negated: bool) -> int:
     return count
 
 
-def probe_deepseek(query: str, timeout: int = 60, session: requests.Session | None = None) -> ProbeResult:
-    """调用 DeepSeek API 探测品牌是否被提及"""
+def probe_deepseek(
+    query: str,
+    timeout: int = 60,
+    session: requests.Session | None = None,
+    mine_ids: list[str] | None = None,
+) -> ProbeResult:
+    """调用 DeepSeek API 探测话题是否被提及、我的内容标识是否出现在回答中"""
+    mine_ids = mine_ids or []
     key = _load_key()
     if key is None:
         return ProbeResult(
@@ -190,6 +279,7 @@ def probe_deepseek(query: str, timeout: int = 60, session: requests.Session | No
             sentiment=None, context="未配置 DEEPSEEK_API_KEY / LLM_API_KEY，跳过真实调用",
             source="api", degraded=False,
             meta={"note": "在 .env 中配置 DEEPSEEK_API_KEY 后重跑可拿到真实引用判断"},
+            mine_ids=mine_ids,
         )
     payload = {
         "model": DEEPSEEK_MODEL,
@@ -209,6 +299,7 @@ def probe_deepseek(query: str, timeout: int = 60, session: requests.Session | No
                 degraded=True,
                 error=f"unexpected_json_type:{type(data).__name__}",
                 meta={"note": "响应应为 JSON 对象（含 choices 数组），保留原始类型便于排查"},
+                mine_ids=mine_ids,
             )
         choices = data.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
@@ -218,6 +309,7 @@ def probe_deepseek(query: str, timeout: int = 60, session: requests.Session | No
                 source="api", degraded=True,
                 error="unexpected_choices_shape",
                 meta={"note": "choices 应为非空列表且首个元素为对象，保留原始响应便于排查"},
+                mine_ids=mine_ids,
             )
         message = choices[0].get("message")
         if not isinstance(message, dict):
@@ -227,6 +319,7 @@ def probe_deepseek(query: str, timeout: int = 60, session: requests.Session | No
                 source="api", degraded=True,
                 error="unexpected_message_shape",
                 meta={"note": "message 应为对象（含 content），保留原始响应便于排查"},
+                mine_ids=mine_ids,
             )
         content = message.get("content")
         if content is not None and not isinstance(content, str):
@@ -236,6 +329,7 @@ def probe_deepseek(query: str, timeout: int = 60, session: requests.Session | No
                 source="api", degraded=True,
                 error="unexpected_content_type",
                 meta={"note": "content 应为字符串或空，保留原始响应便于排查"},
+                mine_ids=mine_ids,
             )
         answer = content or ""
     except requests.exceptions.RequestException as exc:
@@ -243,14 +337,17 @@ def probe_deepseek(query: str, timeout: int = 60, session: requests.Session | No
             query=query, platform="deepseek", status="error", cited=None,
             sentiment=None, context="DeepSeek API 调用失败", source="api", degraded=True,
             error=str(exc), meta={"note": "网络或服务异常，未写入有效探测"},
+            mine_ids=mine_ids,
         )
     except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
         return ProbeResult(
             query=query, platform="deepseek", status="error", cited=None,
             sentiment=None, context="DeepSeek 响应解析失败", source="api", degraded=True,
             error=str(exc), meta={"note": "响应结构与预期不符，保留原始响应便于排查"},
+            mine_ids=mine_ids,
         )
     cited = query.lower() in answer.lower()
+    mine_matched = _detect_mine(answer, mine_ids)
     return ProbeResult(
         query=query, platform="deepseek", status="ok", cited=cited,
         sentiment=classify_sentiment(answer), context=_truncate(answer, 300),
@@ -260,7 +357,11 @@ def probe_deepseek(query: str, timeout: int = 60, session: requests.Session | No
             "model": DEEPSEEK_MODEL,
             "match": "exact_substring",
             "note": "被提及 = 回答正文出现品牌名（精确匹配），原始回答见 answer 字段供人工复核",
+            "mine_checked": mine_ids,
+            "mine_matched": mine_matched,
         },
+        mine_cited=bool(mine_matched) if mine_ids else None,
+        mine_ids=mine_ids,
     )
 
 
@@ -301,8 +402,10 @@ def probe_search_inference(
     platform: str,
     timeout: int = 30,
     session: requests.Session | None = None,
+    mine_ids: list[str] | None = None,
 ) -> ProbeResult:
-    """用 Bing 搜索结果推断平台检索库中的品牌存在信号"""
+    """用 Bing 搜索结果推断平台检索库中的话题存在信号，并检查我的内容是否在其中"""
+    mine_ids = mine_ids or []
     http = session or requests
     try:
         resp = http.get(
@@ -319,6 +422,7 @@ def probe_search_inference(
             sentiment=None, context="Bing 搜索请求失败", source="search_inference",
             degraded=True, error=str(exc),
             meta={"note": "网络或反爬拦截，未写入有效推断"},
+            mine_ids=mine_ids,
         )
 
     results = _parse_bing(html_text)
@@ -328,48 +432,66 @@ def probe_search_inference(
             sentiment=None, context="未解析到搜索结果（页面结构变化或触发反爬）",
             source="search_inference", degraded=True,
             error="no_results_parsed", meta={"html_len": len(html_text)},
+            mine_ids=mine_ids,
         )
 
+    # cited 只看标题+摘要：URL 常含关键词（如 github.com/openai/codex），拼入会误判「被提及」
     cited = False
     context = ""
-    for item in results:
-        blob = f"{item['title']} {item['snippet']}"
-        if query.lower() in blob.lower():
+    text_blobs = [f"{item['title']} {item['snippet']}" for item in results]
+    for text_blob in text_blobs:
+        if query.lower() in text_blob.lower():
             cited = True
-            context = _truncate(blob, 300)
+            context = _truncate(text_blob, 300)
             break
     if not context:
         top = results[0]
         context = _truncate(f"{top['title']} {top['snippet']}", 300)
+    # 我的内容标识匹配：URL 类标识扫 title+url+snippet（作者常以链接被收录），
+    # 非 URL 类标识（标题/作者名/年份等）只扫 title+snippet，避免在 URL 里误命中
+    url_mine_ids = [m for m in mine_ids if m.lower().startswith(("http://", "https://"))]
+    text_mine_ids = [m for m in mine_ids if m not in url_mine_ids]
+    url_matched = list(dict.fromkeys(
+        matched for item in results
+        for matched in _detect_mine(f"{item['title']} {item.get('url', '')} {item['snippet']}", url_mine_ids)
+    ))
+    text_matched = list(dict.fromkeys(
+        matched for blob in text_blobs for matched in _detect_mine(blob, text_mine_ids)
+    ))
+    mine_matched = list(dict.fromkeys(url_matched + text_matched))
     return ProbeResult(
         query=query, platform=platform, status="ok", cited=cited,
         sentiment=None, context=context, source="search_inference", degraded=True,
         meta={
             "results": results,
             "note": "搜索引擎存在信号，不等同于该平台真实引用；品牌名出现在标题/摘要即视为存在信号",
+            "mine_checked": mine_ids,
+            "mine_matched": mine_matched,
         },
+        mine_cited=bool(mine_matched) if mine_ids else None,
+        mine_ids=mine_ids,
     )
 
 
 PLATFORMS = {
     "deepseek": {
         "label": "DeepSeek",
-        "probe": probe_deepseek,
+        "probe": lambda q, mine_ids=None: probe_deepseek(q, mine_ids=mine_ids),
         "note": "真实 API 探测（OpenAI 兼容接口）",
     },
     "kimi": {
         "label": "Kimi（月之暗面）",
-        "probe": lambda q: probe_search_inference(q, "kimi"),
+        "probe": lambda q, mine_ids=None: probe_search_inference(q, "kimi", mine_ids=mine_ids),
         "note": "无公开 API，使用搜索引擎存在信号推断",
     },
     "doubao": {
         "label": "豆包（字节跳动）",
-        "probe": lambda q: probe_search_inference(q, "doubao"),
+        "probe": lambda q, mine_ids=None: probe_search_inference(q, "doubao", mine_ids=mine_ids),
         "note": "无公开 API，使用搜索引擎存在信号推断",
     },
     "yuanbao": {
         "label": "元宝（腾讯）",
-        "probe": lambda q: probe_search_inference(q, "yuanbao"),
+        "probe": lambda q, mine_ids=None: probe_search_inference(q, "yuanbao", mine_ids=mine_ids),
         "note": "无公开 API，使用搜索引擎存在信号推断",
     },
 }
@@ -393,7 +515,9 @@ CREATE TABLE IF NOT EXISTS probes (
     source TEXT NOT NULL,
     degraded INTEGER NOT NULL DEFAULT 0,
     error TEXT,
-    meta TEXT
+    meta TEXT,
+    mine_cited INTEGER,
+    mine_ids TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_probes_query_platform_run
     ON probes(query, platform, run_at);
@@ -404,7 +528,18 @@ def connect(db_path: Path = DEFAULT_DB) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     conn.executescript(_SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """旧库补列：mine_cited / mine_ids（ALTER TABLE ADD COLUMN）"""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(probes)").fetchall()}
+    with conn:
+        if "mine_cited" not in cols:
+            conn.execute("ALTER TABLE probes ADD COLUMN mine_cited INTEGER")
+        if "mine_ids" not in cols:
+            conn.execute("ALTER TABLE probes ADD COLUMN mine_ids TEXT")
 
 
 def store_results(
@@ -420,14 +555,17 @@ def store_results(
         with conn:
             for r in rows:
                 cited = 1 if r.cited is True else (0 if r.cited is False else None)
+                mine_cited = 1 if r.mine_cited is True else (0 if r.mine_cited is False else None)
                 conn.execute(
                     "INSERT INTO probes(query, platform, run_at, status, cited, sentiment,"
-                    " context, source, degraded, error, meta)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    " context, source, degraded, error, meta, mine_cited, mine_ids)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         r.query, r.platform, run_at, r.status, cited, r.sentiment,
                         r.context, r.source, 1 if r.degraded else 0, r.error,
                         json.dumps(r.meta if r.meta else {}, ensure_ascii=False),
+                        mine_cited,
+                        json.dumps(r.mine_ids or [], ensure_ascii=False),
                     ),
                 )
     finally:
@@ -478,6 +616,9 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
                 "cited": bool(r["cited"]) if r["cited"] is not None else None,
                 "status": r["status"],
                 "sentiment": r["sentiment"],
+                "mine_cited": bool(r["mine_cited"]) if r["mine_cited"] is not None else None,
+                "mine_checked": bool(_parse_mine_ids(r["mine_ids"])),
+                "mine_ids": _parse_mine_ids(r["mine_ids"]),
             }
             for r in ordered
         ]
@@ -524,7 +665,7 @@ def build_recommendations(
             action=f"「{query}」在 DeepSeek 回答中未被提及：在内容里补充一段 130-170 字的自包含品牌段落"
                    "（结论前置 + 具体数据/案例支撑）",
             expected_impact="提升 DeepSeek 检索命中",
-            falsifiability_check=f"重跑 /pulse track --query {query}，DeepSeek 被提及变为「是」",
+            falsifiability_check=f"重跑 /pulse track --query {_shell_quote(query)}，DeepSeek 被提及变为「是」",
         ))
     if deepseek and deepseek.status == "no_key":
         recs.append(Recommendation(
@@ -534,6 +675,40 @@ def build_recommendations(
             expected_impact="补齐真实 API 探测",
             falsifiability_check="重跑后 DeepSeek 状态不再是「未配置密钥」",
         ))
+
+    mine_checked = any(r.mine_ids for r in results)
+    if mine_checked:
+        if deepseek and deepseek.status == "ok" and deepseek.cited is True and deepseek.mine_cited is False:
+            mine_txt = "、".join(deepseek.mine_ids[:3])
+            recs.append(Recommendation(
+                priority="P0",
+                dimension="内容引用归属",
+                action=f"「{query}」在 DeepSeek 回答中被提及，但你的内容（{mine_txt}）不在其中："
+                       "围绕该话题发布/优化一篇自包含教程（每个 H2 一个问答对，首段 130-170 字直接给答案，"
+                       "带具体数据/案例），确保标题覆盖话题关键词",
+                expected_impact="让 AI 回答该话题时引用你的内容而不是别人的",
+                falsifiability_check=f"重跑 /pulse track --query {_shell_quote(query)} "
+                                     f"--mine {_shell_quote(deepseek.mine_ids[0])}，"
+                                     "DeepSeek 我的内容变为「是」",
+            ))
+        inference_missing = [
+            r for r in results
+            if r.source == "search_inference" and r.status == "ok"
+            and r.cited is True and r.mine_cited is False
+        ]
+        if inference_missing:
+            names = "、".join(PLATFORMS[r.platform]["label"] for r in inference_missing[:3])
+            mine_example = next((r.mine_ids[0] for r in inference_missing if r.mine_ids), "")
+            recs.append(Recommendation(
+                priority="P1",
+                dimension="内容收录",
+                action=f"{names} 对应话题在搜索生态中有内容，但你的内容不在其中："
+                       "确保文章已在知乎等平台发布并被搜索收录（标题 + 首段覆盖话题关键词，正文带自包含答案块）",
+                expected_impact="让话题搜索结果里出现你的内容",
+                falsifiability_check=f"重跑 /pulse track --query {_shell_quote(query)} "
+                                     f"--mine {_shell_quote(mine_example)}，"
+                                     "搜索推断平台我的内容至少一个变为「是」",
+            ))
 
     failed = [r for r in results if r.status == "error"]
     if failed:
@@ -595,19 +770,29 @@ def render_markdown(
 
     lines.append("## 本次快照")
     lines.append("")
-    lines.append("| 平台 | 状态 | 被提及 | 情感 | 上下文 / 说明 |")
-    lines.append("|---|---|---|---|---|")
+    with_mine = any(r.mine_ids for r in results)
+    if with_mine:
+        lines.append("| 平台 | 状态 | 被提及 | 我的内容 | 情感 | 上下文 / 说明 |")
+        lines.append("|---|---|---|---|---|---|")
+    else:
+        lines.append("| 平台 | 状态 | 被提及 | 情感 | 上下文 / 说明 |")
+        lines.append("|---|---|---|---|---|")
     for r in results:
         cited_txt = {True: "是", False: "否", None: "未知"}.get(r.cited, "未知")
+        mine_txt = {True: "是", False: "否", None: "—"}.get(r.mine_cited, "—")
         sentiment = SENTIMENT_LABEL.get(r.sentiment or "", "—")
         if r.error:
             context = _md_cell(f"{r.context}（{r.error}）")
         else:
             context = _md_cell(r.context)
-        lines.append(
+        row = (
             f"| {PLATFORMS[r.platform]['label']} | {STATUS_LABEL.get(r.status, r.status)} "
-            f"| {cited_txt} | {sentiment} | {context} |"
+            f"| {cited_txt} "
         )
+        if with_mine:
+            row += f"| {mine_txt} "
+        row += f"| {sentiment} | {context} |"
+        lines.append(row)
     lines.append("")
 
     lines.append("## 趋势对比")
@@ -625,7 +810,27 @@ def render_markdown(
                 "是" if p["cited"] else "否" if p["cited"] is False else "未知"
                 for p in points
             )
-            lines.append(f"- **{label}**（{len(points)} 次）：{states}")
+            line = f"- **{label}**（{len(points)} 次）：{states}"
+            # 只要历史里有任何一次检查过 mine，就按 mine_ids 分组展示：
+            # 不同次用不同标识时不会显示成假回归；未检查的运行显式标次数
+            if any(p.get("mine_checked") for p in points):
+                groups: dict[tuple, list] = {}
+                for idx, p in enumerate(points, 1):
+                    key = tuple(sorted(p.get("mine_ids") or []))
+                    groups.setdefault(key, []).append((idx, p))
+                multi_group = len(groups) > 1
+                for key, group in groups.items():
+                    states = " → ".join(
+                        ("是" if p["mine_cited"] else "否" if p["mine_cited"] is False else "未知")
+                        + (f"（第{idx}次）" if multi_group else "")
+                        for idx, p in group
+                    )
+                    if key:
+                        line += f"；我的内容({'、'.join(key)})：{states}"
+                    else:
+                        positions = "、".join(str(idx) for idx, _ in group)
+                        line += f"；未检查 {len(group)} 次" + (f"（第{positions}次）" if multi_group else "")
+            lines.append(line)
         if trend["changes"]:
             lines.append("")
             lines.append("**引用状态变化点**：")
@@ -662,6 +867,11 @@ def render_markdown(
     lines.append("- DeepSeek：真实 API 探测，被提及 = 回答正文出现品牌名（精确匹配），原始回答可在 JSON 快照的 meta.answer 复核。")
     lines.append("- Kimi / 豆包 / 元宝：无公开 API，使用 Bing 搜索结果推断检索库中的存在信号，**不等同于该平台真实引用**。")
     lines.append("- Kimi / 豆包 / 元宝 各自用 Bing 对同一查询词做搜索推断（结果通常相同），是检索库存在信号，不代表各平台各自的真实引用。")
+    lines.append("- 传 --mine <你的内容标识>（URL/标题/作者名，可重复传多次，一次一个）时，额外判断 AI 回答/Bing 结果里是否出现你的内容；"
+                 "URL 在搜索推断里更有效，标题/作者名在 AI 回答里更常见。")
+    lines.append("- URL 标识匹配规则：域名大小写不敏感、路径大小写敏感（URL 路径区分大小写）；标题/作者名不区分大小写。")
+    lines.append("- 行动清单里的重跑命令为 POSIX shell 风格；PowerShell 可直接使用，但标识含英文单引号时"
+                 "（shlex 会转义为 '\\''），需在 PowerShell 手动调整或改用 bash。")
     lines.append("- 每次运行写入 data/monitor.db，趋势来自同品牌的历史快照对比。")
     lines.append("")
     return "\n".join(lines)
@@ -731,6 +941,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--query", required=True, type=_non_empty_query, help="品牌名或关键词")
     parser.add_argument(
+        "--mine",
+        action="append",
+        default=[],
+        help="你的内容标识（URL/标题/作者名），可重复传多次（--mine <URL> --mine <昵称>），一次一个；"
+             "传了才会额外判断 AI 回答/搜索结果里是否出现你的内容",
+    )
+    parser.add_argument(
         "--platforms",
         type=_parse_platforms,
         help="逗号分隔的平台列表，默认全部（deepseek,kimi,doubao,yuanbao）",
@@ -743,11 +960,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     platforms = args.platforms or list(PLATFORMS)
+    mine_ids = list(dict.fromkeys(m.strip() for m in args.mine if m.strip()))
     db_path = Path(args.db) if args.db else DEFAULT_DB
     out_dir = Path(args.output) if args.output else None
 
     try:
-        results = [PLATFORMS[p]["probe"](args.query) for p in platforms]
+        results = [PLATFORMS[p]["probe"](args.query, mine_ids=mine_ids) for p in platforms]
         store_results(results, db_path=db_path)
         trend = build_trend(args.query, db_path=db_path)
         recs = build_recommendations(args.query, results)
@@ -767,13 +985,16 @@ def main(argv: list[str] | None = None) -> int:
     print(f"监测对象：{args.query}")
     for r in results:
         label = PLATFORMS[r.platform]["label"]
+        mine = ""
+        if r.mine_ids:
+            mine = " · 我的内容 " + {True: "是", False: "否", None: "—"}.get(r.mine_cited, "—")
         if r.status == "ok":
             cited = "是" if r.cited else "否"
             extra = f" · 情感 {SENTIMENT_LABEL.get(r.sentiment or '', '—')}" if r.sentiment else ""
             degraded = " · Bing 推断" if r.degraded else ""
-            print(f"  {label}：{STATUS_LABEL[r.status]} · 被提及 {cited}{extra}{degraded}")
+            print(f"  {label}：{STATUS_LABEL[r.status]} · 被提及 {cited}{extra}{degraded}{mine}")
         else:
-            print(f"  {label}：{STATUS_LABEL.get(r.status, r.status)} · {_md_cell(r.context)}")
+            print(f"  {label}：{STATUS_LABEL.get(r.status, r.status)} · {_md_cell(r.context)}{mine}")
     print(f"趋势对比：{trend['total_runs']} 次快照 · {len(trend['changes'])} 处引用状态变化")
     print(f"行动建议：{len(recs)} 条（P0={sum(1 for r in recs if r.priority == 'P0')}）")
     for p in paths:
