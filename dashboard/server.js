@@ -100,12 +100,15 @@ function apiOverview(query) {
     const cited = okRows.filter((r) => r.cited === 1).length;
     const negative = okRows.filter((r) => r.sentiment === "negative").length;
 
-    // 变化量只对比两次运行都覆盖的平台，避免因平台集合不同而失真
+    // 变化量只在两次运行都覆盖的平台之间对比（口径一致才可比较）
     const currentPlatforms = new Set(rows.map((r) => r.platform));
+    const prevPlatforms = new Set(prevRows.map((r) => r.platform));
+    const commonPlatforms = [...currentPlatforms].filter((p) => prevPlatforms.has(p));
     const prevCited = prevRows.filter(
-      (r) => currentPlatforms.has(r.platform) && r.status === "ok" && r.cited === 1
+      (r) => commonPlatforms.includes(r.platform) && r.status === "ok" && r.cited === 1
     ).length;
-    const citedDelta = rows.length === 0 ? null : cited - prevCited;
+    const citedSame = okRows.filter((r) => commonPlatforms.includes(r.platform)).length;
+    const citedDelta = rows.length === 0 || !commonPlatforms.length ? null : citedSame - prevCited;
 
     return {
       query,
