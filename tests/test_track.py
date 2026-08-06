@@ -213,6 +213,14 @@ class TestDB:
         assert meta["note"] == "搜索引擎存在信号"
         assert json.loads(by_platform["deepseek"]["meta"]) == {}
 
+    def test_default_run_at_has_microsecond_precision(self, tmp_path):
+        db = tmp_path / "monitor.db"
+        run_at = store_results(
+            [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)],
+            db_path=db,
+        )
+        assert "." in run_at
+
     def test_trend_detects_change(self, tmp_path):
         db = tmp_path / "monitor.db"
         store_results(

@@ -67,7 +67,7 @@ bash pluse/install.sh
 
 **竞品差距分析（Phase 1 · 已上线，/pulse brand）** — 不只比分数。Pulse 指出竞品覆盖了哪些话题而你没有——让你知道下一篇该写什么。
 
-**本地仪表盘（Phase 2 · 已上线 MVP）** — `node dashboard/server.js` 启动（需 Node ≥ 22.5），`localhost:8766`。概览卡片、各平台被提及趋势折线图、最近快照表。所有数据留在本地。
+**本地仪表盘（Phase 2 · 已上线 MVP）** — `node dashboard/server.js` 启动（需 Node ≥ 22.5，Node ≥ 24 开箱即用，22.5–23.x 需 `--experimental-sqlite` flag），`localhost:8766`。概览卡片、各平台被提及趋势折线图、最近快照表。所有数据留在本地。
 
 ## 与企业 GEO 工具对比
 

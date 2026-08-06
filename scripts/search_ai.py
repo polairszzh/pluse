@@ -353,7 +353,8 @@ def store_results(
     run_at: str | None = None,
 ) -> str:
     """写入一次探测快照，返回本次 run_at"""
-    run_at = run_at or datetime.now().astimezone().isoformat(timespec="seconds")
+    # 微秒精度：避免同一秒内重跑两次时 run_at 相同，趋势/概览把两次运行合并
+    run_at = run_at or datetime.now().astimezone().isoformat(timespec="microseconds")
     conn = connect(db_path)
     try:
         with conn:
@@ -431,7 +432,12 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
                     "run_at": item["run_at"],
                 })
             prev = cur_val
-    return {"query": query, "series": series, "changes": changes, "total_runs": len(rows)}
+    return {
+        "query": query,
+        "series": series,
+        "changes": changes,
+        "total_runs": len({r["run_at"] for r in rows}),
+    }
 
 
 # --------------------------------------------------------------------------

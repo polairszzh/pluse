@@ -10,7 +10,8 @@
 //
 // 设计取舍：Phase 2 MVP 用 Node 内置 http + node:sqlite，零安装即可跑；
 // 后续若引入 Express，只需替换服务层，API 形态保持不变。
-// 需要 Node >= 22.5（node:sqlite）；启动失败时请先升级 Node。
+// 需要 Node >= 22.5；Node >= 24 开箱即用（本仓库已在此版本验证），
+// 22.5–23.x 需 --experimental-sqlite flag；启动失败时请先升级 Node。
 
 const http = require("http");
 const fs = require("fs");
@@ -56,6 +57,10 @@ function openDb() {
   return new DatabaseSync(DB_PATH, { readOnly: true });
 }
 
+function fmtRunAt(value) {
+  return String(value || "").replace(/\.\d+/, "");
+}
+
 function sendJson(res, status, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
@@ -72,11 +77,15 @@ function apiQueries() {
   try {
     return conn
       .prepare(
-        "SELECT query, MAX(run_at) AS last_run, COUNT(*) AS total_runs" +
+        "SELECT query, MAX(run_at) AS last_run, COUNT(DISTINCT run_at) AS total_runs" +
         " FROM probes GROUP BY query ORDER BY last_run DESC"
       )
       .all()
-      .map((r) => ({ query: r.query, last_run: r.last_run, total_runs: r.total_runs }));
+      .map((r) => ({
+        query: r.query,
+        last_run: fmtRunAt(r.last_run),
+        total_runs: r.total_runs,
+      }));
   } finally {
     conn.close();
   }
@@ -119,7 +128,7 @@ function apiOverview(query) {
 
     return {
       query,
-      last_run: lastRun,
+      last_run: fmtRunAt(lastRun),
       platforms: rows.length,
       ok_platforms: okRows.length,
       cited,
@@ -146,7 +155,7 @@ function apiTrends(query) {
     for (const r of rows) {
       if (!byPlatform.has(r.platform)) byPlatform.set(r.platform, []);
       byPlatform.get(r.platform).push({
-        run_at: r.run_at,
+        run_at: fmtRunAt(r.run_at),
         cited: r.cited === 1 ? true : r.cited === 0 ? false : null,
         status: r.status,
         sentiment: r.sentiment,
@@ -180,7 +189,7 @@ function apiLatest(query) {
       latest.push({
         platform: r.platform,
         label: PLATFORM_LABELS[r.platform] || r.platform,
-        run_at: r.run_at,
+        run_at: fmtRunAt(r.run_at),
         status: r.status,
         status_label: STATUS_LABELS[r.status] || r.status,
         cited: r.cited === 1 ? true : r.cited === 0 ? false : null,
@@ -199,7 +208,14 @@ function apiLatest(query) {
 }
 
 function serveStatic(req, res) {
-  const urlPath = decodeURIComponent(new URL(req.url, "http://localhost").pathname);
+  let urlPath;
+  try {
+    urlPath = decodeURIComponent(new URL(req.url, "http://localhost").pathname);
+  } catch (err) {
+    res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Bad Request");
+    return;
+  }
   const rel = urlPath === "/" ? "index.html" : urlPath.replace(/^\/+/, "");
   const filePath = path.normalize(path.join(PUBLIC_DIR, rel));
   if (!filePath.startsWith(PUBLIC_DIR)) {
@@ -222,7 +238,13 @@ function serveStatic(req, res) {
 }
 
 const server = http.createServer((req, res) => {
-  const url = new URL(req.url, `http://${HOST}:${PORT}`);
+  let url;
+  try {
+    url = new URL(req.url, `http://${HOST}:${PORT}`);
+  } catch (err) {
+    sendJson(res, 400, { error: "请求 URL 无效" });
+    return;
+  }
   const route = `${req.method} ${url.pathname}`;
 
   if (route === "GET /api/health") {
