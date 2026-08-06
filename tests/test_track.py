@@ -153,6 +153,14 @@ class TestDetectMine:
             ["https://zhuanlan.zhihu.com/p/123"],
         ) == []
 
+    def test_url_prefix_boundary_no_false_positive(self):
+        # 主机前缀：example.com 不命中 example.com.evil.com
+        assert _detect_mine("https://example.com.evil.com", ["https://example.com"]) == []
+        # 路径前缀：/p/123 不命中 /p/1234
+        assert _detect_mine("https://a.com/p/1234", ["https://a.com/p/123"]) == []
+        # 精确路径命中
+        assert _detect_mine("https://a.com/p/123", ["https://a.com/p/123"]) == ["https://a.com/p/123"]
+
 
 class TestDeepSeekProbe:
     def test_load_key_strips_quotes(self, tmp_path, monkeypatch):
@@ -317,6 +325,26 @@ class TestSearchInference:
         result = probe_search_inference("AI搜索优化", "kimi", mine_ids=["https://nope.example/x"])
         assert result.mine_cited is False
         assert result.meta["mine_matched"] == []
+
+    def test_non_url_mine_does_not_match_url_field(self, monkeypatch):
+        # 非 URL 标识（如年份 2024）只扫 title+snippet，不扫 URL
+        html = """
+        <ol id="b_results">
+          <li class="b_algo">
+            <h2><a href="https://example.com/2024-guide">安装与配置教程</a></h2>
+            <p>一步步讲解安装步骤。</p>
+          </li>
+        </ol>
+        """
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        result = probe_search_inference("codex", "kimi", mine_ids=["2024"])
+        assert result.mine_cited is False
+        assert result.meta["mine_matched"] == []
+
+    def test_non_url_mine_matches_title(self, monkeypatch):
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=BING_HTML))
+        result = probe_search_inference("AI搜索优化", "kimi", mine_ids=["AI 搜索优化入门"])
+        assert result.mine_cited is True
 
     def test_url_keyword_does_not_trigger_cited(self, monkeypatch):
         # URL 含查询词（codex）但标题/摘要不含：cited 应为 False，mine 仍可匹配 URL

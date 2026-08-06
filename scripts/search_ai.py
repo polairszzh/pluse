@@ -96,10 +96,17 @@ def _detect_mine(text: str, mine_ids: list[str]) -> list[str]:
 
 
 def _url_present(url: str, text: str) -> bool:
-    """URL 是否出现在文本中：scheme://netloc 大小写不敏感，path/query 大小写敏感"""
+    """URL 是否出现在文本中：scheme://netloc 大小写不敏感，path/query 大小写敏感
+
+    带边界检查，避免前缀误匹配：
+      - https://example.com 不命中 https://example.com.evil.com（主机边界）
+      - /p/123 不命中 /p/1234（路径边界）
+    """
     try:
         parts = urlsplit(url)
     except ValueError:
+        return False
+    if not parts.netloc:
         return False
     base = f"{parts.scheme.lower()}://{parts.netloc.lower()}"
     rest = parts.path or ""
@@ -112,9 +119,19 @@ def _url_present(url: str, text: str) -> bool:
         if pos < 0:
             return False
         start = pos + len(base)
-        if text[start:start + len(rest)] == rest:
-            return True
+        # 主机边界：base 后不能紧跟主机名字符（字母数字/ - . _ :）
+        next_host = text[start:start + 1]
+        if next_host and (next_host.isalnum() or next_host in "-._:"):
+            idx = start
+            continue
+        end = start + len(rest)
+        if text[start:end] == rest:
+            # 路径边界：rest 结束后不能紧跟路径延续字符
+            tail = text[end:end + 1]
+            if not tail or not (tail.isalnum() or tail in "-._~%"):
+                return True
         idx = start
+    return False
 
 
 def _non_empty_query(value: str) -> str:
@@ -403,12 +420,10 @@ def probe_search_inference(
             mine_ids=mine_ids,
         )
 
-    text_blobs = [f"{item['title']} {item['snippet']}" for item in results]
-    mine_blobs = [f"{item['title']} {item.get('url', '')} {item['snippet']}" for item in results]
-
     # cited 只看标题+摘要：URL 常含关键词（如 github.com/openai/codex），拼入会误判「被提及」
     cited = False
     context = ""
+    text_blobs = [f"{item['title']} {item['snippet']}" for item in results]
     for text_blob in text_blobs:
         if query.lower() in text_blob.lower():
             cited = True
@@ -417,10 +432,18 @@ def probe_search_inference(
     if not context:
         top = results[0]
         context = _truncate(f"{top['title']} {top['snippet']}", 300)
-    # 我的内容标识匹配允许查 URL（作者常以文章链接被收录），扫全部结果
-    mine_matched = list(dict.fromkeys(
-        matched for blob in mine_blobs for matched in _detect_mine(blob, mine_ids)
+    # 我的内容标识匹配：URL 类标识扫 title+url+snippet（作者常以链接被收录），
+    # 非 URL 类标识（标题/作者名/年份等）只扫 title+snippet，避免在 URL 里误命中
+    url_mine_ids = [m for m in mine_ids if m.lower().startswith(("http://", "https://"))]
+    text_mine_ids = [m for m in mine_ids if m not in url_mine_ids]
+    url_matched = list(dict.fromkeys(
+        matched for item in results
+        for matched in _detect_mine(f"{item['title']} {item.get('url', '')} {item['snippet']}", url_mine_ids)
     ))
+    text_matched = list(dict.fromkeys(
+        matched for blob in text_blobs for matched in _detect_mine(blob, text_mine_ids)
+    ))
+    mine_matched = list(dict.fromkeys(url_matched + text_matched))
     return ProbeResult(
         query=query, platform=platform, status="ok", cited=cited,
         sentiment=None, context=context, source="search_inference", degraded=True,
