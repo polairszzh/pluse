@@ -69,6 +69,17 @@ def _shell_quote(value: str) -> str:
     return shlex.quote(str(value or ""))
 
 
+def _parse_mine_ids(raw: str | None) -> list[str]:
+    """解析 DB 里的 mine_ids JSON；空值/坏数据一律按 [] 处理，不让趋势功能崩溃"""
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
 def _truncate(text: str, limit: int) -> str:
     """折叠空白并截断到 limit 字符"""
     compact = " ".join(str(text or "").split())
@@ -602,8 +613,8 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
                 "status": r["status"],
                 "sentiment": r["sentiment"],
                 "mine_cited": bool(r["mine_cited"]) if r["mine_cited"] is not None else None,
-                "mine_checked": bool(json.loads(r["mine_ids"])) if r["mine_ids"] else False,
-                "mine_ids": json.loads(r["mine_ids"]) if r["mine_ids"] else [],
+                "mine_checked": bool(_parse_mine_ids(r["mine_ids"])),
+                "mine_ids": _parse_mine_ids(r["mine_ids"]),
             }
             for r in ordered
         ]

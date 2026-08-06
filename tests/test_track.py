@@ -509,6 +509,22 @@ class TestDB:
         assert points[0]["mine_checked"] is True
         assert points[1]["mine_checked"] is False
 
+    def test_trend_tolerates_malformed_mine_ids(self, tmp_path):
+        db = tmp_path / "monitor.db"
+        store_results(
+            [ProbeResult(
+                "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+                mine_cited=True, mine_ids=["https://a.com/1"],
+            )],
+            db_path=db, run_at="2026-08-06T10:00:00+08:00",
+        )
+        conn = connect(db)
+        conn.execute("UPDATE probes SET mine_ids='{bad json' WHERE query='品牌A'")
+        conn.commit()
+        conn.close()
+        trend = build_trend("品牌A", db_path=db)  # 坏数据不崩
+        assert trend["series"]["deepseek"][0]["mine_checked"] is False
+
     def test_no_history(self, tmp_path):
         db = tmp_path / "monitor.db"
         trend = build_trend("不存在", db_path=db)
