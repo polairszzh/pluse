@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 import requests
+import search_ai
 from audit import Recommendation
 from search_ai import (
     PLATFORMS,
@@ -108,6 +109,13 @@ class TestParseBing:
 
 
 class TestDeepSeekProbe:
+    def test_load_key_strips_quotes(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+        monkeypatch.delenv("LLM_API_KEY", raising=False)
+        monkeypatch.setattr("search_ai.PROJECT_ROOT", tmp_path)
+        (tmp_path / ".env").write_text('DEEPSEEK_API_KEY="sk-quoted"\n', encoding="utf-8")
+        assert search_ai._load_key() == "sk-quoted"
+
     def test_no_key(self, monkeypatch):
         monkeypatch.setattr("search_ai._load_key", lambda: None)
         result = probe_deepseek("测试品牌")
@@ -339,6 +347,20 @@ class TestReport:
         assert "DeepSeek" in md
         assert "不等同于该平台真实引用" in md
         assert "验证方式" in md
+
+    def test_render_markdown_filters_changes_by_requested_platforms(self):
+        results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]
+        trend = {
+            "series": {"deepseek": [], "kimi": []},
+            "changes": [
+                {"platform": "kimi", "from": False, "to": True, "run_at": "2026-08-01T10:00:00+08:00"},
+                {"platform": "deepseek", "from": False, "to": True, "run_at": "2026-08-06T10:00:00+08:00"},
+            ],
+            "total_runs": 3,
+        }
+        md = render_markdown("品牌A", results, trend, [])
+        # 只保留本次运行平台（deepseek）的变化点，kimi 的旧变化不混入
+        assert md.count("由「否」变为「是」") == 1
 
     def test_save_report(self, tmp_path):
         results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]

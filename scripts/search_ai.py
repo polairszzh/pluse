@@ -108,7 +108,7 @@ def _load_key() -> str | None:
     """按顺序从环境变量和 .env 读取 DEEPSEEK_API_KEY / LLM_API_KEY"""
     candidates = ("DEEPSEEK_API_KEY", "LLM_API_KEY")
     for key in candidates:
-        value = os.environ.get(key, "").strip()
+        value = os.environ.get(key, "").strip().strip('"').strip("'")
         if value and value != "your_api_key_here":
             return value
     env_path = PROJECT_ROOT / ".env"
@@ -120,7 +120,7 @@ def _load_key() -> str | None:
                     continue
                 k, v = line.split("=", 1)
                 if k.strip() in candidates:
-                    value = v.strip()
+                    value = v.strip().strip('"').strip("'")
                     if value and value != "your_api_key_here":
                         return value
     return None
@@ -599,6 +599,9 @@ def render_markdown(
             lines.append("")
             lines.append("**引用状态变化点**：")
             for ch in trend["changes"]:
+                if ch["platform"] not in requested:
+                    # 只展示本次实际运行平台的变化点，避免混入未运行平台的旧历史
+                    continue
                 label = PLATFORMS[ch["platform"]]["label"]
                 lines.append(
                     f"- {label} 在 {ch['run_at']} 由「{'是' if ch['from'] else '否'}」"

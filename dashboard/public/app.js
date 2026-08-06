@@ -72,7 +72,7 @@ async function loadOverview(query) {
 
   const cards = [
     { label: "监测对象", value: data.query, sub: `最近运行 ${data.last_run}` },
-    { label: "平台", value: `${data.cited}/${data.platforms}`, sub: "被提及 / 总平台" },
+    { label: "平台", value: `${data.cited}/${data.ok_platforms}`, sub: "被提及 / 有效平台" },
     { label: "引用变化", value: deltaTxt, sub: "与上一次快照对比", cls: deltaCls },
     { label: "负面提及", value: data.negative, sub: "本次快照", cls: data.negative > 0 ? "down" : "" },
   ];

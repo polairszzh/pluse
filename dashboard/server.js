@@ -54,7 +54,12 @@ const SENTIMENT_LABELS = { positive: "正面", neutral: "中性", negative: "负
 
 function openDb() {
   if (!fs.existsSync(DB_PATH)) return null;
-  return new DatabaseSync(DB_PATH, { readOnly: true });
+  try {
+    return new DatabaseSync(DB_PATH, { readOnly: true });
+  } catch (err) {
+    console.error("打开 monitor.db 失败：", err.message);
+    return null;
+  }
 }
 
 function fmtRunAt(value) {
