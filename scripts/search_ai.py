@@ -743,18 +743,21 @@ def render_markdown(
             # 不同次用不同标识时不会显示成假回归；未检查的运行显式标次数
             if any(p.get("mine_checked") for p in points):
                 groups: dict[tuple, list] = {}
-                for p in points:
+                for idx, p in enumerate(points, 1):
                     key = tuple(sorted(p.get("mine_ids") or []))
-                    groups.setdefault(key, []).append(p)
+                    groups.setdefault(key, []).append((idx, p))
+                multi_group = len(groups) > 1
                 for key, group in groups.items():
                     states = " → ".join(
-                        "是" if p["mine_cited"] else "否" if p["mine_cited"] is False else "未知"
-                        for p in group
+                        ("是" if p["mine_cited"] else "否" if p["mine_cited"] is False else "未知")
+                        + (f"（第{idx}次）" if multi_group else "")
+                        for idx, p in group
                     )
                     if key:
                         line += f"；我的内容({'、'.join(key)})：{states}"
                     else:
-                        line += f"；未检查 {len(group)} 次"
+                        positions = "、".join(str(idx) for idx, _ in group)
+                        line += f"；未检查 {len(group)} 次" + (f"（第{positions}次）" if multi_group else "")
             lines.append(line)
         if trend["changes"]:
             lines.append("")

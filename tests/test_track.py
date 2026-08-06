@@ -614,8 +614,8 @@ class TestReport:
             "total_runs": 3,
         }
         md = render_markdown("品牌A", results, trend, [])
-        assert "我的内容(https://a.com/1)：是 → 否" in md
-        assert "未检查 1 次" in md
+        assert "我的内容(https://a.com/1)：是（第1次） → 否（第3次）" in md
+        assert "未检查 1 次（第2次）" in md
 
     def test_save_report(self, tmp_path):
         results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]
@@ -654,7 +654,7 @@ class TestCLI:
         assert json.loads(history[0]["mine_ids"]) == ["https://a.com/1"]
         assert history[0]["mine_cited"] is None  # no_key → mine 未知
 
-    def test_main_with_repeated_mine_and_comma(self, tmp_path, monkeypatch):
+    def test_main_with_repeated_mine_keeps_comma_in_identifier(self, tmp_path, monkeypatch):
         monkeypatch.setattr("search_ai._load_key", lambda: None)
         db = tmp_path / "monitor.db"
         out = tmp_path / "snap"
