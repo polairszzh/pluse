@@ -138,7 +138,9 @@ def _url_present(url: str, text: str) -> bool:
       - 尾部句子标点（.,;:!?)]} 及中文标点）不参与比较
       - query 跟踪参数不参与比较
     """
-    target = _url_identity(url.rstrip(_URL_TRAIL))
+    # 配置标识按原样规范化（不做尾部标点剥离）：用户明确给的 URL 末尾标点是路径的一部分；
+    # 只有文本里抽取的 token 才剥离尾部标点（那里才有句子标点歧义）
+    target = _url_identity(url)
     if target is None:
         return False
     for token in _URL_TOKEN_RE.findall(str(text or "")):

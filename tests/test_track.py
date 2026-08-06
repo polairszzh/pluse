@@ -189,6 +189,10 @@ class TestDetectMine:
     def test_url_query_params_ignored(self):
         # query 跟踪参数不参与比较：带 utm 的引用仍命中
         assert _detect_mine("https://a.com/p?utm_source=x", ["https://a.com/p"]) == ["https://a.com/p"]
+
+    def test_url_identifier_trailing_punct_is_exact(self):
+        # 配置标识保留原样：/p. 不误匹配 /p（互误判），精确匹配自身
+        assert _detect_mine("https://a.com/p", ["https://a.com/p."]) == []
         # 根域尾斜杠等价：无斜杠标识命中带斜杠文本
         assert _detect_mine("https://example.com/", ["https://example.com"]) == ["https://example.com"]
         # 根域仍不命中子路径
