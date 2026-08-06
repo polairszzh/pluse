@@ -354,22 +354,23 @@ def probe_search_inference(
             error="no_results_parsed", meta={"html_len": len(html_text)},
         )
 
+    text_blobs = [f"{item['title']} {item['snippet']}" for item in results]
+    mine_blobs = [f"{item['title']} {item['url']} {item['snippet']}" for item in results]
+
+    # cited 只看标题+摘要：URL 常含关键词（如 github.com/openai/codex），拼入会误判「被提及」
     cited = False
     context = ""
-    mine_matched: list[str] = []
-    all_blobs: list[str] = []
-    for item in results:
-        blob = f"{item['title']} {item['url']} {item['snippet']}"
-        all_blobs.append(blob)
-        if query.lower() in blob.lower():
+    for text_blob in text_blobs:
+        if query.lower() in text_blob.lower():
             cited = True
-            context = _truncate(blob, 300)
+            context = _truncate(text_blob, 300)
             break
     if not context:
         top = results[0]
         context = _truncate(f"{top['title']} {top['snippet']}", 300)
+    # 我的内容标识匹配允许查 URL（作者常以文章链接被收录），扫全部结果
     mine_matched = list(dict.fromkeys(
-        matched for blob in all_blobs for matched in _detect_mine(blob, mine_ids)
+        matched for blob in mine_blobs for matched in _detect_mine(blob, mine_ids)
     ))
     return ProbeResult(
         query=query, platform=platform, status="ok", cited=cited,

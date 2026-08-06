@@ -287,6 +287,21 @@ class TestSearchInference:
         assert result.mine_cited is False
         assert result.meta["mine_matched"] == []
 
+    def test_url_keyword_does_not_trigger_cited(self, monkeypatch):
+        # URL 含查询词（codex）但标题/摘要不含：cited 应为 False，mine 仍可匹配 URL
+        html = """
+        <ol id="b_results">
+          <li class="b_algo">
+            <h2><a href="https://example.com/codex-guide">安装与配置教程</a></h2>
+            <p>一步步讲解安装步骤。</p>
+          </li>
+        </ol>
+        """
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        result = probe_search_inference("codex", "kimi", mine_ids=["https://example.com/codex-guide"])
+        assert result.cited is False
+        assert result.mine_cited is True
+
     def test_request_error(self, monkeypatch):
         def boom(*a, **kw):
             raise requests.exceptions.Timeout("slow")
@@ -501,7 +516,7 @@ class TestReport:
         )]
         md = render_markdown("品牌A", results, {"series": {}, "changes": []}, [])
         assert "我的内容" in md
-        assert "https://a.com/1" not in md or "--mine" in md
+        assert "--mine" in md
 
     def test_save_report(self, tmp_path):
         results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]
