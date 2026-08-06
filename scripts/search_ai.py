@@ -26,6 +26,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
 from audit import Recommendation
@@ -75,13 +76,45 @@ def _truncate(text: str, limit: int) -> str:
 
 
 def _detect_mine(text: str, mine_ids: list[str]) -> list[str]:
-    """在文本中查找我的内容标识（URL/标题/作者名），不区分大小写"""
+    """在文本中查找我的内容标识（URL/标题/作者名）
+
+    URL 标识：域名大小写不敏感、路径大小写敏感（URL 路径区分大小写，避免误报）；
+    标题/作者名：不区分大小写。
+    """
     if not mine_ids:
         return []
     lower_text = str(text or "").lower()
     stripped = [mid.strip() for mid in mine_ids if mid.strip()]
-    matched = [mid for mid in stripped if mid.lower() in lower_text]
+    matched = []
+    for mid in stripped:
+        if mid.lower().startswith(("http://", "https://")):
+            if _url_present(mid, text):
+                matched.append(mid)
+        elif mid.lower() in lower_text:
+            matched.append(mid)
     return list(dict.fromkeys(matched))
+
+
+def _url_present(url: str, text: str) -> bool:
+    """URL 是否出现在文本中：scheme://netloc 大小写不敏感，path/query 大小写敏感"""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    base = f"{parts.scheme.lower()}://{parts.netloc.lower()}"
+    rest = parts.path or ""
+    if parts.query:
+        rest += "?" + parts.query
+    lower_text = text.lower()
+    idx = 0
+    while True:
+        pos = lower_text.find(base, idx)
+        if pos < 0:
+            return False
+        start = pos + len(base)
+        if text[start:start + len(rest)] == rest:
+            return True
+        idx = start
 
 
 def _non_empty_query(value: str) -> str:
@@ -798,7 +831,9 @@ def render_markdown(
     lines.append("- Kimi / 豆包 / 元宝 各自用 Bing 对同一查询词做搜索推断（结果通常相同），是检索库存在信号，不代表各平台各自的真实引用。")
     lines.append("- 传 --mine <你的内容标识>（URL/标题/作者名，可重复传多次，一次一个）时，额外判断 AI 回答/Bing 结果里是否出现你的内容；"
                  "URL 在搜索推断里更有效，标题/作者名在 AI 回答里更常见。")
-    lines.append("- 行动清单里的重跑命令为 POSIX shell 风格；Windows PowerShell 中单引号内容同样按字面处理，可直接复制使用。")
+    lines.append("- URL 标识匹配规则：域名大小写不敏感、路径大小写敏感（URL 路径区分大小写）；标题/作者名不区分大小写。")
+    lines.append("- 行动清单里的重跑命令为 POSIX shell 风格；PowerShell 可直接使用，但标识含英文单引号时"
+                 "（shlex 会转义为 '\\''），需在 PowerShell 手动调整或改用 bash。")
     lines.append("- 每次运行写入 data/monitor.db，趋势来自同品牌的历史快照对比。")
     lines.append("")
     return "\n".join(lines)

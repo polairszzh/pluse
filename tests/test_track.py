@@ -141,6 +141,18 @@ class TestDetectMine:
     def test_deduplicates_matched_ids(self):
         assert _detect_mine("文本 A 和 B", ["A", "A", "B"]) == ["A", "B"]
 
+    def test_url_host_case_insensitive_path_sensitive(self):
+        # 域名大小写不敏感 → 命中
+        assert _detect_mine(
+            "来源 https://ZhuanLan.Zhihu.com/p/123",
+            ["https://zhuanlan.zhihu.com/p/123"],
+        ) == ["https://zhuanlan.zhihu.com/p/123"]
+        # 路径大小写不同 → 不命中（避免误报）
+        assert _detect_mine(
+            "来源 https://zhuanlan.zhihu.com/P/123",
+            ["https://zhuanlan.zhihu.com/p/123"],
+        ) == []
+
 
 class TestDeepSeekProbe:
     def test_load_key_strips_quotes(self, tmp_path, monkeypatch):
