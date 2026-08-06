@@ -79,7 +79,8 @@ def _detect_mine(text: str, mine_ids: list[str]) -> list[str]:
     if not mine_ids:
         return []
     lower_text = str(text or "").lower()
-    return [mid for mid in mine_ids if mid.strip() and mid.lower() in lower_text]
+    stripped = [mid.strip() for mid in mine_ids if mid.strip()]
+    return [mid for mid in stripped if mid.lower() in lower_text]
 
 
 def _non_empty_query(value: str) -> str:
@@ -543,8 +544,8 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
                 "cited": bool(r["cited"]) if r["cited"] is not None else None,
                 "status": r["status"],
                 "sentiment": r["sentiment"],
-                "mine_cited": bool(r["mine_cited"]) if r.get("mine_cited") is not None else None,
-                "mine_checked": bool(json.loads(r["mine_ids"])) if r.get("mine_ids") else False,
+                "mine_cited": bool(r["mine_cited"]) if r["mine_cited"] is not None else None,
+                "mine_checked": bool(json.loads(r["mine_ids"])) if r["mine_ids"] else False,
             }
             for r in ordered
         ]

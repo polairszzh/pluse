@@ -135,6 +135,9 @@ class TestDetectMine:
         assert _detect_mine("", ["a"]) == []
         assert _detect_mine("任意文本", []) == []
 
+    def test_surrounding_spaces_stripped(self):
+        assert _detect_mine("参考我的昵称 写的文章", [" 我的昵称 "]) == ["我的昵称"]
+
 
 class TestDeepSeekProbe:
     def test_load_key_strips_quotes(self, tmp_path, monkeypatch):

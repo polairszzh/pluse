@@ -65,6 +65,29 @@ function openDb() {
   }
 }
 
+function migrateDb() {
+  // 与 scripts/search_ai.py 的 _migrate 等价：旧库自动补 mine_cited / mine_ids 列，
+  // 让「只开仪表盘、还没重跑过 track」的旧库也能展示我的内容列
+  if (!fs.existsSync(DB_PATH)) return;
+  let conn;
+  try {
+    conn = new DatabaseSync(DB_PATH);
+    const cols = conn.prepare("PRAGMA table_info(probes)").all().map((c) => c.name);
+    if (!cols.includes("mine_cited")) {
+      conn.exec("ALTER TABLE probes ADD COLUMN mine_cited INTEGER");
+    }
+    if (!cols.includes("mine_ids")) {
+      conn.exec("ALTER TABLE probes ADD COLUMN mine_ids TEXT");
+    }
+  } catch (err) {
+    console.error("monitor.db 迁移失败（不影响仪表盘启动）：", err.message);
+  } finally {
+    if (conn) conn.close();
+  }
+}
+
+migrateDb();
+
 function fmtRunAt(value) {
   return String(value || "").replace(/\.\d+/, "");
 }
