@@ -176,6 +176,19 @@ class TestDetectMine:
         assert _detect_mine("https://a.com/p", ["https://a.com/p/"]) == ["https://a.com/p/"]
         # 根域精确匹配
         assert _detect_mine("https://example.com", ["https://example.com"]) == ["https://example.com"]
+
+    def test_url_root_with_sentence_period(self):
+        # 根域后英文句号（其后为空白/结尾）→ 句子标点，命中
+        assert _detect_mine("见 https://example.com. 下一条", ["https://example.com"]) == ["https://example.com"]
+        assert _detect_mine("https://example.com.", ["https://example.com"]) == ["https://example.com"]
+
+    def test_url_paren_then_period(self):
+        # (https://a.com/p). 中 ) 后接英文句号 → 命中
+        assert _detect_mine("见 (https://a.com/p). 接着", ["https://a.com/p"]) == ["https://a.com/p"]
+
+    def test_url_query_params_ignored(self):
+        # query 跟踪参数不参与比较：带 utm 的引用仍命中
+        assert _detect_mine("https://a.com/p?utm_source=x", ["https://a.com/p"]) == ["https://a.com/p"]
         # 根域尾斜杠等价：无斜杠标识命中带斜杠文本
         assert _detect_mine("https://example.com/", ["https://example.com"]) == ["https://example.com"]
         # 根域仍不命中子路径

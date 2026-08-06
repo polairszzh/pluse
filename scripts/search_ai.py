@@ -108,70 +108,43 @@ def _detect_mine(text: str, mine_ids: list[str]) -> list[str]:
     return list(dict.fromkeys(matched))
 
 
-def _url_present(url: str, text: str) -> bool:
-    """URL 是否出现在文本中：scheme://netloc 大小写不敏感，path/query 大小写敏感
+_URL_TOKEN_RE = re.compile(r"https?://[^\s<>\"'，。；：！？（）【】「」『』《》]+", re.IGNORECASE)
+_URL_TRAIL = ".,;:!?)]}"
 
-    带边界检查，避免前缀误匹配：
-      - https://example.com 不命中 https://example.com.evil.com（主机边界）
-      - /p/123 不命中 /p/1234、/p/123/456（路径边界，含 / 与所有路径延续字符）
-      - https://example.com（无 path）不命中 https://example.com/p（根域不匹配子路径）
-      - URL 后紧跟英文句号等句子标点且其后为空白/结尾 → 视为句子标点，正常命中
-    """
+
+def _url_identity(url: str) -> tuple[str, str, str] | None:
+    """URL 规范化身份：(scheme, netloc, path) —— scheme/host 大小写不敏感，path 大小写敏感；
+    尾斜杠等价（/p 与 /p/、根域与根域加斜杠），query 不参与比较（跟踪参数不造成漏报）"""
     try:
         parts = urlsplit(url)
     except ValueError:
+        return None
+    if not parts.scheme or not parts.netloc:
+        return None
+    path = parts.path or ""
+    if path in ("", "/"):
+        path = ""
+    elif path.endswith("/"):
+        path = path[:-1]
+    return (parts.scheme.lower(), parts.netloc.lower(), path)
+
+
+def _url_present(url: str, text: str) -> bool:
+    """URL 是否出现在文本中：抽取文本里的 URL token 后按规范化身份比较
+
+    原则性实现，一次覆盖整类边界问题：
+      - 前缀误匹配（example.com vs example.com.evil.com、/p/123 vs /p/1234 vs /p/123/456）
+      - 根域不匹配子路径，但根域尾斜杠等价
+      - 尾部句子标点（.,;:!?)]} 及中文标点）不参与比较
+      - query 跟踪参数不参与比较
+    """
+    target = _url_identity(url.rstrip(_URL_TRAIL))
+    if target is None:
         return False
-    if not parts.netloc:
-        return False
-    base = f"{parts.scheme.lower()}://{parts.netloc.lower()}"
-    rest = parts.path or ""
-    if parts.query:
-        rest += "?" + parts.query
-    # 尾斜杠等价：/p 与 /p/、根域与根域加斜杠，均视为同一路径
-    candidates = {rest}
-    if rest.endswith("/"):
-        candidates.add(rest[:-1])
-    else:
-        candidates.add(rest + "/")
-    lower_text = text.lower()
-    idx = 0
-    while True:
-        pos = lower_text.find(base, idx)
-        if pos < 0:
-            return False
-        start = pos + len(base)
-        # 主机边界：base 后不能紧跟主机名字符（字母数字/ - . _ :）
-        next_host = text[start:start + 1]
-        if next_host and (next_host.isalnum() or next_host in "-._:"):
-            idx = start
-            continue
-        for candidate in candidates:
-            end = start + len(candidate)
-            if text[start:end] != candidate:
-                continue
-            tail = text[end:end + 1]
-            if not tail or _is_sentence_tail(text, end) or not _is_path_continuation(tail):
-                return True
-        idx = start
+    for token in _URL_TOKEN_RE.findall(str(text or "")):
+        if _url_identity(token.rstrip(_URL_TRAIL)) == target:
+            return True
     return False
-
-
-_URL_PATH_CHARS = "-._~%!$&'()*+,;=:@"
-_SENTENCE_TAIL = ".。，,;:!?！？)]}）】」』》\"'"
-
-
-def _is_path_continuation(ch: str) -> bool:
-    """URL 路径/query 延续字符：字母数字、路径保留字符、/（新路径段）"""
-    return bool(ch) and (ch.isalnum() or ch in _URL_PATH_CHARS or ch == "/")
-
-
-def _is_sentence_tail(text: str, end: int) -> bool:
-    """URL 结束后紧跟句子标点且其后为空白/结尾/标点 → 该标点是句子标点而非 URL 一部分"""
-    ch = text[end:end + 1]
-    if not ch or ch not in _SENTENCE_TAIL:
-        return False
-    after = text[end + 1:end + 2]
-    return after == "" or after.isspace() or after in "，。；：！？)]}）】」』》"
 
 
 def _non_empty_query(value: str) -> str:
