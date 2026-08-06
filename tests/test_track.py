@@ -176,6 +176,10 @@ class TestDetectMine:
         assert _detect_mine("https://a.com/p", ["https://a.com/p/"]) == ["https://a.com/p/"]
         # 根域精确匹配
         assert _detect_mine("https://example.com", ["https://example.com"]) == ["https://example.com"]
+        # 根域尾斜杠等价：无斜杠标识命中带斜杠文本
+        assert _detect_mine("https://example.com/", ["https://example.com"]) == ["https://example.com"]
+        # 根域仍不命中子路径
+        assert _detect_mine("https://example.com/p", ["https://example.com"]) == []
 
 
 class TestDeepSeekProbe:

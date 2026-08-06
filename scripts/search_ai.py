@@ -127,11 +127,11 @@ def _url_present(url: str, text: str) -> bool:
     rest = parts.path or ""
     if parts.query:
         rest += "?" + parts.query
-    # 尾斜杠等价：/p 与 /p/ 视为同一路径
+    # 尾斜杠等价：/p 与 /p/、根域与根域加斜杠，均视为同一路径
     candidates = {rest}
     if rest.endswith("/"):
         candidates.add(rest[:-1])
-    elif rest:
+    else:
         candidates.add(rest + "/")
     lower_text = text.lower()
     idx = 0
