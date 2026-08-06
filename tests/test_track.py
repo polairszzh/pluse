@@ -87,6 +87,10 @@ class TestSentiment:
     def test_not_recommended_with_detail(self):
         assert classify_sentiment("该产品不推荐，存在差评") == "negative"
 
+    def test_slightly_not_recommended_is_negative(self):
+        assert classify_sentiment("不太推荐") == "negative"
+        assert classify_sentiment("并不推荐") == "negative"
+
     def test_conflict_positive_wins(self):
         assert classify_sentiment("整体好评，但有个别差评") == "positive"
 
@@ -153,6 +157,16 @@ class TestDeepSeekProbe:
         )
         result = probe_deepseek("测试品牌")
         assert result.status == "error"
+
+    def test_non_object_json(self, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
+        monkeypatch.setattr(
+            requests, "post",
+            lambda *a, **kw: FakeResponse(data=[1, 2, 3]),
+        )
+        result = probe_deepseek("测试品牌")
+        assert result.status == "error"
+        assert "unexpected_json_type" in result.error
 
 
 class TestSearchInference:
@@ -237,6 +251,36 @@ class TestDB:
         assert trend["changes"] == [
             {"platform": "deepseek", "from": False, "to": True, "run_at": "2026-08-06T10:00:00+08:00"}
         ]
+
+    def test_trend_detects_change_across_invalid_probe(self, tmp_path):
+        db = tmp_path / "monitor.db"
+        store_results(
+            [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)],
+            db_path=db, run_at="2026-08-01T10:00:00+08:00",
+        )
+        store_results(
+            [ProbeResult("品牌A", "deepseek", "no_key", None, None, "c", "api", False)],
+            db_path=db, run_at="2026-08-03T10:00:00+08:00",
+        )
+        store_results(
+            [ProbeResult("品牌A", "deepseek", "ok", False, "neutral", "c", "api", False)],
+            db_path=db, run_at="2026-08-06T10:00:00+08:00",
+        )
+        trend = build_trend("品牌A", db_path=db)
+        assert trend["total_runs"] == 3
+        assert trend["changes"] == [
+            {"platform": "deepseek", "from": True, "to": False, "run_at": "2026-08-06T10:00:00+08:00"}
+        ]
+
+    def test_trend_ignores_only_invalid_probe(self, tmp_path):
+        db = tmp_path / "monitor.db"
+        store_results(
+            [ProbeResult("品牌A", "deepseek", "no_key", None, None, "c", "api", False)],
+            db_path=db, run_at="2026-08-03T10:00:00+08:00",
+        )
+        trend = build_trend("品牌A", db_path=db)
+        assert trend["total_runs"] == 1
+        assert trend["changes"] == []
 
     def test_no_history(self, tmp_path):
         db = tmp_path / "monitor.db"

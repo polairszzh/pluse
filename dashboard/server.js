@@ -123,7 +123,9 @@ function apiOverview(query) {
     const prevCited = prevRows.filter(
       (r) => commonPlatforms.includes(r.platform) && r.status === "ok" && r.cited === 1
     ).length;
-    const citedSame = okRows.filter((r) => commonPlatforms.includes(r.platform)).length;
+    const citedSame = okRows.filter(
+      (r) => commonPlatforms.includes(r.platform) && r.cited === 1
+    ).length;
     const citedDelta = rows.length === 0 || !commonPlatforms.length ? null : citedSame - prevCited;
 
     return {
@@ -155,7 +157,8 @@ function apiTrends(query) {
     for (const r of rows) {
       if (!byPlatform.has(r.platform)) byPlatform.set(r.platform, []);
       byPlatform.get(r.platform).push({
-        run_at: fmtRunAt(r.run_at),
+        // 保留微秒精度：同一秒内的多次运行在趋势图上必须保持独立
+        run_at: r.run_at,
         cited: r.cited === 1 ? true : r.cited === 0 ? false : null,
         status: r.status,
         sentiment: r.sentiment,
@@ -218,7 +221,8 @@ function serveStatic(req, res) {
   }
   const rel = urlPath === "/" ? "index.html" : urlPath.replace(/^\/+/, "");
   const filePath = path.normalize(path.join(PUBLIC_DIR, rel));
-  if (!filePath.startsWith(PUBLIC_DIR)) {
+  const relativePath = path.relative(PUBLIC_DIR, filePath);
+  if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
     res.writeHead(403);
     res.end("Forbidden");
     return;

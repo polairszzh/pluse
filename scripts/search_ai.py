@@ -46,7 +46,7 @@ POSITIVE_WORDS = (
     "好评", "值得", "高效", "出色", "首选",
 )
 NEGATIVE_WORDS = (
-    "不推荐", "失望", "投诉", "诈骗", "骗局", "糟糕", "劣质",
+    "不推荐", "不太推荐", "失望", "投诉", "诈骗", "骗局", "糟糕", "劣质",
     "后悔", "差评", "坑人", "翻车", "踩坑",
 )
 
@@ -134,8 +134,8 @@ def _load_key() -> str | None:
 def classify_sentiment(text: str) -> str:
     """关键词启发式情感分类：正面词命中 >= 负面词 -> positive；否则 negative；都没有 -> neutral
 
-    正面词若紧邻「不/没/无/未」前缀则视为被否定，不计数（避免「不推荐」同时命中
-    「推荐」与「不推荐」而被误判为正面）。
+    正面词若紧邻否定前缀（不/没/无/未，或 不太/并不/并非/谈不上）则视为被否定，
+    不计数（避免「不推荐」「不太推荐」被误判为正面）。
     """
     pos = 0
     for w in POSITIVE_WORDS:
@@ -144,8 +144,10 @@ def classify_sentiment(text: str) -> str:
             idx = text.find(w, start)
             if idx < 0:
                 break
-            before = text[idx - 1] if idx > 0 else ""
-            if before not in ("不", "没", "无", "未"):
+            before1 = text[idx - 1] if idx > 0 else ""
+            before2 = text[idx - 2:idx] if idx > 1 else ""
+            negated = before1 in ("不", "没", "无", "未") or before2 in ("不太", "并不", "并非", "谈不上")
+            if not negated:
                 pos += 1
             start = idx + len(w)
     neg = sum(1 for w in NEGATIVE_WORDS if w in text)
@@ -177,6 +179,14 @@ def probe_deepseek(query: str, timeout: int = 60, session: requests.Session | No
         resp = http.post(DEEPSEEK_BASE, json=payload, headers=headers, timeout=timeout)
         resp.raise_for_status()
         data = resp.json()
+        if not isinstance(data, dict):
+            return ProbeResult(
+                query=query, platform="deepseek", status="error", cited=None,
+                sentiment=None, context="DeepSeek 响应结构异常（非对象）", source="api",
+                degraded=True,
+                error=f"unexpected_json_type:{type(data).__name__}",
+                meta={"note": "响应应为 JSON 对象（含 choices 数组），保留原始类型便于排查"},
+            )
         answer = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
     except requests.exceptions.RequestException as exc:
         return ProbeResult(
@@ -424,7 +434,11 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
         prev: bool | None = None
         for item in ordered:
             cur_val = bool(item["cited"]) if item["cited"] is not None else None
-            if prev is not None and cur_val is not None and prev != cur_val:
+            if cur_val is None:
+                # 无效探测（未配置密钥/失败）不参与变化点，也不重置基线，
+                # 这样隔次的有效对比仍能检出引用状态变化
+                continue
+            if prev is not None and prev != cur_val:
                 changes.append({
                     "platform": platform,
                     "from": prev,
@@ -595,7 +609,7 @@ def render_markdown(
     lines.append("")
     lines.append("- DeepSeek：真实 API 探测，被提及 = 回答正文出现品牌名（精确匹配），原始回答可在 JSON 快照的 meta.answer 复核。")
     lines.append("- Kimi / 豆包 / 元宝：无公开 API，使用 Bing 搜索结果推断检索库中的存在信号，**不等同于该平台真实引用**。")
-    lines.append("- Kimi / 豆包 / 元宝 共用同一次 Bing 搜索推断（三行结果相同），是检索库存在信号，不代表各平台各自的真实引用。")
+    lines.append("- Kimi / 豆包 / 元宝 各自用 Bing 对同一查询词做搜索推断（结果通常相同），是检索库存在信号，不代表各平台各自的真实引用。")
     lines.append("- 每次运行写入 data/monitor.db，趋势来自同品牌的历史快照对比。")
     lines.append("")
     return "\n".join(lines)

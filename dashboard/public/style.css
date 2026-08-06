@@ -62,6 +62,9 @@ main { padding: 24px 28px 48px; max-width: 1100px; margin: 0 auto; }
 }
 .card .label { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
 .card .value { font-size: 26px; font-weight: 600; }
+.card .value.up { color: var(--ok); }
+.card .value.down { color: var(--bad); }
+.card .value.flat { color: var(--muted); }
 .card .delta { font-size: 13px; margin-top: 4px; }
 .delta.up { color: var(--ok); }
 .delta.down { color: var(--bad); }
