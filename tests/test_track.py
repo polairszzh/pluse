@@ -518,8 +518,11 @@ class TestRecommendations:
             "品牌A", "kimi", "ok", True, None, "c", "search_inference", True,
             mine_cited=False, mine_ids=["https://a.com/1"],
         )]
-        recs = build_recommendations("品牌A", results)
+        recs = build_recommendations("codex 如何安装", results)
         assert any(r.priority == "P1" and r.dimension == "内容收录" for r in recs)
+        rec = next(r for r in recs if r.dimension == "内容收录")
+        assert "--query 'codex 如何安装'" in rec.falsifiability_check
+        assert "--mine https://a.com/1" in rec.falsifiability_check
 
     def test_mine_cited_no_p0(self):
         results = [ProbeResult(
@@ -588,6 +591,28 @@ class TestReport:
         md = render_markdown("品牌A", results, trend, [])
         assert "我的内容：是 → 未知 → 否" in md
 
+    def test_render_markdown_trend_marks_unchecked(self):
+        results = [ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=True, mine_ids=["https://a.com/1"],
+        )]
+        trend = {
+            "series": {
+                "deepseek": [
+                    {"run_at": "t1", "cited": True, "status": "ok", "sentiment": "positive",
+                     "mine_cited": True, "mine_checked": True},
+                    {"run_at": "t2", "cited": True, "status": "ok", "sentiment": "positive",
+                     "mine_cited": None, "mine_checked": False},
+                    {"run_at": "t3", "cited": False, "status": "ok", "sentiment": "neutral",
+                     "mine_cited": False, "mine_checked": True},
+                ]
+            },
+            "changes": [],
+            "total_runs": 3,
+        }
+        md = render_markdown("品牌A", results, trend, [])
+        assert "我的内容：是 → 未检查 → 否" in md
+
     def test_save_report(self, tmp_path):
         results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]
         paths = save_report("品牌A", results, {"series": {}}, [], out_dir=tmp_path)
@@ -641,6 +666,10 @@ class TestMisc:
         assert re_slug("AI 搜索优化") == "AI-搜索优化"
         assert re_slug("") == "untitled"
 
-    def test_platform_registry(self):
+    def test_platform_registry(self, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: None)
         assert set(PLATFORMS) == {"deepseek", "kimi", "doubao", "yuanbao"}
-        assert PLATFORMS["deepseek"]["probe"] is probe_deepseek
+        # 注册表 probe 统一签名：所有平台都能接收 mine_ids
+        result = PLATFORMS["deepseek"]["probe"]("测试品牌", mine_ids=["https://a.com/1"])
+        assert result.platform == "deepseek"
+        assert result.mine_ids == ["https://a.com/1"]

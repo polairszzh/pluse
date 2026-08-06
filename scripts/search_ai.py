@@ -403,7 +403,7 @@ def probe_search_inference(
 PLATFORMS = {
     "deepseek": {
         "label": "DeepSeek",
-        "probe": probe_deepseek,
+        "probe": lambda q, mine_ids=None: probe_deepseek(q, mine_ids=mine_ids),
         "note": "真实 API 探测（OpenAI 兼容接口）",
     },
     "kimi": {
@@ -624,13 +624,15 @@ def build_recommendations(
         ]
         if inference_missing:
             names = "、".join(PLATFORMS[r.platform]["label"] for r in inference_missing[:3])
+            mine_example = next((r.mine_ids[0] for r in inference_missing if r.mine_ids), "")
             recs.append(Recommendation(
                 priority="P1",
                 dimension="内容收录",
                 action=f"{names} 对应话题在搜索生态中有内容，但你的内容不在其中："
                        "确保文章已在知乎等平台发布并被搜索收录（标题 + 首段覆盖话题关键词，正文带自包含答案块）",
                 expected_impact="让话题搜索结果里出现你的内容",
-                falsifiability_check='重跑 /pulse track --query "<话题>" --mine "<你的内容>"，'
+                falsifiability_check=f"重跑 /pulse track --query {_shell_quote(query)} "
+                                     f"--mine {_shell_quote(mine_example)}，"
                                      "搜索推断平台我的内容至少一个变为「是」",
             ))
 
@@ -735,12 +737,13 @@ def render_markdown(
                 for p in points
             )
             line = f"- **{label}**（{len(points)} 次）：{states}"
-            # 只展示「检查过 mine」的运行；未知态显式标注，不静默跳过
-            mine_points = [p for p in points if p.get("mine_checked")]
-            if mine_points:
+            # 只要历史里有任何一次检查过 mine，就展示完整序列：
+            # 是/否/未知（检查过但无结论），未检查的运行显式标「未检查」
+            if any(p.get("mine_checked") for p in points):
                 mine_txt = " → ".join(
-                    "是" if p["mine_cited"] else "否" if p["mine_cited"] is False else "未知"
-                    for p in mine_points
+                    "是" if p["mine_cited"] else "否" if p["mine_cited"] is False
+                    else "未知" if p.get("mine_checked") else "未检查"
+                    for p in points
                 )
                 line += f"；我的内容：{mine_txt}"
             lines.append(line)
