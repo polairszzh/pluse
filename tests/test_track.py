@@ -17,6 +17,7 @@ from search_ai import (
     _detect_mine,
     _parse_bing,
     _parse_platforms,
+    _shell_quote,
     build_recommendations,
     build_trend,
     classify_sentiment,
@@ -444,6 +445,24 @@ class TestDB:
         assert trend["total_runs"] == 1
         assert trend["changes"] == []
 
+    def test_trend_marks_mine_checked(self, tmp_path):
+        db = tmp_path / "monitor.db"
+        store_results(
+            [ProbeResult(
+                "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+                mine_cited=True, mine_ids=["https://a.com/1"],
+            )],
+            db_path=db, run_at="2026-08-06T10:00:00+08:00",
+        )
+        store_results(
+            [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)],
+            db_path=db, run_at="2026-08-06T11:00:00+08:00",
+        )
+        trend = build_trend("品牌A", db_path=db)
+        points = trend["series"]["deepseek"]
+        assert points[0]["mine_checked"] is True
+        assert points[1]["mine_checked"] is False
+
     def test_no_history(self, tmp_path):
         db = tmp_path / "monitor.db"
         trend = build_trend("不存在", db_path=db)
@@ -487,8 +506,12 @@ class TestRecommendations:
         assert any(r.priority == "P0" and r.dimension == "内容引用归属" for r in recs)
         assert all(r.falsifiability_check for r in recs)
         mine_rec = next(r for r in recs if r.dimension == "内容引用归属")
-        assert '--query "codex 如何安装"' in mine_rec.falsifiability_check
-        assert '--mine "https://a.com/1"' in mine_rec.falsifiability_check
+        assert "--query 'codex 如何安装'" in mine_rec.falsifiability_check
+        assert "--mine https://a.com/1" in mine_rec.falsifiability_check
+
+    def test_shell_quote_handles_special_chars(self):
+        assert _shell_quote("a$b`c\\d") == "'a$b`c\\d'"
+        assert _shell_quote("https://a.com/1") == "https://a.com/1"
 
     def test_inference_mine_missing_p1(self):
         results = [ProbeResult(
@@ -542,6 +565,28 @@ class TestReport:
         md = render_markdown("品牌A", results, {"series": {}, "changes": []}, [])
         assert "我的内容" in md
         assert "--mine" in md
+
+    def test_render_markdown_trend_shows_mine_unknown(self):
+        results = [ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=True, mine_ids=["https://a.com/1"],
+        )]
+        trend = {
+            "series": {
+                "deepseek": [
+                    {"run_at": "t1", "cited": True, "status": "ok", "sentiment": "positive",
+                     "mine_cited": True, "mine_checked": True},
+                    {"run_at": "t2", "cited": True, "status": "error", "sentiment": None,
+                     "mine_cited": None, "mine_checked": True},
+                    {"run_at": "t3", "cited": False, "status": "ok", "sentiment": "neutral",
+                     "mine_cited": False, "mine_checked": True},
+                ]
+            },
+            "changes": [],
+            "total_runs": 3,
+        }
+        md = render_markdown("品牌A", results, trend, [])
+        assert "我的内容：是 → 未知 → 否" in md
 
     def test_save_report(self, tmp_path):
         results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]

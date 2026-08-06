@@ -20,6 +20,7 @@ import html as html_module
 import json
 import os
 import re
+import shlex
 import sqlite3
 import sys
 from dataclasses import dataclass, field
@@ -63,8 +64,8 @@ def _md_cell(text: object) -> str:
 
 
 def _shell_quote(value: str) -> str:
-    """给 shell 命令里的参数加双引号（转义内部双引号），保证含空格/& 时可直接复现"""
-    return '"' + str(value or "").replace('"', '\\"') + '"'
+    """用 shlex.quote 生成可安全复现的 shell 参数（单引号包裹，$、反引号、反斜杠、引号均安全）"""
+    return shlex.quote(str(value or ""))
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -543,6 +544,7 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
                 "status": r["status"],
                 "sentiment": r["sentiment"],
                 "mine_cited": bool(r["mine_cited"]) if r.get("mine_cited") is not None else None,
+                "mine_checked": bool(json.loads(r["mine_ids"])) if r.get("mine_ids") else False,
             }
             for r in ordered
         ]
@@ -733,9 +735,13 @@ def render_markdown(
                 for p in points
             )
             line = f"- **{label}**（{len(points)} 次）：{states}"
-            mine_states = [p["mine_cited"] for p in points if p.get("mine_cited") is not None]
-            if mine_states:
-                mine_txt = " → ".join("是" if m else "否" for m in mine_states)
+            # 只展示「检查过 mine」的运行；未知态显式标注，不静默跳过
+            mine_points = [p for p in points if p.get("mine_checked")]
+            if mine_points:
+                mine_txt = " → ".join(
+                    "是" if p["mine_cited"] else "否" if p["mine_cited"] is False else "未知"
+                    for p in mine_points
+                )
                 line += f"；我的内容：{mine_txt}"
             lines.append(line)
         if trend["changes"]:
