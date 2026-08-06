@@ -26,7 +26,7 @@ function citedText(cited) {
   return `<span class="pill">未知</span>`;
 }
 
-async function loadQueries() {
+async function loadQueries(preferred) {
   const { queries } = await fetchJSON("/api/queries");
   const select = document.getElementById("query-select");
   select.innerHTML = "";
@@ -36,13 +36,17 @@ async function loadQueries() {
     renderEmpty();
     return;
   }
+  const selected = preferred && queries.some((q) => q.query === preferred)
+    ? preferred
+    : queries[0].query;
   for (const q of queries) {
     const opt = el("option", "", `${q.query} · ${q.total_runs} 次`);
     opt.value = q.query;
     select.appendChild(opt);
   }
+  select.value = selected;
   select.onchange = () => loadAll(select.value);
-  await loadAll(queries[0].query);
+  await loadAll(selected);
 }
 
 function renderEmpty() {
@@ -93,7 +97,8 @@ async function loadTrends(query) {
     return;
   }
   const colors = { deepseek: "#4d6bfe", kimi: "#ff7a59", doubao: "#00a6a6", yuanbao: "#8a6ff0" };
-  const labels = [...new Set(series.flatMap((s) => s.points.map((p) => p.run_at)))];
+  // ISO 时间戳全局排序：各平台首次运行时间不同时，x 轴顺序必须与时间一致
+  const labels = [...new Set(series.flatMap((s) => s.points.map((p) => p.run_at)))].sort();
   const datasets = series.map((s) => ({
     label: s.label,
     data: labels.map((t) => {
@@ -156,7 +161,8 @@ async function loadAll(query) {
 
 document.getElementById("refresh-btn").addEventListener("click", () => {
   const select = document.getElementById("query-select");
-  if (select.value) loadAll(select.value);
+  // 重新拉取品牌列表（新 track 的品牌无需整页刷新），并保留当前选中项
+  loadQueries(select.value);
 });
 
 loadQueries().catch((err) => console.error(err));

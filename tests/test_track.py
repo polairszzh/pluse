@@ -168,6 +168,16 @@ class TestDeepSeekProbe:
         assert result.status == "error"
         assert "unexpected_json_type" in result.error
 
+    def test_choices_element_not_dict(self, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
+        for payload in ({"choices": [None]}, {"choices": ["oops"]}):
+            def fake_post(*a, _payload=payload, **kw):
+                return FakeResponse(data=_payload)
+
+            monkeypatch.setattr(requests, "post", fake_post)
+            result = probe_deepseek("测试品牌")
+            assert result.status == "error"
+
 
 class TestSearchInference:
     def test_cited_true(self, monkeypatch):

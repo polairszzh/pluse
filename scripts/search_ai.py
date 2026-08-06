@@ -187,14 +187,32 @@ def probe_deepseek(query: str, timeout: int = 60, session: requests.Session | No
                 error=f"unexpected_json_type:{type(data).__name__}",
                 meta={"note": "响应应为 JSON 对象（含 choices 数组），保留原始类型便于排查"},
             )
-        answer = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            return ProbeResult(
+                query=query, platform="deepseek", status="error", cited=None,
+                sentiment=None, context="DeepSeek 响应结构异常（choices 缺失或元素非对象）",
+                source="api", degraded=True,
+                error="unexpected_choices_shape",
+                meta={"note": "choices 应为非空列表且首个元素为对象，保留原始响应便于排查"},
+            )
+        message = choices[0].get("message")
+        if not isinstance(message, dict):
+            return ProbeResult(
+                query=query, platform="deepseek", status="error", cited=None,
+                sentiment=None, context="DeepSeek 响应结构异常（message 非对象）",
+                source="api", degraded=True,
+                error="unexpected_message_shape",
+                meta={"note": "message 应为对象（含 content），保留原始响应便于排查"},
+            )
+        answer = message.get("content") or ""
     except requests.exceptions.RequestException as exc:
         return ProbeResult(
             query=query, platform="deepseek", status="error", cited=None,
             sentiment=None, context="DeepSeek API 调用失败", source="api", degraded=True,
             error=str(exc), meta={"note": "网络或服务异常，未写入有效探测"},
         )
-    except (ValueError, KeyError, IndexError, TypeError) as exc:
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
         return ProbeResult(
             query=query, platform="deepseek", status="error", cited=None,
             sentiment=None, context="DeepSeek 响应解析失败", source="api", degraded=True,
