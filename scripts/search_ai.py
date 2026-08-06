@@ -62,6 +62,11 @@ def _md_cell(text: object) -> str:
     return str(text or "").replace("|", "\\|").replace("\n", " ")
 
 
+def _shell_quote(value: str) -> str:
+    """给 shell 命令里的参数加双引号（转义内部双引号），保证含空格/& 时可直接复现"""
+    return '"' + str(value or "").replace('"', '\\"') + '"'
+
+
 def _truncate(text: str, limit: int) -> str:
     """折叠空白并截断到 limit 字符"""
     compact = " ".join(str(text or "").split())
@@ -584,7 +589,7 @@ def build_recommendations(
             action=f"「{query}」在 DeepSeek 回答中未被提及：在内容里补充一段 130-170 字的自包含品牌段落"
                    "（结论前置 + 具体数据/案例支撑）",
             expected_impact="提升 DeepSeek 检索命中",
-            falsifiability_check=f"重跑 /pulse track --query {query}，DeepSeek 被提及变为「是」",
+            falsifiability_check=f"重跑 /pulse track --query {_shell_quote(query)}，DeepSeek 被提及变为「是」",
         ))
     if deepseek and deepseek.status == "no_key":
         recs.append(Recommendation(
@@ -606,7 +611,8 @@ def build_recommendations(
                        "围绕该话题发布/优化一篇自包含教程（每个 H2 一个问答对，首段 130-170 字直接给答案，"
                        "带具体数据/案例），确保标题覆盖话题关键词",
                 expected_impact="让 AI 回答该话题时引用你的内容而不是别人的",
-                falsifiability_check=f"重跑 /pulse track --query {query} --mine {deepseek.mine_ids[0]}，"
+                falsifiability_check=f"重跑 /pulse track --query {_shell_quote(query)} "
+                                     f"--mine {_shell_quote(deepseek.mine_ids[0])}，"
                                      "DeepSeek 我的内容变为「是」",
             ))
         inference_missing = [
@@ -622,7 +628,7 @@ def build_recommendations(
                 action=f"{names} 对应话题在搜索生态中有内容，但你的内容不在其中："
                        "确保文章已在知乎等平台发布并被搜索收录（标题 + 首段覆盖话题关键词，正文带自包含答案块）",
                 expected_impact="让话题搜索结果里出现你的内容",
-                falsifiability_check="重跑 /pulse track --query <话题> --mine <你的内容>，"
+                falsifiability_check='重跑 /pulse track --query "<话题>" --mine "<你的内容>"，'
                                      "搜索推断平台我的内容至少一个变为「是」",
             ))
 

@@ -483,9 +483,12 @@ class TestRecommendations:
             "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
             mine_cited=False, mine_ids=["https://a.com/1"],
         )]
-        recs = build_recommendations("品牌A", results)
+        recs = build_recommendations("codex 如何安装", results)
         assert any(r.priority == "P0" and r.dimension == "内容引用归属" for r in recs)
         assert all(r.falsifiability_check for r in recs)
+        mine_rec = next(r for r in recs if r.dimension == "内容引用归属")
+        assert '--query "codex 如何安装"' in mine_rec.falsifiability_check
+        assert '--mine "https://a.com/1"' in mine_rec.falsifiability_check
 
     def test_inference_mine_missing_p1(self):
         results = [ProbeResult(
