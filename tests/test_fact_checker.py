@@ -49,6 +49,12 @@ class TestExtract:
         cands = extract_fact_candidates("5000 积分。再次提到 5000积分。")
         assert sum(1 for c in cands if c["fact"] == "5000积分") == 1
 
+    def test_keeps_higher_risk_context(self):
+        # 同一断言首次低危句、后高危句（医疗）时，保留高危上下文
+        cands = extract_fact_candidates("售价 5000 积分。该偏方 5000 积分可治愈。")
+        item = next(c for c in cands if c["fact"] == "5000积分")
+        assert risk_flag(item["context"]) == "医学/健康"
+
 
 class TestRisk:
     def test_medical_risk(self):
@@ -96,12 +102,31 @@ class TestVerifyFact:
 
     def test_conflict(self, monkeypatch):
         html = bing_html([
-            ("辟谣", "https://www.example.com/rebuttal", "该说法不存在，官方并未推出 5000 积分活动"),
+            ("辟谣", "https://baike.baidu.com/item/x", "该说法不存在，官方并未推出 5000 积分活动"),
         ])
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
         r = verify_fact("workbuddy", "5000积分")
         assert r["status"] == "conflict"
         assert r["reject_snippets"]
+
+    def test_plain_support_not_confirmed(self, monkeypatch):
+        # 普通来源可能是投毒/灌水源，即使含数字也不能确认
+        html = bing_html([
+            ("普通博客", "https://blog.example.com/1", "新用户领 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "untrusted"
+        assert "可信度" in r["reason"] or "投毒" in r["reason"]
+
+    def test_plain_reject_untrusted(self, monkeypatch):
+        # 普通否定同样不可信 → untrusted（不是 conflict）
+        html = bing_html([
+            ("普通博客", "https://blog.example.com/r", "该说法不存在，没有 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "untrusted"
 
     def test_authority_reject_beats_support(self, monkeypatch):
         html = bing_html([
@@ -119,6 +144,15 @@ class TestVerifyFact:
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
         r = verify_fact("workbuddy", "5000积分")
         assert r["status"] == "unverified"  # 15000 不证实 5000
+
+    def test_version_suffix_boundary(self, monkeypatch):
+        # 版本号后边界：2.3.1 不因 2.3.10 误判
+        html = bing_html([
+            ("发布页", "https://www.example.com/x", "最新版本 2.3.10 已发布"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "2.3.1")
+        assert r["status"] == "unverified"  # 2.3.10 不证实 2.3.1
 
     def test_unverifiable_word_not_conflict(self, monkeypatch):
         html = bing_html([

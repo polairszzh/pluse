@@ -1215,13 +1215,19 @@ def main(argv: list[str] | None = None) -> int:
             print("请核实数据来源或移除该断言后重试。", file=sys.stderr)
             return 3
         for r in fact_results:
-            if r["status"] == "unverified":
+            if r["status"] in ("unverified", "untrusted"):
                 risk_note = f"（{r['risk']}领域）" if r["risk"] else ""
+                if r["status"] == "untrusted":
+                    detail = f"数据断言「{r['fact']}」仅检索到普通来源，可信度不足{risk_note}（普通网页可能为投毒/灌水来源）"
+                    suggestion = "发布前通过权威渠道核验，或移除该断言"
+                else:
+                    detail = f"数据断言「{r['fact']}」无法核实{risk_note}：{r.get('reason', '未检索到来源')}"
+                    suggestion = "发布前通过官方渠道核验，或在正文标注不确定性"
                 gaps.append({
                     "type": "fact_unverified",
                     "severity": risk_severity(r["risk"]),
-                    "detail": f"数据断言「{r['fact']}」无法核实{risk_note}：{r.get('reason', '未检索到来源')}",
-                    "suggestion": "发布前通过官方渠道核验，或在正文标注不确定性",
+                    "detail": detail,
+                    "suggestion": suggestion,
                 })
         severity_order = {"high": 0, "medium": 1, "low": 2}
         gaps.sort(key=lambda g: severity_order.get(g["severity"], 9))

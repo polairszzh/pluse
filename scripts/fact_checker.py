@@ -1,9 +1,10 @@
 """置信度防火墙：对草稿中的可公开核实的声明型数据做多源交叉验证。
 
-三级判定：
-  - confirmed：至少一个来源重现断言数字 → 放行（权威源加分）
-  - conflict：搜索到矛盾信号（否定/辟谣且未重现断言）→ 拒绝（由调用方 exit 3）
-  - unverified：无可靠来源重现 → 标注不确定性，不阻断
+四级判定（可信度模型：仅权威来源可确认/否决，普通来源可能为投毒/灌水源）：
+  - confirmed：权威来源（政府/教育/主流媒体/著名百科/著名公司官方）重现断言 → 放行
+  - conflict：权威来源否定断言 → 拒绝（由调用方 exit 3）
+  - untrusted：仅普通来源（支持或否定）→ 来源可信度不足，标注「可能投毒/灌水」
+  - unverified：未检索到任何相关来源 → 标注不确定性，不阻断
 
 原则（roadmap 数据可验证性 · 置信度防火墙）：
   - 确定性多源交叉比对（复用 Bing 搜索），LLM 不做事实裁判；
@@ -20,10 +21,18 @@ from search_ai import BING_UA, BING_URL, _parse_bing
 
 AUTHORITY_SUFFIXES = (".gov.cn", ".gov", ".edu.cn", ".edu")
 AUTHORITY_HOSTS = {
-    "zhihu.com", "baike.baidu.com", "baike.sogou.com",
-    "wikipedia.org", "zh.wikipedia.org", "xinhuanet.com", "people.com.cn",
-    "codebuddy.cn",
+    # 著名百科
+    "baike.baidu.com", "baike.sogou.com", "wikipedia.org", "zh.wikipedia.org",
+    # 主流媒体
+    "xinhuanet.com", "people.com.cn", "cctv.com", "gmw.cn", "cnr.cn",
+    "chinanews.com.cn", "chinadaily.com.cn", "thepaper.cn",
+    # 著名平台/公司官方（品牌/产品验证场景）
+    "zhihu.com", "codebuddy.cn", "tencent.com", "qq.com", "baidu.com",
+    "alibaba.com", "bytedance.com", "douyin.com", "kuaishou.com",
+    "xiaohongshu.com",
 }
+
+_SEVERITY_ORDER = {"high": 2, "medium": 1, "low": 0}
 
 REJECT_SIGNAL_RE = re.compile(r"(不存在|并非|假的|谣言|辟谣|错误信息|不实)")
 FIRST_PERSON_RE = re.compile(r"(我|我们|本人|实测|亲测)")
@@ -65,16 +74,21 @@ def extract_fact_candidates(text: str) -> list[dict]:
     seen: dict[str, str] = {}
 
     def add(fact: str, start: int, end: int) -> None:
+        sentence = _sentence_around(text, start, end)
         if FIRST_PERSON_RE.search(sentence):
             return  # 第一手经验不做外部验证
         if fact not in seen:
             seen[fact] = sentence
+            return
+        # 同一断言多次出现：保留风险等级更高的上下文（防高危句被低危首现覆盖）
+        cur = _SEVERITY_ORDER.get(risk_severity(risk_flag(seen[fact])), 0)
+        new = _SEVERITY_ORDER.get(risk_severity(risk_flag(sentence)), 0)
+        if new > cur:
+            seen[fact] = sentence
 
     for m in UNIT_FACT_RE.finditer(text or ""):
-        sentence = _sentence_around(text, m.start(), m.end())
         add(re.sub(r"\s+", "", m.group(1)), m.start(), m.end())
     for m in VERSION_RE.finditer(text or ""):
-        sentence = _sentence_around(text, m.start(), m.end())
         add(m.group(1), m.start(), m.end())
     return [{"fact": f, "context": c} for f, c in seen.items()]
 
@@ -114,11 +128,13 @@ def risk_severity(risk: str | None) -> str:
 
 
 def _fact_present(fact_norm: str, blob_norm: str) -> bool:
-    """断言数字是否重现于文本：要求数字前无数字边界（15000积分 不证实 5000积分）"""
+    """断言数字是否重现于文本：要求数字前后均无数字边界（15000 不证实 5000、2.3.10 不证实 2.3.1）"""
     idx = blob_norm.find(fact_norm)
     while idx != -1:
         prev = blob_norm[idx - 1] if idx > 0 else ""
-        if not prev.isdigit():
+        end = idx + len(fact_norm)
+        nxt = blob_norm[end] if end < len(blob_norm) else ""
+        if not prev.isdigit() and not nxt.isdigit():
             return True
         idx = blob_norm.find(fact_norm, idx + 1)
     return False
@@ -137,7 +153,7 @@ def _search(query: str, session: requests.Session | None = None, timeout: int = 
 
 
 def verify_fact(query: str, fact: str, session: requests.Session | None = None) -> dict:
-    """对单个数字断言做多源交叉验证，返回三级判定（confirmed / conflict / unverified）"""
+    """对单个数字断言做多源交叉验证，返回四级判定（confirmed / conflict / untrusted / unverified）"""
     fact_norm = fact.replace(" ", "")
     search_q = f"{query} {fact}"
     try:
@@ -157,9 +173,13 @@ def verify_fact(query: str, fact: str, session: requests.Session | None = None) 
         elif _fact_present(fact_norm, blob_norm):
             supports.append(r)
 
-    # 否定/权威优先：权威辟谣 > 来源支持 > 普通否定 > 未核实
+    # 只有可信来源（权威）才能确认或否决；普通来源可能是投毒/灌水源，
+    # 无论支持还是否定都不能单独裁决 → 一律无法核实
     authority_rejects = [
         r for r in rejects if _host_authority(_host_of(r.get("url", ""))) >= 2
+    ]
+    authority_supports = [
+        r for r in supports if _host_authority(_host_of(r.get("url", ""))) >= 2
     ]
     if authority_rejects:
         return {
@@ -167,22 +187,22 @@ def verify_fact(query: str, fact: str, session: requests.Session | None = None) 
             "status": "conflict",
             "reject_snippets": [r["snippet"][:100] for r in authority_rejects[:3]],
         }
-    if supports:
-        authority_supports = [
-            r for r in supports if _host_authority(_host_of(r.get("url", ""))) >= 2
-        ]
+    if authority_supports:
         return {
             "fact": fact,
             "status": "confirmed",
-            "support_count": len(supports),
-            "authoritative": bool(authority_supports),
-            "top_support": {"title": supports[0]["title"], "url": supports[0].get("url", "")},
+            "support_count": len(authority_supports),
+            "authoritative": True,
+            "top_support": {
+                "title": authority_supports[0]["title"],
+                "url": authority_supports[0].get("url", ""),
+            },
         }
-    if rejects:
+    if supports or rejects:
         return {
             "fact": fact,
-            "status": "conflict",
-            "reject_snippets": [r["snippet"][:100] for r in rejects[:3]],
+            "status": "untrusted",
+            "reason": "仅检索到普通来源（支持或否定），来源可信度不足无法确认——普通网页可能是投毒/灌水来源",
         }
     return {"fact": fact, "status": "unverified", "reason": "未检索到重现该断言的来源"}
 
