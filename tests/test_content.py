@@ -13,7 +13,9 @@ from content_adapter import (
     _fallback_ai_version,
     _fallback_zhihu_version,
     _first_150,
+    _format_zhihu_lines,
     _links_in_text,
+    _postprocess_llm_output,
     _query_keywords,
     _rewrite_instructions,
     _rewrite_triggers,
@@ -232,6 +234,12 @@ class TestMaterialGaps:
         sigs2 = detect_promotional_signals("加VX领取资料")
         assert len(sigs2) == 1
 
+    def test_promotional_bare_wechat_private(self):
+        sigs = detect_promotional_signals("加微信咨询课程，私信我报名。")
+        patterns = {s["pattern"] for s in sigs}
+        assert "加微信" in patterns
+        assert "私信我" in patterns
+
     def test_promotional_medium_detected(self):
         sigs = detect_promotional_signals("强烈推荐这个网站，全网第一的教程。")
         assert all(s["severity"] == "medium" for s in sigs)
@@ -432,6 +440,36 @@ class TestFallback:
         assert "![示意图](https://x.com/a.png)" not in md  # 引言图片被去掉
         assert tail in md  # 引言 150 字之后的内容仍保留
 
+    def test_fallback_ai_intro_merged_into_what_h2(self):
+        doc = parse_markdown(
+            "# 标题\n\n"
+            "引言背景信息。\n\n"
+            "## 它是什么？\n\n"
+            "它是核心回答。\n"
+        )
+        md = _fallback_ai_version(doc)
+        assert "引言背景信息" in md  # 引言不因已有「它是什么」H2 而丢失
+        assert md.count("## 它是什么？") == 1  # 不重复成块
+
+    def test_format_zhihu_lines_keeps_list_quote_table(self):
+        lines = [
+            "| 平台 | 支持 |",
+            "|------|------|",
+            "| 知乎 | 是 |",
+            "这是段落。",
+            "- 列表项一",
+            "- 列表项二",
+            "> 引用内容",
+        ]
+        md = "\n".join(_format_zhihu_lines(lines))
+        # 表格连续：表头/分隔/数据行之间无空行
+        assert "| 平台 | 支持 |\n|------|------|\n| 知乎 | 是 |" in md
+        # 列表不拼段
+        assert "- 列表项一" in md and "- 列表项二" in md
+        assert "列表项一列表项二" not in md
+        # 引用保留
+        assert "> 引用内容" in md
+
     def test_fallback_zhihu_intro_has_no_code(self):
         doc = parse_markdown(SAMPLE_DRAFT)
         md = _fallback_zhihu_version(doc)
@@ -473,6 +511,28 @@ class TestLLM:
         md, used = generate_zhihu_version(doc)
         assert used is False
         assert "写在最后" in md
+
+    def test_llm_user_strips_frontmatter(self, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
+        captured: dict = {}
+
+        def fake_post(*a, **kw):
+            captured["payload"] = kw["json"]
+            return FakeResponse({"choices": [{"message": {"content": "# 改"}}]})
+
+        monkeypatch.setattr(requests, "post", fake_post)
+        doc = parse_markdown("---\ntitle: X\n---\n# 标题\n\n正文。\n")
+        generate_zhihu_version(doc)
+        user = captured["payload"]["messages"][1]["content"]
+        assert "title: X" not in user
+        assert "# 标题" in user
+
+    def test_postprocess_strips_frontmatter(self):
+        text, _ = _postprocess_llm_output(
+            "---\ntitle: X\n---\n# 标题\n\n正文。\n", "zhihu"
+        )
+        assert "title: X" not in text
+        assert "# 标题" in text
 
     def test_zhihu_llm_gets_score_instructions(self, monkeypatch):
         monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")

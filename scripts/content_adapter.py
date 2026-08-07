@@ -71,9 +71,11 @@ PROMOTIONAL_HIGH_PATTERNS = [
     "闭眼入", "无脑入", "必买", "人手一份", "手慢无", "库存告急",
     "限时秒杀", "限时抢购", "错过等一年", "赶紧下单", "立即下单",
     "扫码购买", "扫码下单", "扫码领取", "扫码添加", "扫码加",
+    "扫码报名", "扫码进群",
     "私信领取", "私信报名", "私信购买", "私信获取",
+    "私信我",
     "优惠码", "优惠券", "付款码", "立即购买",
-    "加微信领取", "加vx", "加VX",
+    "加微信", "加vx", "加VX",
 ]
 PROMOTIONAL_MEDIUM_PATTERNS = [
     "强烈推荐", "一定要买", "一定要入手", "必入", "全网第一", "史上第一",
@@ -659,9 +661,10 @@ def _first_150(text: str) -> tuple[str, str]:
 def _fallback_ai_version(doc: DraftDoc) -> str:
     """无 LLM 时的规则脚手架：把每个 H2 话题重组为问答对 + 自包含首段"""
     lines = [f"# {doc.title}：快速了解与使用指南", ""]
+    intro_text = _clean_ai_text(" ".join(doc.intro))
+    intro_target: str | None = None
     if not doc.sections:
         # 无任何小节：整篇引言即「它是什么」自包含答案，不生成默认话题占位
-        intro_text = _clean_ai_text(" ".join(doc.intro))
         if intro_text:
             lines.append("## 它是什么？")
             lines.append("")
@@ -675,10 +678,16 @@ def _fallback_ai_version(doc: DraftDoc) -> str:
         )
         lines.append("")
         return "\n".join(lines)
-    if doc.intro and not any(("是什么" in h or "介绍" in h) for h, _ in doc.sections):
-        # 引言回答「它是什么」，是 AI 引用最可能摘取的内容，先补一个问答块
-        intro_text = _clean_ai_text(" ".join(doc.intro))
-        if intro_text:
+    if intro_text:
+        target = next(
+            (h for h, _ in doc.sections if ("是什么" in h or "介绍" in h)),
+            None,
+        )
+        if target:
+            # 已有「是什么/介绍」H2：引言合并进该节回答开头，不单独成块也不丢弃
+            intro_target = target
+        else:
+            # 引言回答「它是什么」，是 AI 引用最可能摘取的内容，先补一个问答块
             first, rest = _first_150(intro_text)
             lines.append("## 它是什么？")
             lines.append("")
@@ -698,6 +707,8 @@ def _fallback_ai_version(doc: DraftDoc) -> str:
         body = "\n".join(
             "\n".join(sec_body) for h, sec_body in doc.sections if h == topic
         )
+        if heading == intro_target and intro_text:
+            body = intro_text + "\n" + body
         body = re.sub(r"!\[[^\]]*\]\([^)]+\)", "", body)  # AI 优化版去图
         answer = re.sub(r"\s+", " ", body).strip()
         if len(answer) < 60:
@@ -727,7 +738,7 @@ def generate_ai_version(
     llm: bool = True,
 ) -> tuple[str, bool]:
     """生成 AI 优化版；返回 (markdown, 是否走了 LLM)"""
-    out = _llm_rewrite(_ai_system(dims, query), doc.raw, enabled=llm)
+    out = _llm_rewrite(_ai_system(dims, query), _strip_frontmatter(doc.raw), enabled=llm)
     if out:
         return out, True
     return _fallback_ai_version(doc), False
@@ -760,10 +771,11 @@ def _zhihu_system(dims: dict[str, int] | None = None, query: str | None = None) 
 
 
 def _format_zhihu_lines(lines_in: list[str]) -> list[str]:
-    """把引言/节内行格式化为知乎版：代码块独立成块、图片/标题原样、普通文本拼段"""
+    """把引言/节内行格式化为知乎版：代码块独立成块、表格连续、列表/引用/图片/标题原样、普通文本拼段"""
     out: list[str] = []
     in_code = False
     para: list[str] = []
+    table_mode = False
 
     def flush_para() -> None:
         nonlocal para
@@ -776,6 +788,7 @@ def _format_zhihu_lines(lines_in: list[str]) -> list[str]:
         s = line.strip()
         if s.startswith("```"):
             flush_para()
+            table_mode = False
             in_code = not in_code
             out.append(line)
             if not in_code:
@@ -784,7 +797,19 @@ def _format_zhihu_lines(lines_in: list[str]) -> list[str]:
         if in_code:
             out.append(line)
             continue
-        if s.startswith(("![", "#")):
+        if s.startswith("|"):
+            # 表格行连续输出，行间不加空行（避免拆散表格）
+            flush_para()
+            if not table_mode:
+                out.append("")
+            out.append(line)
+            table_mode = True
+            continue
+        table_mode = False
+        if s.startswith(("![", "#", "- ", "* ", "+ ", ">")) or re.match(
+            r"^\d+[.、)]\s", s
+        ):
+            # 列表/引用/图片/标题：原样输出，前后空行分隔
             flush_para()
             out.append(line)
             out.append("")
@@ -804,6 +829,7 @@ def _fallback_zhihu_version(doc: DraftDoc) -> str:
         lines.append(f"## {heading}")
         lines.append("")
         in_code = False
+        table_mode = False
         for line in body:
             if line.strip().startswith("```"):
                 # 代码块围栏：原样保留，结束围栏后补空行分隔，代码行不切分不加空行
@@ -815,6 +841,14 @@ def _fallback_zhihu_version(doc: DraftDoc) -> str:
             if in_code:
                 lines.append(line)
                 continue
+            if line.startswith("|"):
+                # 表格行连续输出，行间不加空行
+                if not table_mode:
+                    lines.append("")
+                lines.append(line)
+                table_mode = True
+                continue
+            table_mode = False
             if line.startswith(("![", "#")):
                 lines.append(line)
                 lines.append("")
@@ -868,7 +902,7 @@ def generate_zhihu_version(
     llm: bool = True,
 ) -> tuple[str, bool]:
     """生成知乎版；返回 (markdown, 是否走了 LLM)"""
-    out = _llm_rewrite(_zhihu_system(dims, query), doc.raw, enabled=llm)
+    out = _llm_rewrite(_zhihu_system(dims, query), _strip_frontmatter(doc.raw), enabled=llm)
     if out:
         return out, True
     return _fallback_zhihu_version(doc), False
@@ -882,7 +916,7 @@ def generate_zhihu_version(
 def _postprocess_llm_output(content: str, version: str) -> tuple[str, list[str]]:
     """LLM 输出确定性后处理：AI 版去图、规整连续空行；返回 (content, warnings)"""
     warnings: list[str] = []
-    text = content or ""
+    text = _strip_frontmatter(content or "")  # LLM 若复制 frontmatter，剥掉
     if version == "ai":
         imgs = re.findall(r"!\[[^\]]*\]\([^)]+\)", text)
         if imgs:
