@@ -203,14 +203,16 @@ def parse_markdown(text: str) -> DraftDoc:
         if in_code:
             code_buffer.append(line)
             continue
-        img = re.match(r"!\[[^\]]*\]\(([^)]+)\)", s)
-        if img:
-            images.append(img.group(1))
+        inline_imgs = re.findall(r"!\[[^\]]*\]\(([^)]+)\)", s)
+        images.extend(inline_imgs)
+        if s.startswith("![") and inline_imgs:
+            # 行首图片：整行作为图片块（行归属随 saw_heading）
             if saw_heading:
                 current_lines.append(s)
             else:
                 intro.append(s)  # 首个 H2 前的图片进 intro，不丢失
             continue
+        # 行内图片：URL 已收集进 images，行本身按普通文本继续处理
         if s.startswith("# "):
             flush()
             heading = s[2:].strip()
@@ -872,7 +874,10 @@ def _fallback_zhihu_version(doc: DraftDoc) -> str:
                 table_mode = True
                 continue
             table_mode = False
-            if line.startswith(("![", "#")):
+            if line.startswith(("![", "#", "- ", "* ", "+ ", ">")) or re.match(
+                r"^\d+[.、)]\s", line
+            ):
+                # 列表/引用/图片/标题：原样输出，不切分，保留前缀
                 lines.append(line)
                 lines.append("")
                 continue

@@ -138,6 +138,14 @@ class TestParse:
         md = _fallback_zhihu_version(doc)
         assert "### 小节" in md  # 子标题不丢失
 
+    def test_parse_inline_placeholder_image_detected(self):
+        doc = parse_markdown(
+            "# 标题\n\n正文里有 ![占位图](https://picsum.photos/1) 行内图片。\n"
+        )
+        assert "https://picsum.photos/1" in doc.images
+        gaps = detect_material_gaps(doc)
+        assert any(g["type"] == "placeholder_image" for g in gaps)
+
 
 class TestScore:
     def test_draft_score_shape(self):
@@ -445,6 +453,12 @@ class TestFallback:
         md = _fallback_zhihu_version(doc)
         assert "## 数据\n\n| A | B |\n|---|---|\n| 1 | 2 |" in md
         assert "## 数据\n\n\n|" not in md  # 无连续空行
+
+    def test_zhihu_fallback_keeps_list_prefix_on_long_line(self):
+        long_item = "- " + "这是一个非常长的列表项内容。" * 40  # > 180 字
+        doc = parse_markdown(f"# 标题\n\n## 要点\n\n{long_item}\n")
+        md = _fallback_zhihu_version(doc)
+        assert long_item in md  # 前缀保留、不被切分
 
     def test_split_paragraph(self):
         parts = _split_paragraph("第一句。第二句很长。" * 40, 180)
