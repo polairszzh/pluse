@@ -98,6 +98,16 @@ def _text_without_code(text: str) -> str:
     return "\n".join(out)
 
 
+def _strip_frontmatter(text: str) -> str:
+    """去掉 YAML frontmatter，返回正文（含标题与 H2）"""
+    lines = (text or "").splitlines()
+    if lines and lines[0].strip() == "---":
+        end = next((i for i, l in enumerate(lines[1:], 1) if l.strip() == "---"), None)
+        if end is not None:
+            return "\n".join(lines[end + 1:])
+    return text
+
+
 def _slug(title: str, max_len: int = 40) -> str:
     slug = re.sub(r"[^\w\u4e00-\u9fff]+", "-", title or "untitled").strip("-")
     return slug[:max_len] or "untitled"
@@ -325,8 +335,9 @@ def _query_keywords(query: str) -> list[str]:
 
 def _links_in_text(text: str) -> list[str]:
     """提取正文中的所有 http(s) 链接，去掉尾部标点"""
-    found = re.findall(r"https?://[^\s)\]>\"']+", text)
-    return [u.rstrip(".,;:!?") for u in found]
+    # URL 字符集近似 ASCII：排除空白/括号/引号/中文字符与中文标点，避免吞掉紧贴的文本
+    found = re.findall(r"https?://[^\s)\]>\"'\u4e00-\u9fff，。；：！？、]+", text)
+    return [u.rstrip(".,;:!?。，；：！？") for u in found]
 
 
 def _host_of(url: str) -> str:
@@ -349,8 +360,9 @@ def detect_promotional_signals(text: str) -> list[dict]:
     """
     signals: list[dict] = []
     low = (text or "").lower()
+    high_spans: list[tuple[int, int]] = []
 
-    def scan(patterns: list[str], severity: str) -> None:
+    def scan(patterns: list[str], severity: str, skip: list[tuple[int, int]]) -> None:
         for pat in patterns:
             needle = pat.lower()
             start = 0
@@ -358,17 +370,27 @@ def detect_promotional_signals(text: str) -> list[dict]:
                 idx = low.find(needle, start)
                 if idx == -1:
                     break
+                end = idx + len(needle)
+                # 跳过已被高危覆盖的区间，以及同位置重复命中（如「加vx」与「加VX」）
+                if any(s <= idx < e or s < end <= e for s, e in skip):
+                    start = end
+                    continue
+                if severity == "high" and any(s == idx and e == end for s, e in high_spans):
+                    start = end
+                    continue
                 ctx_start = max(0, idx - 12)
-                ctx_end = min(len(text), idx + len(pat) + 12)
+                ctx_end = min(len(text), end + 12)
                 signals.append({
                     "severity": severity,
                     "pattern": pat,
                     "context": text[ctx_start:ctx_end].replace("\n", " "),
                 })
-                start = idx + len(needle)
+                if severity == "high":
+                    high_spans.append((idx, end))
+                start = end
 
-    scan(PROMOTIONAL_HIGH_PATTERNS, "high")
-    scan(PROMOTIONAL_MEDIUM_PATTERNS, "medium")
+    scan(PROMOTIONAL_HIGH_PATTERNS, "high", [])
+    scan(PROMOTIONAL_MEDIUM_PATTERNS, "medium", high_spans)
     severity_order = {"high": 0, "medium": 1}
     signals.sort(key=lambda s: severity_order.get(s["severity"], 9))
     return signals
@@ -384,8 +406,8 @@ def detect_material_gaps(doc: DraftDoc, query: str | None = None) -> list[dict]:
       - image_alt_missing: 图片 alt 缺失或过泛（low）
     """
     gaps: list[dict] = []
-    raw = doc.raw or ""
-    scan_text = _text_without_code(raw)
+    # 用剥 frontmatter、去代码块的正文扫描，避免元数据 URL/关键词误报，同时保留 H2 标题
+    scan_text = _text_without_code(_strip_frontmatter(doc.raw))
 
     # 1) 占位图
     for img in doc.images:

@@ -13,6 +13,7 @@ from content_adapter import (
     _fallback_ai_version,
     _fallback_zhihu_version,
     _first_150,
+    _links_in_text,
     _query_keywords,
     _rewrite_instructions,
     _rewrite_triggers,
@@ -149,6 +150,11 @@ class TestScore:
 
 
 class TestMaterialGaps:
+    def test_links_in_text_strips_chinese_punct(self):
+        assert _links_in_text("看 https://x.com。后面还有 https://y.com，继续。") == [
+            "https://x.com", "https://y.com",
+        ]
+
     def test_bad_draft_all_gap_types(self):
         doc = parse_markdown(
             "# 摸鱼神器 WorkBuddy\n\n"
@@ -218,6 +224,14 @@ class TestMaterialGaps:
         assert "必买" in patterns
         assert any("手慢无" == s["pattern"] for s in sigs)
 
+    def test_promotional_no_overlap_duplicate(self):
+        # 「限时抢购」命中高危后，中危「限时」不应在重叠位置重复报告
+        sigs = detect_promotional_signals("限时抢购，最后一天。")
+        assert [s["pattern"] for s in sigs] == ["限时抢购"]
+        # 同一位置的高危词大小写变体（加vx / 加VX）只报一次
+        sigs2 = detect_promotional_signals("加VX领取资料")
+        assert len(sigs2) == 1
+
     def test_promotional_medium_detected(self):
         sigs = detect_promotional_signals("强烈推荐这个网站，全网第一的教程。")
         assert all(s["severity"] == "medium" for s in sigs)
@@ -242,6 +256,18 @@ class TestMaterialGaps:
         assert promo
         assert any(g["severity"] == "high" for g in promo)
         assert any("扫码" in g["detail"] for g in promo)
+
+    def test_frontmatter_url_not_in_unverified_links(self):
+        doc = parse_markdown(
+            "---\n"
+            "title: 测试\n"
+            "url: https://example.com/meta\n"
+            "---\n"
+            "# 标题\n\n"
+            "正文没有链接。\n"
+        )
+        gaps = detect_material_gaps(doc)
+        assert all(g["type"] != "unverified_links" for g in gaps)
 
 
 class TestReviewChecklist:
