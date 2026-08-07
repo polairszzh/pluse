@@ -8,9 +8,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 import requests
+import search_ai
 from content_adapter import (
     _fallback_ai_version,
     _fallback_zhihu_version,
+    _first_150,
     _query_keywords,
     _rewrite_instructions,
     _scan_facts,
@@ -239,6 +241,16 @@ class TestRewriteInstructions:
         assert "第三人称" in ins
         assert "不使用第一人称" in ins
 
+    def test_first_150_breaks_at_sentence(self):
+        short = "只有一句。"
+        assert _first_150(short) == (short, "")
+        long_text = "这是第一句。" + "这是第二句很长。" * 30
+        first, rest = _first_150(long_text)
+        assert len(first) <= 150
+        assert first.endswith("。")  # 不在句中截断
+        assert rest  # 剩余保留
+        assert first + rest == long_text
+
 
 class TestFallback:
     def test_ai_version_structure(self, monkeypatch):
@@ -395,6 +407,21 @@ class TestLLM:
         assert "【素材缺口】" not in system
         assert "HTML 注释" in system
 
+    def test_llm_system_injects_content_format_rules(self, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
+        captured: dict = {}
+
+        def fake_post(*a, **kw):
+            captured["payload"] = kw["json"]
+            return FakeResponse({"choices": [{"message": {"content": "# 改"}}]})
+
+        monkeypatch.setattr(requests, "post", fake_post)
+        doc = parse_markdown(SAMPLE_DRAFT)
+        generate_zhihu_version(doc)
+        system = captured["payload"]["messages"][0]["content"]
+        assert "多平台内容格式对照表" in system
+        assert "content-format.md" in system
+
 
 class TestCLI:
     def test_cli_end_to_end(self, tmp_path, monkeypatch):
@@ -412,6 +439,9 @@ class TestCLI:
         assert len(manifests) == 1
         manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
         assert isinstance(manifest["source_chars"], int)
+        assert manifest["content_format"]["loaded"] is True
+        assert len(manifest["content_format"]["updated"]) == 10
+        assert manifest["llm_postprocess_warnings"] == []
         assert manifest["draft_score"]["engagement"]["status"] == "未发布"
         assert manifest["material_gaps"] == []
         assert manifest["human_review"]["status"] == "pending"
@@ -469,6 +499,31 @@ class TestCLI:
         assert "100积分" in checklist
         assert "10分钟" in checklist
         assert "- [ ] 已核对正文数字" in checklist
+
+    def test_no_llm_preserves_search_ai_load_key(self, tmp_path, monkeypatch):
+        sentinel = lambda: "sentinel-key"
+        monkeypatch.setattr("search_ai._load_key", sentinel)
+        src = tmp_path / "draft.md"
+        src.write_text(SAMPLE_DRAFT, encoding="utf-8")
+        out = tmp_path / "out4"
+        assert main(["--source", str(src), "--no-llm", "--output", str(out)]) == 0
+        assert search_ai._load_key is sentinel  # 全局未被覆盖
+
+    def test_llm_output_postprocessed_strips_ai_images(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
+        payload = {
+            "choices": [{"message": {"content": "# 改\n\n![图](https://x.com/a.png)\n\n正文。\n\n\n多余空行。"}}]
+        }
+        monkeypatch.setattr(requests, "post", lambda *a, **kw: FakeResponse(payload))
+        src = tmp_path / "draft.md"
+        src.write_text(SAMPLE_DRAFT, encoding="utf-8")
+        out = tmp_path / "out5"
+        assert main(["--source", str(src), "--output", str(out)]) == 0
+        manifest = json.loads(next(iter(out.glob("adapt-*.json"))).read_text(encoding="utf-8"))
+        assert any("图片引用" in w for w in manifest["llm_postprocess_warnings"])
+        ai_md = next(iter(out.glob("ai-*.md"))).read_text(encoding="utf-8")
+        assert "![图](https://x.com/a.png)" not in ai_md
+        assert "\n\n\n" not in ai_md  # 连续空行被规整
 
     def test_missing_source(self, tmp_path):
         with pytest.raises(SystemExit) as exc:

@@ -31,6 +31,7 @@ from scorer import audit_article, grade
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = PROJECT_ROOT / "data" / "output"
+CONTENT_FORMAT_PATH = PROJECT_ROOT / "skills" / "visibility" / "references" / "content-format.md"
 
 DRAFT_WEIGHTS = {
     "AI 可引用性": 0.389,
@@ -40,6 +41,9 @@ DRAFT_WEIGHTS = {
 }
 
 PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2}
+
+# 模块级 LLM 开关（--no-llm 时关闭；不覆盖 search_ai._load_key，避免污染全局）
+_LLM_ENABLED = True
 
 # AI 优化版用途标注：内部参考，非直接发布物
 AI_PURPOSE_NOTE = (
@@ -86,6 +90,20 @@ def _text_without_code(text: str) -> str:
 def _slug(title: str, max_len: int = 40) -> str:
     slug = re.sub(r"[^\w\u4e00-\u9fff]+", "-", title or "untitled").strip("-")
     return slug[:max_len] or "untitled"
+
+
+def _load_content_format() -> str:
+    """读取平台格式知识库（references/content-format.md）；缺失时返回空"""
+    try:
+        return CONTENT_FORMAT_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _content_format_updated() -> str | None:
+    """从知识库头部提取「最后更新：YYYY-MM-DD」"""
+    m = re.search(r"最后更新[:：]\s*([\d-]+)", _load_content_format())
+    return m.group(1) if m else None
 
 
 # --------------------------------------------------------------------------
@@ -461,6 +479,8 @@ def _rewrite_instructions(
 
 def _llm_rewrite(system: str, user: str, timeout: int = 90) -> str | None:
     """调用 DeepSeek 生成；任何失败返回 None（调用方回退脚手架）"""
+    if not _LLM_ENABLED:
+        return None
     key = search_ai._load_key()
     if key is None:
         return None
@@ -506,7 +526,29 @@ def _clean_ai_text(text: str) -> str:
 
 def _ai_system(dims: dict[str, int] | None = None, query: str | None = None) -> str:
     extra = _rewrite_instructions(dims, query)
-    return AI_SYSTEM.rstrip() + (f"\n\n{extra}" if extra else "")
+    parts = [AI_SYSTEM]
+    if extra:
+        parts.append(extra)
+    rules = _load_content_format()
+    if rules:
+        parts.append(
+            "平台格式规则（来自 references/content-format.md，AI 优化版请遵循表格「AI 优化版」列）：\n" + rules
+        )
+    return "\n\n".join(parts)
+
+
+def _first_150(text: str) -> tuple[str, str]:
+    """取 ≤150 字内最后一个完整句作为首段，避免硬截断断句；返回 (first, rest)"""
+    if len(text) <= 150:
+        return text, ""
+    cut = text[:150]
+    idx = max(
+        cut.rfind("。"), cut.rfind("！"), cut.rfind("？"),
+        cut.rfind("."), cut.rfind("；"),
+    )
+    if idx == -1:
+        return cut, text[150:]
+    return cut[: idx + 1], text[idx + 1:]
 
 
 def _fallback_ai_version(doc: DraftDoc) -> str:
@@ -532,11 +574,11 @@ def _fallback_ai_version(doc: DraftDoc) -> str:
         # 引言回答「它是什么」，是 AI 引用最可能摘取的内容，先补一个问答块
         intro_text = _clean_ai_text(" ".join(doc.intro))
         if intro_text:
+            first, rest = _first_150(intro_text)
             lines.append("## 它是什么？")
             lines.append("")
-            lines.append(intro_text[:150])
+            lines.append(first)
             lines.append("")
-            rest = intro_text[150:]
             if rest:
                 lines.append(rest)
                 lines.append("")
@@ -555,12 +597,11 @@ def _fallback_ai_version(doc: DraftDoc) -> str:
         answer = re.sub(r"\s+", " ", body).strip()
         if len(answer) < 60:
             answer = f"{topic}是本文介绍的核心内容：{answer or '具体信息以官方文档为准。'}"
-        first = answer[:150]
+        first, rest = _first_150(answer)
         lines.append(f"## {q}")
         lines.append("")
         lines.append(first)
         lines.append("")
-        rest = answer[150:]
         if rest:
             lines.append(rest)
             lines.append("")
@@ -601,7 +642,15 @@ ZHIHU_SYSTEM = (
 
 def _zhihu_system(dims: dict[str, int] | None = None, query: str | None = None) -> str:
     extra = _rewrite_instructions(dims, query)
-    return ZHIHU_SYSTEM.rstrip() + (f"\n\n{extra}" if extra else "")
+    parts = [ZHIHU_SYSTEM]
+    if extra:
+        parts.append(extra)
+    rules = _load_content_format()
+    if rules:
+        parts.append(
+            "平台格式规则（来自 references/content-format.md，知乎版请遵循「知乎」列与注意事项）：\n" + rules
+        )
+    return "\n\n".join(parts)
 
 
 def _fallback_zhihu_version(doc: DraftDoc) -> str:
@@ -690,6 +739,19 @@ def generate_zhihu_version(
 # --------------------------------------------------------------------------
 
 
+def _postprocess_llm_output(content: str, version: str) -> tuple[str, list[str]]:
+    """LLM 输出确定性后处理：AI 版去图、规整连续空行；返回 (content, warnings)"""
+    warnings: list[str] = []
+    text = content or ""
+    if version == "ai":
+        imgs = re.findall(r"!\[[^\]]*\]\([^)]+\)", text)
+        if imgs:
+            text = re.sub(r"!\[[^\]]*\]\([^)]+\)", "", text)
+            warnings.append(f"AI 版移除了 {len(imgs)} 处图片引用")
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip(), warnings
+
+
 def build_manifest(
     doc: DraftDoc,
     query: str | None,
@@ -698,6 +760,7 @@ def build_manifest(
     out_dir: Path,
     gaps: list[dict] | None = None,
     checklist_path: Path | None = None,
+    postprocess_warnings: list[str] | None = None,
 ) -> dict:
     """生成输出清单：每个版本带 falsifiability check"""
     gaps = gaps or []
@@ -717,6 +780,12 @@ def build_manifest(
         "query": query,
         "draft_score": draft_score,
         "material_gaps": gaps,
+        "llm_postprocess_warnings": postprocess_warnings or [],
+        "content_format": {
+            "file": str(CONTENT_FORMAT_PATH),
+            "loaded": bool(_load_content_format()),
+            "updated": _content_format_updated(),
+        },
         "rewrite_triggers": [
             name for name, score in draft_score["dimensions"].items() if score < 60
         ],
@@ -838,9 +907,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    global _LLM_ENABLED
     args = build_parser().parse_args(argv)
-    if args.no_llm:
-        search_ai._load_key = lambda: None  # type: ignore[assignment]  # 测试/离线模式
+    # 每次运行按参数重置，避免同进程多次调用残留 --no-llm 状态
+    _LLM_ENABLED = not args.no_llm
     platforms = [p.strip().lower() for p in (args.platforms or "zhihu,ai").split(",") if p.strip()]
     platforms = list(dict.fromkeys(platforms))
     supported = {"zhihu", "ai"}
@@ -870,11 +940,19 @@ def main(argv: list[str] | None = None) -> int:
             print("未生成任何版本。", file=sys.stderr)
             return 2
 
+        postprocess_warnings: list[str] = []
+        for name in list(versions):
+            content, used = versions[name]
+            cleaned, warns = _postprocess_llm_output(content, name)
+            versions[name] = (cleaned, used)
+            postprocess_warnings.extend(warns)
+
         checklist_path = build_review_checklist(
             doc, query, gaps, draft_score, versions, out_dir
         )
         manifest = build_manifest(
-            doc, query, versions, draft_score, out_dir, gaps, checklist_path
+            doc, query, versions, draft_score, out_dir, gaps, checklist_path,
+            postprocess_warnings,
         )
         manifest_path = save_manifest(manifest, out_dir)
     except OSError as exc:
@@ -891,6 +969,8 @@ def main(argv: list[str] | None = None) -> int:
     for name in versions:
         used = "LLM" if versions[name][1] else "规则脚手架"
         print(f"  {name} 版：{manifest['versions'][name]['file']}（{used}）")
+    for warn in manifest["llm_postprocess_warnings"]:
+        print(f"  [后处理] {warn}")
     print(f"行动建议：{len(draft_score['recommendations'])} 条（P0={sum(1 for r in draft_score['recommendations'] if r['priority'] == 'P0')}）")
     if gaps:
         high = sum(1 for g in gaps if g["severity"] == "high")
