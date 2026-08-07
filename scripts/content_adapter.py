@@ -169,6 +169,7 @@ def parse_markdown(text: str) -> DraftDoc:
     saw_heading = False
     in_code = False
     code_buffer: list[str] = []
+    fence_start = ""
 
     def flush() -> None:
         nonlocal current_lines
@@ -182,7 +183,7 @@ def parse_markdown(text: str) -> DraftDoc:
             if in_code:
                 code = "\n".join(code_buffer)
                 code_blocks.append(code)
-                block_lines = ["```"] + code_buffer + ["```"]
+                block_lines = [fence_start] + code_buffer + [line]
                 if saw_heading:
                     current_lines.extend(block_lines)
                 else:
@@ -191,6 +192,7 @@ def parse_markdown(text: str) -> DraftDoc:
                 in_code = False
             else:
                 in_code = True
+                fence_start = line
             continue
         if in_code:
             code_buffer.append(line)
@@ -377,7 +379,7 @@ def detect_promotional_signals(text: str) -> list[dict]:
                 if any(s <= idx < e or s < end <= e for s, e in skip):
                     start = end
                     continue
-                if severity == "high" and any(s == idx and e == end for s, e in high_spans):
+                if severity == "high" and any(s <= idx < e or s < end <= e for s, e in high_spans):
                     start = end
                     continue
                 ctx_start = max(0, idx - 12)
@@ -1135,6 +1137,19 @@ def main(argv: list[str] | None = None) -> int:
             cleaned, warns = _postprocess_llm_output(content, name)
             versions[name] = (cleaned, used)
             postprocess_warnings.extend(warns)
+            # LLM 改写产物补扫营销信号：改写引入转化话术同样拒绝（exit 3）
+            high_sigs = [
+                s for s in detect_promotional_signals(cleaned)
+                if s["severity"] == "high"
+            ]
+            if high_sigs:
+                print("拒绝生成：LLM 改写输出含营销转化信号，不产出版本。", file=sys.stderr)
+                for sig in high_sigs:
+                    print(
+                        f"  [拒绝] 疑似营销转化话术「{sig['pattern']}」：…{sig['context']}…",
+                        file=sys.stderr,
+                    )
+                return 3
 
         checklist_path = build_review_checklist(
             doc, query, gaps, draft_score, versions, out_dir

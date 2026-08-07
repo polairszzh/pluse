@@ -108,6 +108,19 @@ class TestParse:
         assert "```\npip install workbuddy\n```" in md
         assert "``` pip install" not in md
 
+    def test_parse_keeps_fence_language(self):
+        doc = parse_markdown(
+            "# 标题\n\n"
+            "## 安装\n\n"
+            "```python\n"
+            "print('hi')\n"
+            "```\n"
+        )
+        section_body = doc.sections[0][1]
+        assert "```python" in section_body
+        md = _fallback_zhihu_version(doc)
+        assert "```python\nprint('hi')\n```" in md
+
     def test_h1_after_h2_starts_new_section(self):
         doc = parse_markdown("# 标题\n\n## 优势\n\n内容A。\n\n# 新标题\n\n内容B。\n")
         assert doc.title == "标题"
@@ -239,6 +252,11 @@ class TestMaterialGaps:
         patterns = {s["pattern"] for s in sigs}
         assert "加微信" in patterns
         assert "私信我" in patterns
+
+    def test_promotional_overlap_dedup(self):
+        # 「扫码添加」与「扫码加」重叠时只报一次
+        sigs = detect_promotional_signals("扫码添加好友")
+        assert [s["pattern"] for s in sigs] == ["扫码添加"]
 
     def test_promotional_medium_detected(self):
         sigs = detect_promotional_signals("强烈推荐这个网站，全网第一的教程。")
@@ -691,6 +709,19 @@ class TestCLI:
         ai_md = next(iter(out.glob("ai-*.md"))).read_text(encoding="utf-8")
         assert "![图](https://x.com/a.png)" not in ai_md
         assert "\n\n\n" not in ai_md  # 连续空行被规整
+
+    def test_llm_output_high_promo_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
+        payload = {
+            "choices": [{"message": {"content": "# 改\n\n这门课必买，扫码下单立减！\n"}}]
+        }
+        monkeypatch.setattr(requests, "post", lambda *a, **kw: FakeResponse(payload))
+        src = tmp_path / "draft.md"
+        src.write_text(SAMPLE_DRAFT, encoding="utf-8")
+        out = tmp_path / "out7"
+        code = main(["--source", str(src), "--output", str(out)])
+        assert code == 3  # LLM 改写引入营销转化话术同样拒绝
+        assert not list(out.glob("*.md"))
 
     def test_cli_rejects_high_promotional(self, tmp_path, monkeypatch):
         monkeypatch.setattr("search_ai._load_key", lambda: None)
