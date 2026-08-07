@@ -42,12 +42,13 @@ REJECT_EXCEPT_RE = re.compile(
     r"(并非(?:谣言|虚假|不实|错误|假消息|问题|坏事|难事)|"
     r"不是(?:谣言|虚假|不实|错误|假消息|问题|坏事|难事)|不是假的|"
     r"没有(?:问题|证据|找到|查到|相关|记录|信息|发现)|"
-    r"尚未(?:公布|发布|披露)|并非没有|不是没有)"
+    r"尚未(?:公布|发布|披露)|并非没有|不是没有|有没有|是否存在|是否有)"
 )
 # 第一手经验信号：个人体验类表述（官方「我们提供」不算个人经验）
 FIRST_PERSON_RE = re.compile(
     r"(我(?:上周|昨天|最近|实测|亲测|用了|试了|体验|处理了|整理了|测试了|跑了|花了|"
-    r"遇到了|发现了|写了|做了|改了|装了)|本人(?:实测|亲测|体验))"
+    r"遇到了|发现了|写了|做了|改了|装了)|本人(?:实测|亲测|体验)|"
+    r"(?:用了|试了|花了|跑了|处理了|整理了|测试了|遇到了|发现了|写了|做了|改了|装了)\s*\d)"
 )
 
 UNIT_FACT_RE = re.compile(
@@ -91,7 +92,13 @@ def extract_fact_candidates(text: str) -> list[dict]:
 
     def add(fact: str, start: int, end: int) -> None:
         sentence = _sentence_around(text, start, end)
-        if FIRST_PERSON_RE.search(sentence):
+        # 只检查断言数字所在子句（按逗号切分）是否为第一手经验：
+        # 「我上周处理了 3000 行，新用户领 5000 积分」只跳过 3000行，5000积分 仍验证
+        clause = next(
+            (c for c in re.split(r"[，,]", sentence) if fact in re.sub(r"\s+", "", c)),
+            sentence,
+        )
+        if FIRST_PERSON_RE.search(clause):
             return  # 第一手经验不做外部验证
         if fact not in seen:
             seen[fact] = sentence

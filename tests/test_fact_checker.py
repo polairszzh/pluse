@@ -71,6 +71,13 @@ class TestExtract:
         cands = extract_fact_candidates("我处理了 3000 行数据。")
         assert cands == []
 
+    def test_comma_clause_first_person_only(self):
+        # 逗号后的公开断言不被第一人称子句误伤
+        cands = extract_fact_candidates("我上周处理了 3000 行，新用户领 5000 积分。")
+        facts = {c["fact"] for c in cands}
+        assert "5000积分" in facts  # 公开断言仍验证
+        assert "3000行" not in facts  # 第一手经验跳过
+
 
 class TestRisk:
     def test_medical_risk(self):
@@ -271,6 +278,15 @@ class TestVerifyFact:
         # 「并非没有推出」= 确实推出了（双重否定为肯定）
         html = bing_html([
             ("官方说明", "https://baike.baidu.com/item/x", "官方并非没有推出 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "conflict"
+
+    def test_question_not_conflict(self, monkeypatch):
+        # 「有没有 5000 积分？」是疑问句，不是否定断言
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "新用户有没有 5000 积分？"),
         ])
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
         r = verify_fact("workbuddy", "5000积分")
