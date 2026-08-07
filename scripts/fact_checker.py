@@ -33,11 +33,16 @@ UNIT_FACT_RE = re.compile(
 )
 VERSION_RE = re.compile(r"(\d+\.\d+(?:\.\d+)?)")
 
-# 易传播错误信息的风险领域：即使无法核实也强制标注不确定性
-RISK_PATTERNS = {
+# 高危风险领域：误导会造成实际伤害（医疗健康、教育招考），无法核实强制高危
+HIGH_RISK_PATTERNS = {
     "医学/健康": r"(药|治疗|偏方|疫苗|治愈|降糖|降压|养生)",
-    "软件版本": r"\d+\.\d+(?:\.\d+)?",
+    "教育招考": r"(高考|中考|考研|招考|分数线|招生简章|录取)",
+}
+
+# 中危风险领域：信息经常变动（价格政策、软件版本），无法核实标 medium 提示即可
+MEDIUM_RISK_PATTERNS = {
     "价格/政策": r"(价格|收费|优惠|积分|政策|计费)",
+    "软件版本": r"\d+\.\d+(?:\.\d+)?",
 }
 
 
@@ -89,11 +94,21 @@ def _sentence_around(text: str, start: int, end: int) -> str:
 
 
 def risk_flag(context: str) -> str | None:
-    """风险领域标记：命中易传播错误信息的领域返回领域名，否则 None"""
-    for name, pattern in RISK_PATTERNS.items():
+    """风险领域标记：先查高危（医学/招考），再查中危（价格政策/版本）；未命中返回 None"""
+    for name, pattern in HIGH_RISK_PATTERNS.items():
+        if re.search(pattern, context or ""):
+            return name
+    for name, pattern in MEDIUM_RISK_PATTERNS.items():
         if re.search(pattern, context or ""):
             return name
     return None
+
+
+def risk_severity(risk: str | None) -> str:
+    """风险领域严重度：高危领域（医学/招考）= high，其余（价格政策/版本）= medium"""
+    if risk in HIGH_RISK_PATTERNS:
+        return "high"
+    return "medium"
 
 
 def _search(query: str, session: requests.Session | None = None, timeout: int = 20) -> list[dict]:

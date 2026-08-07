@@ -8,6 +8,7 @@ import requests
 from fact_checker import (
     extract_fact_candidates,
     risk_flag,
+    risk_severity,
     verify_fact,
     verify_facts,
 )
@@ -52,9 +53,19 @@ class TestExtract:
 class TestRisk:
     def test_medical_risk(self):
         assert risk_flag("这个偏方 3 天治愈") == "医学/健康"
+        assert risk_severity("医学/健康") == "high"
+
+    def test_exam_risk(self):
+        assert risk_flag("2026 年高考分数线 550 分") == "教育招考"
+        assert risk_severity("教育招考") == "high"
 
     def test_version_risk(self):
         assert risk_flag("WorkBuddy 最新版本 2.3.1") == "软件版本"
+        assert risk_severity("软件版本") == "medium"
+
+    def test_price_policy_medium(self):
+        assert risk_flag("每天签到 100 积分") == "价格/政策"
+        assert risk_severity("价格/政策") == "medium"
 
     def test_no_risk(self):
         assert risk_flag("本文介绍了 WorkBuddy 的使用体验") is None

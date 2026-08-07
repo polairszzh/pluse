@@ -27,7 +27,7 @@ from pathlib import Path
 
 import requests
 import search_ai
-from fact_checker import verify_facts
+from fact_checker import risk_severity, verify_facts
 from scorer import audit_article, grade
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -1219,7 +1219,7 @@ def main(argv: list[str] | None = None) -> int:
                 risk_note = f"（{r['risk']}领域）" if r["risk"] else ""
                 gaps.append({
                     "type": "fact_unverified",
-                    "severity": "high" if r["risk"] else "medium",
+                    "severity": risk_severity(r["risk"]),
                     "detail": f"数据断言「{r['fact']}」无法核实{risk_note}：{r.get('reason', '未检索到来源')}",
                     "suggestion": "发布前通过官方渠道核验，或在正文标注不确定性",
                 })
