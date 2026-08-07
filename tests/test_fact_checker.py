@@ -58,11 +58,17 @@ class TestExtract:
         assert sum(1 for c in cands if c["fact"] == "5000积分") == 1
 
     def test_thousands_separator(self):
-        # 千分位逗号：「5,000 积分」应提取为 5,000积分，而非 000积分
+        # 千分位逗号归一化：「5,000 积分」提取为 5000积分（非 5,000积分/000积分）
         cands = extract_fact_candidates("新用户领 5,000 积分。")
         facts = {c["fact"] for c in cands}
-        assert "5,000积分" in facts
+        assert "5000积分" in facts
+        assert "5,000积分" not in facts
         assert "000积分" not in facts
+
+    def test_fullwidth_space_normalized(self):
+        # 全角空格归一化：5　000 积分 与 5000积分 同断言
+        cands = extract_fact_candidates("新用户领 5　000 积分。")  # 全角空格
+        assert any(c["fact"] == "5000积分" for c in cands)
 
     def test_keeps_higher_risk_context(self):
         # 同一断言首次低危句、后高危句（医疗）时，保留高危上下文
@@ -155,6 +161,12 @@ class TestRisk:
         # 公司官方门户仍权威
         assert _host_authority("tencent.com") == 2
         assert _host_authority("codebuddy.cn") == 2
+        # 官方子域按主域匹配
+        assert _host_authority("cloud.tencent.com") == 2
+        assert _host_authority("news.xinhuanet.com") == 2
+        # UGC 服务子域不因主域匹配误判
+        assert _host_authority("zhidao.baidu.com") == 1
+        assert _host_authority("tieba.baidu.com") == 1
         # 维基语言子域权威
         assert _host_authority("en.wikipedia.org") == 2
         assert _host_authority("ja.wikipedia.org") == 2
@@ -376,6 +388,15 @@ class TestVerifyFact:
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
         r = verify_fact("workbuddy", "5000积分")
         assert r["status"] == "conflict"
+
+    def test_weak_reject_overridden_by_support(self, monkeypatch):
+        # 「此前有谣言称 X，现已证实」：支持词跨子句回看，覆盖弱否定
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "此前有谣言称 5000 积分，现已证实"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "confirmed"
 
     def test_unverified(self, monkeypatch):
         html = bing_html([("无关文章", "https://www.example.com/x", "普通内容没有提到数字")])

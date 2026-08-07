@@ -30,17 +30,19 @@ AUTHORITY_HOSTS = {
     # 著名公司官方门户（品牌/产品验证场景；UGC 平台不在此列——用户内容不能确认断言）
     "codebuddy.cn", "tencent.com", "baidu.com", "alibaba.com", "bytedance.com",
 }
+# 主域子域匹配时排除的 UGC 服务子域（百度知道/贴吧/文库、QQ 空间等）
+UGC_HOST_SUFFIXES = (
+    "zhidao.baidu.com", "tieba.baidu.com", "wenku.baidu.com", "user.qzone.qq.com",
+)
 
 _SEVERITY_ORDER = {"high": 2, "medium": 1, "low": 0}
 
+# 明确否定词：作为 reject 的独立条件（含强否定；弱词见 WEAK_REJECT_RE）
 REJECT_SIGNAL_RE = re.compile(
-    r"(不存在|并未|并无|没有|未曾|从未|未提供|未推出|未发布|尚未|"
-    r"不含|不包含|未包含|不包括|并非|不是|假的|谣言|假消息|辟谣|错误信息|不实)"
-)
-# 强否定词：与支持词同句时仍判否定（「已澄清：X 不存在」「已辟谣：X 不存在」）
-STRONG_REJECT_RE = re.compile(
     r"(不存在|并未|没有|未提供|未推出|不含|不包含|未包含|不包括|假的|错误信息|不实|并非|不是)"
 )
+# 弱否定词：仅当无任何支持词时才算否定（「X 是谣言」= 否定；「此前有谣言称 X，现已证实」= 支持）
+WEAK_REJECT_RE = re.compile(r"(谣言|辟谣|假消息)")
 # 肯定表述排除：并非/不是 + 否定词 = 肯定（「该活动并非谣言」不是否定信号）
 # 始终中性的表达：疑问句（有没有/是否存在）、双重否定（并非没有）、未公布（尚未公布）、
 # 肯定前缀（并非谣言/不是问题）——豁免不解除
@@ -66,7 +68,7 @@ NO_SUBJECT_EXPERIENCE_RE = re.compile(
 )
 
 UNIT_FACT_RE = re.compile(
-    r"(\d+(?:,\d{3})*(?:\.\d+)?\s*(?:多\s*)?(?:积分|元|分钟|小时|天|秒|GB|MB|%|万|亿|字|行))"
+      r"(\d+(?:[,\s]\d{3})*(?:\.\d+)?\s*(?:多\s*)?(?:积分|元|分钟|小时|天|秒|GB|MB|%|万|亿|字|行))"
 )
 VERSION_RE = re.compile(
     r"(?:版本|发布|更新|升级|v\.?|ver\.?|Version)\s*(\d+\.\d+(?:\.\d+)?)"
@@ -94,10 +96,15 @@ def _host_of(url: str) -> str:
 
 def _host_authority(host: str) -> int:
     """来源权威度：2=官方/权威（政府/教育/百科/权威媒体），1=普通网页"""
-    if host.endswith(AUTHORITY_SUFFIXES) or host in AUTHORITY_HOSTS:
+    if host.endswith(AUTHORITY_SUFFIXES):
         return 2
     # 维基语言子域（en/ja/de.wikipedia.org 等）同为权威百科
-    if host.endswith(".wikipedia.org"):
+    if host in AUTHORITY_HOSTS or host.endswith(".wikipedia.org"):
+        return 2
+    # 官方/权威主域的子域（cloud.tencent.com → tencent.com），排除 UGC 服务
+    if any(host.endswith("." + d) for d in AUTHORITY_HOSTS) and not any(
+        host == u or host.endswith("." + u) for u in UGC_HOST_SUFFIXES
+    ):
         return 2
     return 1
 
@@ -126,7 +133,7 @@ def extract_fact_candidates(text: str) -> list[dict]:
             seen[fact] = sentence
 
     for m in UNIT_FACT_RE.finditer(text or ""):
-        add(re.sub(r"\s+", "", m.group(1)), m.start(), m.end())
+        add(re.sub(r"\s+", "", m.group(1)).replace(",", ""), m.start(), m.end())
     for m in VERSION_RE.finditer(text or ""):
         add(m.group(1), m.start(1), m.end(1))
     return [{"fact": f, "context": c} for f, c in seen.items()]
@@ -193,20 +200,22 @@ def _classify_snippet(snippet: str, fact_norm: str) -> str:
     """
     has_reject = False
     has_support = False
+    weak_reject = False
     for sent in re.split(r"[。；！？\n，,]", snippet or ""):
         if _is_neutral(sent, fact_norm):
             continue  # 中性/肯定语境句跳过
-        sent_norm = sent.replace(" ", "")
-        if REJECT_SIGNAL_RE.search(sent) and _fact_present(fact_norm, sent_norm):
-            # 支持词（已澄清/属实）覆盖弱否定词（谣言），除非句含强否定
-            if SUPPORT_SIGNAL_RE.search(sent) and not STRONG_REJECT_RE.search(sent):
-                has_support = True
-            else:
-                has_reject = True
-        elif SUPPORT_SIGNAL_RE.search(sent) and _fact_present(fact_norm, sent_norm):
-            has_support = True  # 属实/确认/证实：明确肯定信号
-        elif _fact_present(fact_norm, sent_norm):
+        sent_norm = re.sub(r"\s+", "", sent)
+        has_digit = _fact_present(fact_norm, sent_norm)
+        if REJECT_SIGNAL_RE.search(sent) and has_digit:
+            has_reject = True  # 明确否定词优先
+        elif SUPPORT_SIGNAL_RE.search(sent):
+            has_support = True  # 支持词跨子句回看（「现已证实」）
+        elif WEAK_REJECT_RE.search(sent) and has_digit:
+            weak_reject = True  # 弱否定（谣言/辟谣）：无支持词时才判否定
+        elif has_digit:
             has_support = True
+    if weak_reject and not has_support:
+        has_reject = True
     if has_reject:
         return "reject"
     if has_support:
@@ -239,7 +248,7 @@ def _search(query: str, session: requests.Session | None = None, timeout: int = 
 
 def verify_fact(query: str, fact: str, session: requests.Session | None = None) -> dict:
     """对单个数字断言做多源交叉验证，返回四级判定（confirmed / conflict / untrusted / unverified）"""
-    fact_norm = fact.replace(" ", "")
+    fact_norm = re.sub(r"\s+", "", fact)
     search_q = f"{query} {fact}"
     try:
         results = _search(search_q, session=session)
