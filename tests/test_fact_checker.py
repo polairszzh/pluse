@@ -57,6 +57,13 @@ class TestExtract:
         cands = extract_fact_candidates("5000 积分。再次提到 5000积分。")
         assert sum(1 for c in cands if c["fact"] == "5000积分") == 1
 
+    def test_thousands_separator(self):
+        # 千分位逗号：「5,000 积分」应提取为 5,000积分，而非 000积分
+        cands = extract_fact_candidates("新用户领 5,000 积分。")
+        facts = {c["fact"] for c in cands}
+        assert "5,000积分" in facts
+        assert "000积分" not in facts
+
     def test_keeps_higher_risk_context(self):
         # 同一断言首次低危句、后高危句（医疗）时，保留高危上下文
         cands = extract_fact_candidates("售价 5000 积分。该偏方 5000 积分可治愈。")
@@ -77,6 +84,11 @@ class TestExtract:
         # 「我处理了 3000 行」是第一手经验，跳过外部验证
         cands = extract_fact_candidates("我处理了 3000 行数据。")
         assert cands == []
+
+    def test_tool_processed_not_first_person(self):
+        # 「该工具处理了 3000 行」是公开陈述，不是第一手经验
+        cands = extract_fact_candidates("该工具处理了 3000 行数据。")
+        assert any(c["fact"] == "3000行" for c in cands)
 
     def test_comma_clause_first_person_only(self):
         # 逗号后的公开断言不被第一人称子句误伤
@@ -321,6 +333,15 @@ class TestVerifyFact:
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
         r = verify_fact("workbuddy", "5000积分")
         assert r["status"] == "conflict"
+
+    def test_rumor_cleared_not_conflict(self, monkeypatch):
+        # 「谣言已澄清，活动属实」是肯定（澄清后属实），不判 conflict
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "关于 5000 积分的谣言已澄清，活动属实"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "conflict"
 
     def test_unverified(self, monkeypatch):
         html = bing_html([("无关文章", "https://www.example.com/x", "普通内容没有提到数字")])

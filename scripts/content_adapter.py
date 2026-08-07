@@ -1201,7 +1201,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             scan_text = _text_without_code(_strip_frontmatter(doc.raw))
             fact_results = verify_facts(scan_text, query)
-        except (OSError, ValueError, requests.exceptions.RequestException):
+        except Exception:  # noqa: BLE001 — 防火墙尽力而为：任何异常都降级，不阻断生成
             fact_results = []
         conflicts = [r for r in fact_results if r["status"] == "conflict"]
         if conflicts:
