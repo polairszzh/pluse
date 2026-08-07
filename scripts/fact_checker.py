@@ -37,6 +37,10 @@ REJECT_SIGNAL_RE = re.compile(
     r"(不存在|并未|并无|没有|未曾|从未|未提供|未推出|未发布|尚未|"
     r"不含|不包含|未包含|不包括|并非|不是|假的|谣言|假消息|辟谣|错误信息|不实)"
 )
+# 强否定词：与支持词同句时仍判否定（「已澄清：X 不存在」「已辟谣：X 不存在」）
+STRONG_REJECT_RE = re.compile(
+    r"(不存在|并未|没有|未提供|未推出|不含|不包含|未包含|不包括|假的|错误信息|不实|并非|不是)"
+)
 # 肯定表述排除：并非/不是 + 否定词 = 肯定（「该活动并非谣言」不是否定信号）
 # 始终中性的表达：疑问句（有没有/是否存在）、双重否定（并非没有）、未公布（尚未公布）、
 # 肯定前缀（并非谣言/不是问题）——豁免不解除
@@ -45,8 +49,9 @@ NEUTRAL_ALWAYS_RE = re.compile(
     r"不是(?:谣言|虚假|不实|错误|假消息|问题|坏事|难事)|不是假的|"
     r"尚未(?:公布|发布|披露)|并非没有|不是没有|有没有|是否存在|是否有)"
 )
-# 支持信号：澄清/属实/确认/证实——句含断言数字时视为支持（不是中性）
-SUPPORT_SIGNAL_RE = re.compile(r"(属实|已澄清|已辟谣|确认|证实)")
+# 支持信号：明确的肯定词——句含断言数字时视为支持。
+# 「已辟谣」是否定信号（在 REJECT_SIGNAL_RE）；「已澄清」REJECT 优先保护（已澄清：X 不存在 → conflict）
+SUPPORT_SIGNAL_RE = re.compile(r"(属实|确认|证实|已澄清)")
 # 「没有 X」类固定短语：后跟数字断言时豁免解除（「没有相关 5000 积分活动」是明确否定）
 NEUTRAL_NO_X_RE = re.compile(r"没有(?:问题|证据|找到|查到|相关|记录|信息|发现)")
 # 第一手经验信号：个人体验类表述（官方「我们提供」不算个人经验）
@@ -56,7 +61,9 @@ FIRST_PERSON_RE = re.compile(
 )
 # 省略主语的第一手经验延续：子句以体验动词开头 + 数字（「用了 5 分钟」；
 # 「该工具用了 3 分钟」以名词开头，不匹配）
-NO_SUBJECT_EXPERIENCE_RE = re.compile(r"^(?:用了|试了|花了|跑了|遇到了|发现了)\s*\d")
+NO_SUBJECT_EXPERIENCE_RE = re.compile(
+    r"^(?:然后|接着|之后|随后|又)?(?:用了|试了|花了|跑了|遇到了|发现了)\s*\d"
+)
 
 UNIT_FACT_RE = re.compile(
     r"(\d+(?:,\d{3})*(?:\.\d+)?\s*(?:多\s*)?(?:积分|元|分钟|小时|天|秒|GB|MB|%|万|亿|字|行))"
@@ -129,10 +136,14 @@ def _sentence_around(text: str, start: int, end: int) -> str:
     """返回数字断言所在句（按中文句号/分号/换行切分）"""
     left = max(
         text.rfind("。", 0, start), text.rfind("；", 0, start),
+        text.rfind("！", 0, start), text.rfind("？", 0, start),
         text.rfind("\n", 0, start),
     ) + 1
     right_cands = [
-        i for i in (text.find("。", end), text.find("；", end), text.find("\n", end))
+        i for i in (
+            text.find("。", end), text.find("；", end),
+            text.find("！", end), text.find("？", end), text.find("\n", end),
+        )
         if i != -1
     ]
     right = min(right_cands) if right_cands else len(text)
@@ -186,10 +197,14 @@ def _classify_snippet(snippet: str, fact_norm: str) -> str:
         if _is_neutral(sent, fact_norm):
             continue  # 中性/肯定语境句跳过
         sent_norm = sent.replace(" ", "")
-        if SUPPORT_SIGNAL_RE.search(sent) and _fact_present(fact_norm, sent_norm):
-            has_support = True  # 属实/已澄清/证实：肯定信号，视为支持
-        elif REJECT_SIGNAL_RE.search(sent) and _fact_present(fact_norm, sent_norm):
-            has_reject = True
+        if REJECT_SIGNAL_RE.search(sent) and _fact_present(fact_norm, sent_norm):
+            # 支持词（已澄清/属实）覆盖弱否定词（谣言），除非句含强否定
+            if SUPPORT_SIGNAL_RE.search(sent) and not STRONG_REJECT_RE.search(sent):
+                has_support = True
+            else:
+                has_reject = True
+        elif SUPPORT_SIGNAL_RE.search(sent) and _fact_present(fact_norm, sent_norm):
+            has_support = True  # 属实/确认/证实：明确肯定信号
         elif _fact_present(fact_norm, sent_norm):
             has_support = True
     if has_reject:
@@ -289,7 +304,10 @@ def verify_facts(
         return []
 
     def run(cand: dict) -> dict:
-        result = verify_fact(query, cand["fact"])  # 并发场景不共享 session，用模块级 requests
+        try:
+            result = verify_fact(query, cand["fact"])  # 并发场景不共享 session
+        except Exception:  # noqa: BLE001 — 单个断言验证异常不拖垮其他断言
+            result = {"fact": cand["fact"], "status": "unverified", "reason": "验证异常"}
         result["context"] = cand["context"]
         result["risk"] = risk_flag(cand["context"])
         return result

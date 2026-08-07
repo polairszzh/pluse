@@ -95,6 +95,17 @@ class TestExtract:
         cands = extract_fact_candidates("该工具用了 3 分钟完成处理。")
         assert any(c["fact"] == "3分钟" for c in cands)
 
+    def test_no_subject_with_conjunction(self):
+        # 带连接词的省略主语体验句（然后用了 5 分钟）仍跳过
+        cands = extract_fact_candidates("我处理完数据，然后用了 5 分钟。")
+        assert all(c["fact"] != "5分钟" for c in cands)
+
+    def test_sentence_boundary_exclamation(self):
+        # 感叹号是句子边界：context 不跨感叹句
+        cands = extract_fact_candidates("新用户领 5000 积分！这个偏方很好。")
+        item = next(c for c in cands if c["fact"] == "5000积分")
+        assert "偏方" not in item["context"]
+
     def test_comma_clause_first_person_only(self):
         # 逗号后的公开断言不被第一人称子句误伤
         cands = extract_fact_candidates("我上周处理了 3000 行，新用户领 5000 积分。")
@@ -357,6 +368,15 @@ class TestVerifyFact:
         r = verify_fact("workbuddy", "5000积分")
         assert r["status"] == "confirmed"
 
+    def test_yi_piyao_reject(self, monkeypatch):
+        # 「官方已辟谣：5000 积分不存在」是明确否定，REJECT 优先于 SUPPORT
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "官方已辟谣：5000 积分不存在"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "conflict"
+
     def test_unverified(self, monkeypatch):
         html = bing_html([("无关文章", "https://www.example.com/x", "普通内容没有提到数字")])
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
@@ -382,3 +402,12 @@ class TestVerifyFacts:
         assert all("risk" in r for r in out)
         assert any(r["risk"] == "软件版本" for r in out)
         assert all(r["status"] == "unverified" for r in out)
+
+    def test_single_failure_degrades_not_crash(self, monkeypatch):
+        def boom(*a, **kw):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr("fact_checker.verify_fact", boom)
+        out = verify_facts("售价 5000 元。", "workbuddy")
+        assert out and out[0]["status"] == "unverified"
+        assert "验证异常" in out[0]["reason"]
