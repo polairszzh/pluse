@@ -32,6 +32,14 @@ class TestDedupe:
         ]
         assert len(dedupe_recommendations(recs)) == 2
 
+    def test_synonym_not_deduped(self):
+        # 同义词（增加/补充）不做合并——归一化仅处理空白/标点差异，行为锁定
+        recs = [
+            rec("P0", "内容", "增加段落篇幅"),
+            rec("P1", "内容", "补充段落篇幅"),
+        ]
+        assert len(dedupe_recommendations(recs)) == 2
+
 
 class TestConflicts:
     def test_expand_vs_shrink_conflict(self):

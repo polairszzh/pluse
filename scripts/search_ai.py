@@ -751,7 +751,7 @@ def build_recommendations(
 
     recs = sort_recommendations(dedupe_recommendations(recs))
     for a, b, note in detect_conflicts(recs):
-        print(f"  [冲突提示] {note}", file=sys.stderr)
+        print(f"  [冲突提示] {note}（矛盾建议保留，发布前人工复核取舍）", file=sys.stderr)
     return recs
 
 

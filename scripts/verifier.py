@@ -1,7 +1,11 @@
 """报告前 verifier：对行动建议做去重、矛盾检测与排序。
 
-audit / track / adapt 输出报告前统一调用，避免重复建议、互相矛盾的建议
-混入最终清单（roadmap D1）。
+audit / track / adapt 输出报告前统一调用（roadmap D1）：
+- 去重：action 归一化（去空白/标点）后精确匹配，同文本建议只保留优先级最高的一条；
+  不做同义词合并（「增加/扩充」等真正同义表述需语义层处理，超出本模块范围）；
+- 矛盾检测：同维度内方向相反的建议会被提示（不自动移除，避免误删有效建议，
+  由报告呈现后人工判断取舍）；
+- 排序：按 P0 → P1 → P2 稳定排序。
 """
 from __future__ import annotations
 
@@ -21,7 +25,7 @@ def _normalize_action(text: str) -> str:
 
 
 def dedupe_recommendations(recs: list[Any]) -> list[Any]:
-    """按 action 归一化去重：同义建议只保留优先级最高的一条，保持原顺序"""
+    """按 action 归一化（去空白/标点/全半角）精确匹配去重：同文本建议保留优先级最高的一条"""
     seen: dict[str, Any] = {}
     for r in recs:
         key = _normalize_action(r.action)
