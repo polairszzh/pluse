@@ -61,6 +61,11 @@ class TestExtract:
         cands = extract_fact_candidates("我们提供 5000 积分给新用户。")
         assert any(c["fact"] == "5000积分" for c in cands)
 
+    def test_third_party_ce_not_first_person(self):
+        # 「第三方实测」不是第一手经验，应进入验证
+        cands = extract_fact_candidates("第三方实测处理 5000 行数据。")
+        assert any(c["fact"] == "5000行" for c in cands)
+
 
 class TestRisk:
     def test_medical_risk(self):
@@ -229,6 +234,24 @@ class TestVerifyFact:
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
         r = verify_fact("workbuddy", "5000积分")
         assert r["status"] == "confirmed"
+
+    def test_no_problem_not_conflict(self, monkeypatch):
+        # 「没有问题」含「没有」但不是否定断言
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "没有问题，5000 积分照常发放"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "confirmed"
+
+    def test_not_yet_announced_not_conflict(self, monkeypatch):
+        # 「尚未公布」是中性（未公布 ≠ 断言为假），不判 conflict
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "官方尚未公布 5000 积分详情"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "conflict"
 
     def test_unverified(self, monkeypatch):
         html = bing_html([("无关文章", "https://www.example.com/x", "普通内容没有提到数字")])
