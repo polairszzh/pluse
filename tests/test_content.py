@@ -78,6 +78,12 @@ class TestParse:
         assert doc.topics == []
         assert doc.sections == []
 
+    def test_h1_after_h2_starts_new_section(self):
+        doc = parse_markdown("# 标题\n\n## 优势\n\n内容A。\n\n# 新标题\n\n内容B。\n")
+        assert doc.title == "标题"
+        assert doc.topics == ["优势"]
+        assert doc.sections == [("优势", ["内容A。"]), ("新标题", ["内容B。"])]
+
 
 class TestScore:
     def test_draft_score_shape(self):
@@ -226,6 +232,13 @@ class TestRewriteInstructions:
         assert "HTML 注释" in ins
         assert "【素材缺口】" not in ins
 
+    def test_low_quality_forces_third_person(self):
+        ins = _rewrite_instructions(
+            {"关键词覆盖": 90, "AI 可引用性": 90, "内容质量 (E-E-A-T)": 40, "结构与格式": 90},
+        )
+        assert "第三人称" in ins
+        assert "不使用第一人称" in ins
+
 
 class TestFallback:
     def test_ai_version_structure(self, monkeypatch):
@@ -277,6 +290,19 @@ class TestFallback:
         assert "WorkBuddy 是一款 AI 工作流自动化工具" in md
         assert "WorkBuddy 有哪些优势？" in md
         assert "怎么安装和配置 WorkBuddy？" in md
+
+    def test_fallback_ai_merges_duplicate_heading(self):
+        doc = parse_markdown(
+            "# 标题\n\n"
+            "## 优势\n\n"
+            "优势内容一。\n\n"
+            "## 优势\n\n"
+            "优势内容二。\n"
+        )
+        md = _fallback_ai_version(doc)
+        assert "优势内容一。" in md
+        assert "优势内容二。" in md
+        assert md.count("## 优势？") == 1  # 同一标题只输出一个问答块，内容合并
 
     def test_fallback_ai_no_h2_uses_full_intro(self):
         long_intro = "WorkBuddy 是腾讯云推出的桌面 AI 智能体工作台。" * 20
@@ -447,6 +473,11 @@ class TestCLI:
     def test_missing_source(self, tmp_path):
         with pytest.raises(SystemExit) as exc:
             main(["--source", str(tmp_path / "nope.md")])
+        assert exc.value.code == 2
+
+    def test_directory_source_rejected(self, tmp_path):
+        with pytest.raises(SystemExit) as exc:
+            main(["--source", str(tmp_path)])
         assert exc.value.code == 2
 
     def test_invalid_platform(self, tmp_path):

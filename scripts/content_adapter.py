@@ -159,7 +159,13 @@ def parse_markdown(text: str) -> DraftDoc:
             continue
         if s.startswith("# "):
             flush()
-            title = s[2:].strip()
+            heading = s[2:].strip()
+            if not title:
+                title = heading
+            else:
+                # 后续 H1 视为独立节标题（用户误用 H1 分节时保留内容，不归入前一 H2）
+                current_heading = heading
+                saw_heading = True
             continue
         if s.startswith("## "):
             flush()
@@ -437,7 +443,8 @@ def _rewrite_instructions(
     if qual < 60:
         parts.append(
             "补充具体数字、案例或第一手经验增强可信度；不得编造数据/链接/引用，"
-            "缺失素材在文末用 HTML 注释列明，不要额外生成可见的素材缺口章节"
+            "缺失素材在文末用 HTML 注释列明，不要额外生成可见的素材缺口章节；"
+            "第一手经验以第三人称转述（如「作者实测…」），不使用第一人称"
         )
     if struct < 60:
         parts.append("按「是什么 → 为什么用 → 怎么安装配置」重排 H2/H3，段落 120-180 字")
@@ -505,8 +512,8 @@ def _ai_system(dims: dict[str, int] | None = None, query: str | None = None) -> 
 def _fallback_ai_version(doc: DraftDoc) -> str:
     """无 LLM 时的规则脚手架：把每个 H2 话题重组为问答对 + 自包含首段"""
     lines = [f"# {doc.title}：快速了解与使用指南", ""]
-    if not doc.topics:
-        # 无 H2：整篇引言即「它是什么」自包含答案，不生成默认话题占位
+    if not doc.sections:
+        # 无任何小节：整篇引言即「它是什么」自包含答案，不生成默认话题占位
         intro_text = _clean_ai_text(" ".join(doc.intro))
         if intro_text:
             lines.append("## 它是什么？")
@@ -521,8 +528,7 @@ def _fallback_ai_version(doc: DraftDoc) -> str:
         )
         lines.append("")
         return "\n".join(lines)
-    fallback_topics = doc.topics
-    if doc.intro and not any(("是什么" in t or "介绍" in t) for t in fallback_topics):
+    if doc.intro and not any(("是什么" in h or "介绍" in h) for h, _ in doc.sections):
         # 引言回答「它是什么」，是 AI 引用最可能摘取的内容，先补一个问答块
         intro_text = _clean_ai_text(" ".join(doc.intro))
         if intro_text:
@@ -535,14 +541,15 @@ def _fallback_ai_version(doc: DraftDoc) -> str:
                 lines.append(rest)
                 lines.append("")
     used: list[str] = []
-    for topic in fallback_topics:
+    for heading, _ in doc.sections:
+        topic = heading
         if topic in used:
             continue
         used.append(topic)
         q = topic if re.search(r"[？?]$", topic) else f"{topic}？"
-        body = next(
-            ("\n".join(sec_body) for h, sec_body in doc.sections if h == topic),
-            "",
+        # 重复 H2 标题的内容合并进同一个问答块，不丢弃
+        body = "\n".join(
+            "\n".join(sec_body) for h, sec_body in doc.sections if h == topic
         )
         body = re.sub(r"!\[[^\]]*\]\([^)]+\)", "", body)  # AI 优化版去图
         answer = re.sub(r"\s+", " ", body).strip()
@@ -809,8 +816,8 @@ def save_manifest(manifest: dict, out_dir: Path) -> Path:
 
 def _existing_file(value: str) -> str:
     path = Path(value)
-    if not path.exists():
-        raise argparse.ArgumentTypeError(f"文件不存在：{value}")
+    if not path.is_file():
+        raise argparse.ArgumentTypeError(f"文件不存在或不是文件：{value}")
     return value
 
 
