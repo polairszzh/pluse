@@ -71,7 +71,7 @@ Workflow:
   Honesty (Phase 3): outputs are drafts to publish, not guaranteed-cited finished pieces — the falsifiability check for each version is "发布后重跑 /pulse track --query <话题> --mine <文章URL>，引用来源里出现你的内容". Xiaohongshu / video versions are not yet implemented.
   LLM rewrites style only, never facts: unverified links and numeric claims are surfaced in the review checklist for human verification.
   Trusted-GEO boundary: Pulse optimizes for AI understanding your real value, never for manipulating citations. Promotional/conversion signals (扫码/私信/优惠码/必买/限时抢购 etc.) are flagged as high-severity material gaps and must be removed before publishing.
-  Fact firewall: public numeric claims in drafts are cross-verified against search sources before generation — conflicts reject (exit 3), unverifiable claims are flagged (risk areas like pricing/medicine/version numbers get high severity); first-person experience data is never externally verified.
+  Fact firewall: public numeric claims in drafts are cross-verified against authoritative sources before generation — authoritative rejection → exit 3, authoritative support → confirmed; plain-source-only claims are flagged as untrusted (may be poison/SEO-spam sources); unverifiable claims are flagged by risk area (medicine/education-admission = high, pricing-policy/software-version = medium, none = low); first-person experience data is never externally verified.
 
 ### `/pulse compare <brandA> <brandB>`
 

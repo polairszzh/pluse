@@ -79,6 +79,11 @@ class TestRisk:
         assert risk_flag("每天签到 100 积分") == "价格/政策"
         assert risk_severity("价格/政策") == "medium"
 
+    def test_price_words(self):
+        # 售价/定价/费用 等词也命中价格风险
+        assert risk_flag("售价 5000 元") == "价格/政策"
+        assert risk_flag("官方定价 299 元") == "价格/政策"
+
     def test_no_risk(self):
         assert risk_flag("本文介绍了 WorkBuddy 的使用体验") is None
 
@@ -93,6 +98,9 @@ class TestRisk:
         # 公司官方门户仍权威
         assert _host_authority("tencent.com") == 2
         assert _host_authority("codebuddy.cn") == 2
+        # 维基语言子域权威
+        assert _host_authority("en.wikipedia.org") == 2
+        assert _host_authority("ja.wikipedia.org") == 2
 
 
 class TestVerifyFact:
@@ -208,6 +216,15 @@ class TestVerifyFact:
         # 「并非假消息」是肯定表述，不判否定
         html = bing_html([
             ("官方说明", "https://baike.baidu.com/item/x", "该活动并非假消息，新用户领 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "confirmed"
+
+    def test_not_problem_not_conflict(self, monkeypatch):
+        # 「这不是问题」是否定中性词，不是否定断言
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "这不是问题，5000 积分照常发放"),
         ])
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
         r = verify_fact("workbuddy", "5000积分")

@@ -39,7 +39,8 @@ REJECT_SIGNAL_RE = re.compile(
 )
 # 肯定表述排除：并非/不是 + 否定词 = 肯定（「该活动并非谣言」不是否定信号）
 REJECT_EXCEPT_RE = re.compile(
-    r"(并非(?:谣言|虚假|不实|错误|假消息)|不是(?:谣言|虚假|不实|错误|假消息)|不是假的)"
+    r"(并非(?:谣言|虚假|不实|错误|假消息|问题|坏事|难事)|"
+    r"不是(?:谣言|虚假|不实|错误|假消息|问题|坏事|难事)|不是假的)"
 )
 # 第一手经验信号：个人体验类表述（官方「我们提供」不算个人经验）
 FIRST_PERSON_RE = re.compile(
@@ -59,7 +60,7 @@ HIGH_RISK_PATTERNS = {
 
 # 中危风险领域：信息经常变动（价格政策、软件版本），无法核实标 medium 提示即可
 MEDIUM_RISK_PATTERNS = {
-    "价格/政策": r"(价格|收费|优惠|积分|政策|计费)",
+    "价格/政策": r"(价格|售价|定价|费用|收费|资费|报价|优惠|积分|政策|计费)",
     "软件版本": r"\d+\.\d+(?:\.\d+)?",
 }
 
@@ -74,6 +75,9 @@ def _host_of(url: str) -> str:
 def _host_authority(host: str) -> int:
     """来源权威度：2=官方/权威（政府/教育/百科/权威媒体），1=普通网页"""
     if host.endswith(AUTHORITY_SUFFIXES) or host in AUTHORITY_HOSTS:
+        return 2
+    # 维基语言子域（en/ja/de.wikipedia.org 等）同为权威百科
+    if host.endswith(".wikipedia.org"):
         return 2
     return 1
 
