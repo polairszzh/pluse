@@ -38,12 +38,15 @@ REJECT_SIGNAL_RE = re.compile(
     r"不含|不包含|未包含|不包括|并非|不是|假的|谣言|假消息|辟谣|错误信息|不实)"
 )
 # 肯定表述排除：并非/不是 + 否定词 = 肯定（「该活动并非谣言」不是否定信号）
-REJECT_EXCEPT_RE = re.compile(
+# 始终中性的表达：疑问句（有没有/是否存在）、双重否定（并非没有）、未公布（尚未公布）、
+# 肯定前缀（并非谣言/不是问题）——豁免不解除
+NEUTRAL_ALWAYS_RE = re.compile(
     r"(并非(?:谣言|虚假|不实|错误|假消息|问题|坏事|难事)|"
     r"不是(?:谣言|虚假|不实|错误|假消息|问题|坏事|难事)|不是假的|"
-    r"没有(?:问题|证据|找到|查到|相关|记录|信息|发现)|"
     r"尚未(?:公布|发布|披露)|并非没有|不是没有|有没有|是否存在|是否有)"
 )
+# 「没有 X」类固定短语：后跟数字断言时豁免解除（「没有相关 5000 积分活动」是明确否定）
+NEUTRAL_NO_X_RE = re.compile(r"没有(?:问题|证据|找到|查到|相关|记录|信息|发现)")
 # 第一手经验信号：个人体验类表述（官方「我们提供」不算个人经验）
 FIRST_PERSON_RE = re.compile(
     r"(我(?:上周|昨天|最近|实测|亲测|用了|试了|体验|处理了|整理了|测试了|跑了|花了|"
@@ -54,7 +57,9 @@ FIRST_PERSON_RE = re.compile(
 UNIT_FACT_RE = re.compile(
     r"(\d+(?:\.\d+)?\s*(?:多\s*)?(?:积分|元|分钟|小时|天|秒|GB|MB|%|万|亿|字|行))"
 )
-VERSION_RE = re.compile(r"(\d+\.\d+(?:\.\d+)?)")
+VERSION_RE = re.compile(
+    r"(?:版本|发布|更新|升级|v\.?|ver\.?|Version)\s*(\d+\.\d+(?:\.\d+)?)"
+)
 
 # 高危风险领域：误导会造成实际伤害（医疗健康、教育招考），无法核实强制高危
 HIGH_RISK_PATTERNS = {
@@ -112,7 +117,7 @@ def extract_fact_candidates(text: str) -> list[dict]:
     for m in UNIT_FACT_RE.finditer(text or ""):
         add(re.sub(r"\s+", "", m.group(1)), m.start(), m.end())
     for m in VERSION_RE.finditer(text or ""):
-        add(m.group(1), m.start(), m.end())
+        add(m.group(1), m.start(1), m.end(1))
     return [{"fact": f, "context": c} for f, c in seen.items()]
 
 
@@ -174,7 +179,7 @@ def _classify_snippet(snippet: str, fact_norm: str) -> str:
     has_reject = False
     has_support = False
     for sent in re.split(r"[。；！？\n，,]", snippet or ""):
-        if REJECT_EXCEPT_RE.search(sent):
+        if _is_neutral(sent, fact_norm):
             continue  # 中性/肯定语境句跳过
         sent_norm = sent.replace(" ", "")
         if REJECT_SIGNAL_RE.search(sent) and _fact_present(fact_norm, sent_norm):
@@ -186,6 +191,17 @@ def _classify_snippet(snippet: str, fact_norm: str) -> str:
     if has_support:
         return "support"
     return "none"
+
+
+def _is_neutral(sent: str, fact_norm: str) -> bool:
+    """中性豁免判断：始终中性表达直接豁免；「没有 X」类仅当后不紧跟断言数字时豁免"""
+    if NEUTRAL_ALWAYS_RE.search(sent or ""):
+        return True
+    m = NEUTRAL_NO_X_RE.search(sent or "")
+    if not m:
+        return False
+    after = sent[m.end():]
+    return not bool(re.match(r"\s*\d", after))
 
 
 def _search(query: str, session: requests.Session | None = None, timeout: int = 20) -> list[dict]:

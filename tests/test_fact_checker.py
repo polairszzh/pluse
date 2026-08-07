@@ -42,6 +42,13 @@ class TestExtract:
         assert "100积分" in facts
         assert any("新用户领 5000 积分" in c["context"] for c in cands)
 
+    def test_version_requires_context(self):
+        # 版本号只认带版本/发布等上下文的数字，「3.5 元」不当版本
+        cands = extract_fact_candidates("价格 3.5 元。版本 2.3.1 已发布。")
+        facts = {c["fact"] for c in cands}
+        assert "2.3.1" in facts
+        assert "3.5" not in facts
+
     def test_skips_first_person_experience(self):
         cands = extract_fact_candidates("我上周处理了 3000 行数据，用了 5 分钟。")
         assert cands == []  # 第一手经验不做外部验证
@@ -291,6 +298,15 @@ class TestVerifyFact:
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
         r = verify_fact("workbuddy", "5000积分")
         assert r["status"] != "conflict"
+
+    def test_no_related_with_digit_is_reject(self, monkeypatch):
+        # 「没有相关 5000 积分活动」是明确否定：豁免短语后紧跟数字时不豁免
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "官方没有相关 5000 积分活动"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "conflict"
 
     def test_unverified(self, monkeypatch):
         html = bing_html([("无关文章", "https://www.example.com/x", "普通内容没有提到数字")])
