@@ -58,13 +58,18 @@ Data honesty (Phase 2):
 
 ### `/pulse adapt <topic>`
 
-Generate platform-adapted content from a single source. Input: a topic and optionally a source article. Output: optimized versions for Zhihu, Xiaohongshu, and AI search.
+Generate platform-adapted content from a local Markdown draft. Input: a local source file (`--source draft.md`). Output: an AI 搜索优化版 (Q&A blocks for citation) and a 知乎版 (structured long-form), each with a falsifiability check; the draft is scored on four text dimensions (AI citability / content quality / keyword coverage / structure; engagement is marked 未发布 until published).
 
 Workflow:
-1. If `--source` provided, read the source file
-2. Read `references/content-format.md` for platform-specific rules
-3. Generate adapted versions for each requested platform
-4. Write output files to `data/output/<platform>-<slug>.md`
+  1. Run `python scripts/content_adapter.py --source <draft.md> --query <话题>` (optionally `--platforms zhihu,ai` to limit; `--no-llm` forces the deterministic rule scaffold)
+  2. Read `references/content-format.md` for platform-specific rules
+  3. Generation is hybrid and score-driven: the four-dimension draft score shapes the rewrite instructions (low-scoring dimensions are forced to fix — keyword in title/first paragraph, self-contained answer blocks, first-hand evidence, structure; high scores only get light edits) + DeepSeek LLM rewrite when a key is configured; LLM failure falls back to the scaffold
+  4. Review the human checkpoint: `data/output/review-checklist-<slug>.md` lists material gaps (placeholder images / unverified links / query-implied missing sections / missing image alt) and unit-bearing fact assertions to verify manually before publishing
+  5. Read the manifest from `data/output/adapt-*.json` (draft score + material gaps + human_review status + per-version purpose/falsifiability checks) and the generated files `data/output/{zhihu,ai}-<slug>.md` — the AI 版 carries an 内部参考·非直接发布物 marker; the 知乎版 is the publishable draft
+  
+  Honesty (Phase 3): outputs are drafts to publish, not guaranteed-cited finished pieces — the falsifiability check for each version is "发布后重跑 /pulse track --query <话题> --mine <文章URL>，引用来源里出现你的内容". Xiaohongshu / video versions are not yet implemented.
+  LLM rewrites style only, never facts: unverified links and numeric claims are surfaced in the review checklist for human verification.
+  Trusted-GEO boundary: Pulse optimizes for AI understanding your real value, never for manipulating citations. Promotional/conversion signals (扫码/私信/优惠码/必买/限时抢购 etc.) are flagged as high-severity material gaps and must be removed before publishing.
 
 ### `/pulse compare <brandA> <brandB>`
 
