@@ -171,6 +171,12 @@ class TestScore:
             set(_query_keywords("workbuddy 安装配置教程"))
         )
 
+    def test_recommendation_uses_query_not_title(self):
+        s = score_draft("摸鱼神器", "正文没有目标关键词。", ["workbuddy 安装教程"])
+        actions = " ".join(r["action"] for r in s["recommendations"])
+        assert "workbuddy 安装教程" in actions
+        assert "摸鱼神器" not in actions
+
     def test_keyword_score_improves_with_tokenized_query(self):
         draft = (
             "# WorkBuddy 是什么\n\n"
@@ -525,6 +531,18 @@ class TestFallback:
         assert "引言背景信息" in md  # 引言不因已有「它是什么」H2 而丢失
         assert md.count("## 它是什么？") == 1  # 不重复成块
 
+    def test_fallback_ai_h1_section_not_question(self):
+        doc = parse_markdown("# 标题\n\n## 优势\n\n内容A。\n\n# 新标题\n\n内容B。\n")
+        md = _fallback_ai_version(doc)
+        assert "新标题？" not in md  # H1 分节不转问答
+        assert "## 新标题" in md
+        assert "内容B。" in md
+
+    def test_fallback_ai_no_duplicate_summary(self):
+        doc = parse_markdown("# 标题\n\n## 总结\n\n总结内容。\n")
+        md = _fallback_ai_version(doc)
+        assert md.count("## 总结") == 1  # 已有「总结」H2 时不再追加独立总结块
+
     def test_format_zhihu_lines_keeps_list_quote_table(self):
         lines = [
             "| 平台 | 支持 |",
@@ -543,6 +561,11 @@ class TestFallback:
         assert "列表项一列表项二" not in md
         # 引用保留
         assert "> 引用内容" in md
+
+    def test_format_zhihu_lines_keeps_hr(self):
+        md = "\n".join(_format_zhihu_lines(["段一。", "---", "段二。"]))
+        assert "段一。\n\n---\n\n段二。" in md
+        assert "段一。---" not in md  # 分隔线不被并入段落
 
     def test_fallback_zhihu_intro_has_no_code(self):
         doc = parse_markdown(SAMPLE_DRAFT)

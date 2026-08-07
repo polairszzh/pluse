@@ -261,9 +261,12 @@ def parse_markdown(text: str) -> DraftDoc:
 # --------------------------------------------------------------------------
 
 
-def _draft_recommendations(title: str, dims: dict[str, int]) -> list[dict]:
+def _draft_recommendations(
+    title: str, dims: dict[str, int], query: str | None = None
+) -> list[dict]:
     """按四维得分生成带 falsifiability check 的建议（草稿版，无互动维度）"""
     recs: list[dict] = []
+    target = query or title  # 关键词优化目标：优先 --query，与改写指令一致
 
     def push(priority: str, dimension: str, action: str, impact: str, verify: str) -> None:
         recs.append({
@@ -286,7 +289,7 @@ def _draft_recommendations(title: str, dims: dict[str, int]) -> list[dict]:
     if kw < 60:
         push(
             "P0", "关键词覆盖",
-            f"标题/首段/H2 自然覆盖目标关键词（如「{title}」及其子话题词），不做堆砌",
+            f"标题/首段/H2 自然覆盖目标关键词（如「{target}」及其子话题词），不做堆砌",
             "提升搜索与 AI 检索命中",
             "重跑草稿审计，关键词覆盖 ≥ 60；发布后该话题搜索 Top 出现本文",
         )
@@ -331,7 +334,9 @@ def score_draft(title: str, text: str, keywords: list[str] | None = None) -> dic
         "grade": grade(overall),
         "dimensions": dims,
         "engagement": {"status": "未发布", "note": "互动数据需发布后重跑 audit 获取"},
-        "recommendations": _draft_recommendations(title, dims),
+        "recommendations": _draft_recommendations(
+            title, dims, keywords[0] if keywords else None
+        ),
     }
 
 
@@ -737,6 +742,13 @@ def _fallback_ai_version(doc: DraftDoc) -> str:
             body = intro_text + "\n" + body
         body = re.sub(r"!\[[^\]]*\]\([^)]+\)", "", body)  # AI 优化版去图
         answer = re.sub(r"\s+", " ", body).strip()
+        if heading not in doc.topics:
+            # 后续 H1 分节标题：不转问答，保留为子节直接输出
+            lines.append(f"## {heading}")
+            lines.append("")
+            lines.append(answer or "（本节内容待补充）")
+            lines.append("")
+            continue
         if len(answer) < 60:
             answer = f"{topic}是本文介绍的核心内容：{answer or '具体信息以官方文档为准。'}"
         first, rest = _first_150(answer)
@@ -747,13 +759,14 @@ def _fallback_ai_version(doc: DraftDoc) -> str:
         if rest:
             lines.append(rest)
             lines.append("")
-    lines.append("## 总结")
-    lines.append("")
-    lines.append(
-        f"{doc.title}的核心要点已按「是什么、优势、安装配置」整理为自包含问答块，"
-        "发布后可观察 AI 平台对该话题的回答是否引用本文。"
-    )
-    lines.append("")
+    if not any("总结" in h for h, _ in doc.sections):
+        lines.append("## 总结")
+        lines.append("")
+        lines.append(
+            f"{doc.title}的核心要点已按「是什么、优势、安装配置」整理为自包含问答块，"
+            "发布后可观察 AI 平台对该话题的回答是否引用本文。"
+        )
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -832,7 +845,7 @@ def _format_zhihu_lines(lines_in: list[str]) -> list[str]:
             table_mode = True
             continue
         table_mode = False
-        if s.startswith(("![", "#", "- ", "* ", "+ ", ">")) or re.match(
+        if s == "---" or s.startswith(("![", "#", "- ", "* ", "+ ", ">")) or re.match(
             r"^\d+[.、)]\s", s
         ):
             # 列表/引用/图片/标题：原样输出，前后空行分隔
@@ -881,9 +894,9 @@ def _fallback_zhihu_version(doc: DraftDoc) -> str:
                 table_mode = True
                 continue
             table_mode = False
-            if line.startswith(("![", "#", "- ", "* ", "+ ", ">")) or re.match(
-                r"^\d+[.、)]\s", line
-            ):
+            if line.strip() == "---" or line.startswith(
+                ("![", "#", "- ", "* ", "+ ", ">")
+            ) or re.match(r"^\d+[.、)]\s", line):
                 # 列表/引用/图片/标题：原样输出，不切分，保留前缀
                 lines.append(line)
                 lines.append("")
