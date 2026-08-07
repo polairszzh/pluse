@@ -69,6 +69,7 @@ Workflow:
   
   Honesty (Phase 3): outputs are drafts to publish, not guaranteed-cited finished pieces — the falsifiability check for each version is "发布后重跑 /pulse track --query <话题> --mine <文章URL>，引用来源里出现你的内容". Xiaohongshu / video versions are not yet implemented.
   LLM rewrites style only, never facts: unverified links and numeric claims are surfaced in the review checklist for human verification.
+  Trusted-GEO boundary: Pulse optimizes for AI understanding your real value, never for manipulating citations. Promotional/conversion signals (扫码/私信/优惠码/必买/限时抢购 etc.) are flagged as high-severity material gaps and must be removed before publishing.
 
 ### `/pulse compare <brandA> <brandB>`
 

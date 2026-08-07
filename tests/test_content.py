@@ -15,10 +15,12 @@ from content_adapter import (
     _first_150,
     _query_keywords,
     _rewrite_instructions,
+    _rewrite_triggers,
     _scan_facts,
     _split_paragraph,
     _text_without_code,
     detect_material_gaps,
+    detect_promotional_signals,
     generate_ai_version,
     generate_zhihu_version,
     main,
@@ -79,6 +81,26 @@ class TestParse:
         assert doc.title == "untitled"
         assert doc.topics == []
         assert doc.sections == []
+
+    def test_intro_keeps_image_and_code_before_first_h2(self):
+        doc = parse_markdown(
+            "# 标题\n\n"
+            "![架构图](images/arch.png)\n\n"
+            "```\n"
+            "pip install workbuddy\n"
+            "```\n\n"
+            "引言正文。\n\n"
+            "## 章节\n\n"
+            "内容。\n"
+        )
+        assert doc.images == ["images/arch.png"]
+        assert doc.code_blocks == ["pip install workbuddy"]
+        assert any("![架构图]" in ln for ln in doc.intro)
+        assert any("pip install workbuddy" in ln for ln in doc.intro)
+        # 脚手架回退不丢引言区图片/代码
+        md = _fallback_zhihu_version(doc)
+        assert "![架构图](images/arch.png)" in md
+        assert "pip install workbuddy" in md
 
     def test_h1_after_h2_starts_new_section(self):
         doc = parse_markdown("# 标题\n\n## 优势\n\n内容A。\n\n# 新标题\n\n内容B。\n")
@@ -183,6 +205,41 @@ class TestMaterialGaps:
         facts = _scan_facts(_text_without_code(doc.raw))
         assert facts == []
 
+    def test_promotional_high_detected(self):
+        sigs = detect_promotional_signals(
+            "这门课扫码购买就能领，必买！手慢无，限时抢购。"
+        )
+        assert any(s["severity"] == "high" for s in sigs)
+        patterns = {s["pattern"] for s in sigs}
+        assert "扫码购买" in patterns or "扫码" in patterns
+        assert "必买" in patterns
+        assert any("手慢无" == s["pattern"] for s in sigs)
+
+    def test_promotional_medium_detected(self):
+        sigs = detect_promotional_signals("强烈推荐这个网站，全网第一的教程。")
+        assert all(s["severity"] == "medium" for s in sigs)
+        assert any("强烈推荐" == s["pattern"] for s in sigs)
+        assert any("全网第一" == s["pattern"] for s in sigs)
+
+    def test_normal_recommendation_no_false_positive(self):
+        text = (
+            "WorkBuddy 是我用过比较好用的桌面 AI 工具。"
+            "它支持本地文件操作和定时任务，下载地址 codebuddy.cn。"
+            "以上是个人使用体验分享，不构成任何购买建议。"
+        )
+        assert detect_promotional_signals(text) == []
+
+    def test_promotional_signals_enter_gaps(self):
+        doc = parse_markdown(
+            "# 推荐一个课程\n\n"
+            "这个课程必买，扫码下单立减 50！\n"
+        )
+        gaps = detect_material_gaps(doc)
+        promo = [g for g in gaps if g["type"] == "promotional_signal"]
+        assert promo
+        assert any(g["severity"] == "high" for g in promo)
+        assert any("扫码" in g["detail"] for g in promo)
+
 
 class TestReviewChecklist:
     def test_scan_facts(self):
@@ -240,6 +297,14 @@ class TestRewriteInstructions:
         )
         assert "第三人称" in ins
         assert "不使用第一人称" in ins
+
+    def test_rewrite_triggers_ai_citability_70(self):
+        dims = {"关键词覆盖": 90, "AI 可引用性": 65, "内容质量 (E-E-A-T)": 90, "结构与格式": 90}
+        assert _rewrite_triggers(dims) == ["AI 可引用性"]
+        assert "自包含答案块" in _rewrite_instructions(dims)  # 触发条件与 manifest 记录一致
+        dims_ok = {"关键词覆盖": 90, "AI 可引用性": 72, "内容质量 (E-E-A-T)": 90, "结构与格式": 90}
+        assert _rewrite_triggers(dims_ok) == []
+        assert "自包含答案块" not in _rewrite_instructions(dims_ok)
 
     def test_first_150_breaks_at_sentence(self):
         short = "只有一句。"
@@ -362,6 +427,19 @@ class TestLLM:
             raise requests.exceptions.ConnectionError("down")
 
         monkeypatch.setattr(requests, "post", boom)
+        doc = parse_markdown(SAMPLE_DRAFT)
+        md, used = generate_zhihu_version(doc)
+        assert used is False
+        assert "写在最后" in md
+
+    def test_llm_attribute_error_falls_back(self, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
+
+        def bad_shape(*a, **kw):
+            # choices 为字符串时 data.get 抛 AttributeError，必须回退而非崩溃
+            return FakeResponse({"choices": "notalist"})
+
+        monkeypatch.setattr(requests, "post", bad_shape)
         doc = parse_markdown(SAMPLE_DRAFT)
         md, used = generate_zhihu_version(doc)
         assert used is False

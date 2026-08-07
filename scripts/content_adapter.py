@@ -69,6 +69,20 @@ QUERY_COVERAGE_TERMS = {
     "使用": ("使用", "操作", "用法"),
 }
 
+# 营销转化/投毒信号：高危 = 明确的转化引导（必须人工处理）；中危 = 营销话术（提示核实）
+PROMOTIONAL_HIGH_PATTERNS = [
+    "闭眼入", "无脑入", "必买", "人手一份", "手慢无", "库存告急",
+    "限时秒杀", "限时抢购", "错过等一年", "赶紧下单", "立即下单",
+    "扫码购买", "扫码下单", "扫码领取", "扫码添加", "扫码加",
+    "私信领取", "私信报名", "私信购买", "私信获取",
+    "优惠码", "优惠券", "付款码", "立即购买",
+    "加微信领取", "加vx", "加VX",
+]
+PROMOTIONAL_MEDIUM_PATTERNS = [
+    "强烈推荐", "一定要买", "一定要入手", "必入", "全网第一", "史上第一",
+    "唯一", "100%", "免费领取", "限时", "报名通道", "课程报名",
+]
+
 
 def _round_half_up(value: float) -> int:
     return int(value + 0.5) if value >= 0 else int(value - 0.5)
@@ -159,9 +173,11 @@ def parse_markdown(text: str) -> DraftDoc:
             if in_code:
                 code = "\n".join(code_buffer)
                 code_blocks.append(code)
-                current_lines.append("```")
-                current_lines.extend(code_buffer)
-                current_lines.append("```")
+                block_lines = ["```"] + code_buffer + ["```"]
+                if saw_heading:
+                    current_lines.extend(block_lines)
+                else:
+                    intro.extend(block_lines)  # 首个 H2 前的代码块进 intro，不丢失
                 code_buffer = []
                 in_code = False
             else:
@@ -173,7 +189,10 @@ def parse_markdown(text: str) -> DraftDoc:
         img = re.match(r"!\[[^\]]*\]\(([^)]+)\)", s)
         if img:
             images.append(img.group(1))
-            current_lines.append(s)
+            if saw_heading:
+                current_lines.append(s)
+            else:
+                intro.append(s)  # 首个 H2 前的图片进 intro，不丢失
             continue
         if s.startswith("# "):
             flush()
@@ -325,6 +344,39 @@ def _image_alt(line: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+def detect_promotional_signals(text: str) -> list[dict]:
+    """检测营销转化/投毒信号（强烈推荐课程/网站/购买引导），返回按严重度排序的清单。
+
+    高危：明确的转化动作（扫码/私信/优惠码/限时抢购等）——发布前必须处理；
+    中危：营销话术（强烈推荐/绝对化用语）——提示核实利益关系。
+    """
+    signals: list[dict] = []
+    low = (text or "").lower()
+
+    def scan(patterns: list[str], severity: str) -> None:
+        for pat in patterns:
+            needle = pat.lower()
+            start = 0
+            while True:
+                idx = low.find(needle, start)
+                if idx == -1:
+                    break
+                ctx_start = max(0, idx - 12)
+                ctx_end = min(len(text), idx + len(pat) + 12)
+                signals.append({
+                    "severity": severity,
+                    "pattern": pat,
+                    "context": text[ctx_start:ctx_end].replace("\n", " "),
+                })
+                start = idx + len(needle)
+
+    scan(PROMOTIONAL_HIGH_PATTERNS, "high")
+    scan(PROMOTIONAL_MEDIUM_PATTERNS, "medium")
+    severity_order = {"high": 0, "medium": 1}
+    signals.sort(key=lambda s: severity_order.get(s["severity"], 9))
+    return signals
+
+
 def detect_material_gaps(doc: DraftDoc, query: str | None = None) -> list[dict]:
     """识别草稿里的素材缺口，返回按严重度排序的清单（发布前处理）。
 
@@ -393,6 +445,19 @@ def detect_material_gaps(doc: DraftDoc, query: str | None = None) -> list[dict]:
                 "suggestion": "为图片补充描述性 alt 文本",
             })
 
+    # 5) 营销转化/投毒信号
+    for sig in detect_promotional_signals(scan_text):
+        gaps.append({
+            "type": "promotional_signal",
+            "severity": sig["severity"],
+            "detail": f"疑似营销转化话术「{sig['pattern']}」：…{sig['context']}…",
+            "suggestion": (
+                "移除营销转化引导（扫码/私信/优惠码/绝对化推荐），或补充明确的利益关系声明后再发布"
+                if sig["severity"] == "high"
+                else "核实是否夹带付费推广，建议补充利益关系声明"
+            ),
+        })
+
     # 去重 + 按严重度排序
     seen: set[tuple[str, str]] = set()
     dedup: list[dict] = []
@@ -435,6 +500,22 @@ def _scan_facts(text: str) -> list[str]:
 # --------------------------------------------------------------------------
 # 评分驱动改写指令（A1：低分维度强制修正，全高分才轻度润色）
 # --------------------------------------------------------------------------
+
+
+def _rewrite_triggers(dims: dict[str, int] | None) -> list[str]:
+    """与 _rewrite_instructions 同阈值的触发维度清单（供 manifest 记录，保证一致）"""
+    if not dims:
+        return []
+    out: list[str] = []
+    if dims.get("关键词覆盖", 100) < 60:
+        out.append("关键词覆盖")
+    if dims.get("AI 可引用性", 100) < 70:
+        out.append("AI 可引用性")
+    if dims.get("内容质量 (E-E-A-T)", 100) < 60:
+        out.append("内容质量 (E-E-A-T)")
+    if dims.get("结构与格式", 100) < 60:
+        out.append("结构与格式")
+    return out
 
 
 def _rewrite_instructions(
@@ -501,7 +582,10 @@ def _llm_rewrite(system: str, user: str, timeout: int = 90) -> str | None:
         data = resp.json()
         content = ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
         return content if isinstance(content, str) and content.strip() else None
-    except (requests.exceptions.RequestException, ValueError, KeyError, IndexError, TypeError):
+    except (
+        requests.exceptions.RequestException, ValueError, KeyError,
+        IndexError, TypeError, AttributeError,
+    ):
         return None
 
 
@@ -786,9 +870,7 @@ def build_manifest(
             "loaded": bool(_load_content_format()),
             "updated": _content_format_updated(),
         },
-        "rewrite_triggers": [
-            name for name, score in draft_score["dimensions"].items() if score < 60
-        ],
+        "rewrite_triggers": _rewrite_triggers(draft_score["dimensions"]),
         "human_review": {
             "status": "pending",
             "checklist": str(checklist_path) if checklist_path else None,
