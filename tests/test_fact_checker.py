@@ -70,6 +70,9 @@ class TestRisk:
     def test_no_risk(self):
         assert risk_flag("本文介绍了 WorkBuddy 的使用体验") is None
 
+    def test_no_risk_low_severity(self):
+        assert risk_severity(None) == "low"  # 无风险领域不默认中危
+
 
 class TestVerifyFact:
     def test_confirmed(self, monkeypatch):
@@ -99,6 +102,31 @@ class TestVerifyFact:
         r = verify_fact("workbuddy", "5000积分")
         assert r["status"] == "conflict"
         assert r["reject_snippets"]
+
+    def test_authority_reject_beats_support(self, monkeypatch):
+        html = bing_html([
+            ("辟谣页", "https://baike.baidu.com/item/x", "该说法不存在，官方并未推出 5000 积分"),
+            ("普通页", "https://blog.example.com/1", "新用户领 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "conflict"  # 权威辟谣优先于普通网页支持
+
+    def test_digit_boundary_no_false_confirm(self, monkeypatch):
+        html = bing_html([
+            ("活动页", "https://www.example.com/x", "新用户领 15000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "unverified"  # 15000 不证实 5000
+
+    def test_unverifiable_word_not_conflict(self, monkeypatch):
+        html = bing_html([
+            ("报道", "https://www.example.com/x", "该说法目前无法核实"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "unverified"  # 「无法核实」不是否定信号，不判冲突
 
     def test_unverified(self, monkeypatch):
         html = bing_html([("无关文章", "https://www.example.com/x", "普通内容没有提到数字")])

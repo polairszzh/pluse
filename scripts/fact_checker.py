@@ -25,7 +25,7 @@ AUTHORITY_HOSTS = {
     "codebuddy.cn",
 }
 
-REJECT_SIGNAL_RE = re.compile(r"(不存在|并非|假的|谣言|辟谣|错误信息|不实|无法核实)")
+REJECT_SIGNAL_RE = re.compile(r"(不存在|并非|假的|谣言|辟谣|错误信息|不实)")
 FIRST_PERSON_RE = re.compile(r"(我|我们|本人|实测|亲测)")
 
 UNIT_FACT_RE = re.compile(
@@ -105,10 +105,23 @@ def risk_flag(context: str) -> str | None:
 
 
 def risk_severity(risk: str | None) -> str:
-    """风险领域严重度：高危领域（医学/招考）= high，其余（价格政策/版本）= medium"""
+    """风险领域严重度：高危领域（医学/招考）= high，中危（价格政策/版本）= medium，无风险 = low"""
     if risk in HIGH_RISK_PATTERNS:
         return "high"
-    return "medium"
+    if risk in MEDIUM_RISK_PATTERNS:
+        return "medium"
+    return "low"
+
+
+def _fact_present(fact_norm: str, blob_norm: str) -> bool:
+    """断言数字是否重现于文本：要求数字前无数字边界（15000积分 不证实 5000积分）"""
+    idx = blob_norm.find(fact_norm)
+    while idx != -1:
+        prev = blob_norm[idx - 1] if idx > 0 else ""
+        if not prev.isdigit():
+            return True
+        idx = blob_norm.find(fact_norm, idx + 1)
+    return False
 
 
 def _search(query: str, session: requests.Session | None = None, timeout: int = 20) -> list[dict]:
@@ -140,18 +153,29 @@ def verify_fact(query: str, fact: str, session: requests.Session | None = None) 
         blob_norm = f"{r['title']} {r['snippet']}".replace(" ", "")
         is_reject = bool(REJECT_SIGNAL_RE.search(r["snippet"]))
         if is_reject:
-            # 否定信号优先：即使 snippet 含该数字（如「官方并未推出 5000 积分」）也视为矛盾
             rejects.append(r)
-        elif fact_norm in blob_norm:
+        elif _fact_present(fact_norm, blob_norm):
             supports.append(r)
 
+    # 否定/权威优先：权威辟谣 > 来源支持 > 普通否定 > 未核实
+    authority_rejects = [
+        r for r in rejects if _host_authority(_host_of(r.get("url", ""))) >= 2
+    ]
+    if authority_rejects:
+        return {
+            "fact": fact,
+            "status": "conflict",
+            "reject_snippets": [r["snippet"][:100] for r in authority_rejects[:3]],
+        }
     if supports:
-        authority = max(_host_authority(_host_of(r.get("url", ""))) for r in supports)
+        authority_supports = [
+            r for r in supports if _host_authority(_host_of(r.get("url", ""))) >= 2
+        ]
         return {
             "fact": fact,
             "status": "confirmed",
             "support_count": len(supports),
-            "authoritative": authority >= 2,
+            "authoritative": bool(authority_supports),
             "top_support": {"title": supports[0]["title"], "url": supports[0].get("url", "")},
         }
     if rejects:
