@@ -1,0 +1,378 @@
+"""content_adapter.py 单元测试 —— LLM 调用全部 mock，不触网"""
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+
+import requests
+from content_adapter import (
+    _fallback_ai_version,
+    _fallback_zhihu_version,
+    _query_keywords,
+    _rewrite_instructions,
+    _scan_facts,
+    _split_paragraph,
+    detect_material_gaps,
+    generate_ai_version,
+    generate_zhihu_version,
+    main,
+    parse_markdown,
+    score_draft,
+)
+
+SAMPLE_DRAFT = """---
+title: WorkBuddy 入门
+---
+# WorkBuddy 是什么？有什么用
+
+WorkBuddy 是一款 AI 工作流自动化工具，可以连接多种 AI 服务，把重复任务自动化。
+它主要解决手动切换多个 AI 工具、复制粘贴上下文的问题。
+
+## WorkBuddy 有哪些优势
+
+优势一：节省时间，重复任务一键跑完。优势二：配置简单，几分钟就能上手。
+
+## 怎么安装和配置 WorkBuddy
+
+先下载安装包，然后运行安装命令：
+
+```
+pip install workbuddy
+```
+
+![架构图](images/arch.png)
+
+配置完成后即可使用，支持导入导出工作流。
+"""
+
+
+class FakeResponse:
+    def __init__(self, data=None):
+        self._data = data
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._data
+
+
+class TestParse:
+    def test_basic(self):
+        doc = parse_markdown(SAMPLE_DRAFT)
+        assert doc.title == "WorkBuddy 是什么？有什么用"
+        assert doc.topics == ["WorkBuddy 有哪些优势", "怎么安装和配置 WorkBuddy"]
+        assert len(doc.sections) == 2
+        assert doc.intro and "WorkBuddy" in doc.intro[0]
+        assert doc.images == ["images/arch.png"]
+        assert doc.code_blocks == ["pip install workbuddy"]
+        assert "WorkBuddy" in doc.body_text
+
+    def test_empty(self):
+        doc = parse_markdown("")
+        assert doc.title == "untitled"
+        assert doc.topics == []
+        assert doc.sections == []
+
+
+class TestScore:
+    def test_draft_score_shape(self):
+        s = score_draft("WorkBuddy 是什么", SAMPLE_DRAFT, ["workbuddy"])
+        assert s["engagement"]["status"] == "未发布"
+        assert set(s["dimensions"]) == {
+            "AI 可引用性", "内容质量 (E-E-A-T)", "关键词覆盖", "结构与格式",
+        }
+        assert 0 <= s["overall"] <= 100
+        assert all(r["falsifiability_check"] for r in s["recommendations"])
+        assert all(r["priority"] in ("P0", "P1", "P2") for r in s["recommendations"])
+
+    def test_query_keywords_splits_terms(self):
+        assert _query_keywords("workbuddy 安装配置教程") == [
+            "workbuddy 安装配置教程", "安装", "配置", "教程",
+        ]
+        assert _query_keywords("") == []
+        assert _query_keywords("workbuddy") == ["workbuddy"]
+
+    def test_keyword_score_improves_with_tokenized_query(self):
+        draft = (
+            "# WorkBuddy 是什么\n\n"
+            "WorkBuddy 是腾讯云桌面 AI 智能体。\n\n"
+            "## 怎么安装配置 WorkBuddy\n\n"
+            "第一步下载安装包，第二步配置模型。\n"
+        )
+        whole = score_draft("WorkBuddy 是什么", draft, ["workbuddy 安装配置教程"])
+        tokenized = score_draft("WorkBuddy 是什么", draft, _query_keywords("workbuddy 安装配置教程"))
+        assert tokenized["dimensions"]["关键词覆盖"] > whole["dimensions"]["关键词覆盖"]
+        assert tokenized["dimensions"]["关键词覆盖"] > 40
+
+
+class TestMaterialGaps:
+    def test_bad_draft_all_gap_types(self):
+        doc = parse_markdown(
+            "# 摸鱼神器 WorkBuddy\n\n"
+            "![图](https://picsum.photos/800/400)\n\n"
+            "官网 [workbuddy.ai](https://www.workbuddy.ai/) 下载。\n"
+        )
+        gaps = detect_material_gaps(doc, "workbuddy 安装配置教程")
+        types = {g["type"] for g in gaps}
+        assert "placeholder_image" in types
+        assert "unverified_links" in types
+        assert "query_coverage_missing" in types
+        assert "image_alt_missing" in types
+        # 严重度排序：high 在前
+        assert gaps[0]["severity"] == "high"
+        by_type = {g["type"]: g for g in gaps}
+        assert "picsum.photos" in by_type["placeholder_image"]["detail"]
+        assert "workbuddy.ai" in by_type["unverified_links"]["detail"]
+        assert "安装" in by_type["query_coverage_missing"]["detail"]
+
+    def test_query_coverage_ok(self):
+        doc = parse_markdown(
+            "# WorkBuddy 教程\n\n"
+            "## 安装步骤\n\n"
+            "第一步下载安装包，然后配置。\n\n"
+            "![架构图](images/arch.png)\n"
+        )
+        gaps = detect_material_gaps(doc, "workbuddy 安装配置教程")
+        assert all(g["type"] != "query_coverage_missing" for g in gaps)
+        assert all(g["type"] != "placeholder_image" for g in gaps)
+        assert all(g["type"] != "image_alt_missing" for g in gaps)
+
+    def test_no_duplicates(self):
+        doc = parse_markdown(
+            "# 测试\n\n![图](https://picsum.photos/a)\n![图2](https://picsum.photos/b)\n"
+        )
+        gaps = detect_material_gaps(doc)
+        placeholder = [g for g in gaps if g["type"] == "placeholder_image"]
+        assert len(placeholder) == 2  # 不同 URL 不合并
+        assert len(gaps) == len({(g["type"], g["detail"]) for g in gaps})
+
+
+class TestReviewChecklist:
+    def test_scan_facts(self):
+        facts = _scan_facts(
+            "新用户领 5000 积分，每天签到 100 积分，10 分钟出初稿，"
+            "建议 8GB 内存，支持 Windows 10/11 和 macOS 10.15+。"
+        )
+        assert "5000积分" in facts
+        assert "100积分" in facts
+        assert "10分钟" in facts
+        assert "8GB" in facts
+        # 无单位的版本号不列入
+        assert all("10/11" not in f and "10.15" not in f for f in facts)
+
+
+class TestRewriteInstructions:
+    def test_low_keyword_forces_title_rule(self):
+        ins = _rewrite_instructions(
+            {"关键词覆盖": 10, "AI 可引用性": 78, "内容质量 (E-E-A-T)": 58, "结构与格式": 80},
+            "workbuddy 安装教程",
+        )
+        assert "标题必须包含目标关键词" in ins
+        assert "workbuddy 安装教程" in ins
+
+    def test_low_citability_forces_answer_block(self):
+        ins = _rewrite_instructions(
+            {"关键词覆盖": 90, "AI 可引用性": 40, "内容质量 (E-E-A-T)": 90, "结构与格式": 90},
+        )
+        assert "自包含答案块" in ins
+
+    def test_high_scores_light_edit(self):
+        ins = _rewrite_instructions(
+            {"关键词覆盖": 90, "AI 可引用性": 90, "内容质量 (E-E-A-T)": 90, "结构与格式": 90},
+        )
+        assert "轻度润色" in ins
+        assert "【强制" not in ins
+
+    def test_none_dims_empty(self):
+        assert _rewrite_instructions(None) == ""
+
+
+class TestFallback:
+    def test_ai_version_structure(self, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: None)
+        doc = parse_markdown(SAMPLE_DRAFT)
+        md, used = generate_ai_version(doc)
+        assert used is False
+        assert md.startswith("# ")
+        assert "## " in md
+        assert "![" not in md  # AI 优化版不用图
+        # 话题 H2 转为问答句
+        assert "WorkBuddy 有哪些优势？" in md
+
+    def test_zhihu_version_keeps_code_and_images(self, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: None)
+        doc = parse_markdown(SAMPLE_DRAFT)
+        md, used = generate_zhihu_version(doc)
+        assert used is False
+        assert "pip install workbuddy" in md
+        assert "![架构图](images/arch.png)" in md
+        assert "## WorkBuddy 有哪些优势" in md
+        assert "写在最后" in md
+
+    def test_split_paragraph(self):
+        parts = _split_paragraph("第一句。第二句很长。" * 40, 180)
+        assert len(parts) > 1
+        assert all(len(p) <= 180 for p in parts)
+
+    def test_fallback_ai_uses_topics(self):
+        doc = parse_markdown(SAMPLE_DRAFT)
+        md = _fallback_ai_version(doc)
+        assert "它是什么？" in md
+        assert "WorkBuddy 是一款 AI 工作流自动化工具" in md
+        assert "WorkBuddy 有哪些优势？" in md
+        assert "怎么安装和配置 WorkBuddy？" in md
+
+    def test_fallback_zhihu_intro_has_no_code(self):
+        doc = parse_markdown(SAMPLE_DRAFT)
+        md = _fallback_zhihu_version(doc)
+        intro_para = md.split("## ")[0]
+        assert "pip install" not in intro_para
+
+
+class TestLLM:
+    def test_llm_used_when_available(self, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
+        payload = {"choices": [{"message": {"content": "# AI 优化版\n\n## WorkBuddy 是什么？\n\n内容"}}]}
+        monkeypatch.setattr(requests, "post", lambda *a, **kw: FakeResponse(payload))
+        doc = parse_markdown(SAMPLE_DRAFT)
+        md, used = generate_ai_version(doc)
+        assert used is True
+        assert md.startswith("# AI 优化版")
+
+    def test_llm_failure_falls_back(self, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
+
+        def boom(*a, **kw):
+            raise requests.exceptions.ConnectionError("down")
+
+        monkeypatch.setattr(requests, "post", boom)
+        doc = parse_markdown(SAMPLE_DRAFT)
+        md, used = generate_zhihu_version(doc)
+        assert used is False
+        assert "写在最后" in md
+
+    def test_zhihu_llm_gets_score_instructions(self, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
+        captured: dict = {}
+
+        def fake_post(*a, **kw):
+            captured["payload"] = kw["json"]
+            return FakeResponse({"choices": [{"message": {"content": "# 改"}}]})
+
+        monkeypatch.setattr(requests, "post", fake_post)
+        doc = parse_markdown(SAMPLE_DRAFT)
+        generate_zhihu_version(
+            doc,
+            {"关键词覆盖": 10, "AI 可引用性": 78, "内容质量 (E-E-A-T)": 58, "结构与格式": 80},
+            "workbuddy 安装教程",
+        )
+        system = captured["payload"]["messages"][0]["content"]
+        assert "改写强度较高" in system
+        assert "标题必须包含目标关键词" in system
+
+    def test_ai_llm_does_not_force_visible_gap_section(self, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
+        captured: dict = {}
+
+        def fake_post(*a, **kw):
+            captured["payload"] = kw["json"]
+            return FakeResponse({"choices": [{"message": {"content": "# 改"}}]})
+
+        monkeypatch.setattr(requests, "post", fake_post)
+        doc = parse_markdown(SAMPLE_DRAFT)
+        generate_ai_version(
+            doc,
+            {"关键词覆盖": 10, "AI 可引用性": 78, "内容质量 (E-E-A-T)": 58, "结构与格式": 80},
+            "workbuddy 安装教程",
+        )
+        system = captured["payload"]["messages"][0]["content"]
+        assert "【素材缺口】" not in system
+        assert "HTML 注释" in system
+
+
+class TestCLI:
+    def test_cli_end_to_end(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: None)
+        src = tmp_path / "draft.md"
+        src.write_text(SAMPLE_DRAFT, encoding="utf-8")
+        out = tmp_path / "out"
+        code = main(["--source", str(src), "--no-llm", "--output", str(out)])
+        assert code == 0
+        ai_files = list(out.glob("ai-*.md"))
+        zhihu_files = list(out.glob("zhihu-*.md"))
+        manifests = list(out.glob("adapt-*.json"))
+        assert len(ai_files) == 1
+        assert len(zhihu_files) == 1
+        assert len(manifests) == 1
+        manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+        assert manifest["draft_score"]["engagement"]["status"] == "未发布"
+        assert manifest["material_gaps"] == []
+        assert manifest["human_review"]["status"] == "pending"
+        assert manifest["human_review"]["checklist"]
+        assert manifest["versions"]["ai"]["purpose"].startswith("internal_reference")
+        assert manifest["versions"]["zhihu"]["purpose"].startswith("publish")
+        for name in ("ai", "zhihu"):
+            assert "falsifiability_check" in manifest["versions"][name]
+            assert "track" in manifest["versions"][name]["falsifiability_check"]
+        # 人工介入入口：检查清单 + AI 版用途标注
+        checklist = next(iter(out.glob("review-checklist-*.md"))).read_text(encoding="utf-8")
+        assert "发布前检查清单" in checklist
+        ai_md = next(iter(out.glob("ai-*.md"))).read_text(encoding="utf-8")
+        zhihu_md = next(iter(out.glob("zhihu-*.md"))).read_text(encoding="utf-8")
+        assert "内部参考，非直接发布物" in ai_md
+        assert "内部参考" not in zhihu_md
+
+    def test_cli_reports_gaps_on_bad_draft(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: None)
+        bad = (
+            "# 摸鱼神器 WorkBuddy\n\n"
+            "![截图](https://picsum.photos/1)\n\n"
+            "官网 [workbuddy.ai](https://www.workbuddy.ai/) 下载。\n"
+        )
+        src = tmp_path / "bad.md"
+        src.write_text(bad, encoding="utf-8")
+        out = tmp_path / "out2"
+        code = main(
+            ["--source", str(src), "--no-llm", "--query", "workbuddy 安装配置教程", "--output", str(out)]
+        )
+        assert code == 0
+        manifest = json.loads(next(iter(out.glob("adapt-*.json"))).read_text(encoding="utf-8"))
+        gap_types = {g["type"] for g in manifest["material_gaps"]}
+        assert "placeholder_image" in gap_types
+        assert "query_coverage_missing" in gap_types
+        assert "unverified_links" in gap_types
+        assert "关键词覆盖" in manifest["rewrite_triggers"]
+        assert manifest["human_review"]["checklist"]
+        for name in ("ai", "zhihu"):
+            md = next(iter(out.glob(f"{name}-*.md"))).read_text(encoding="utf-8")
+            assert "素材缺口" in md  # 输出尾部带发布前注释块
+
+    def test_checklist_lists_facts_for_manual_verify(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: None)
+        draft = (
+            "# WorkBuddy 教程\n\n"
+            "新用户注册可领 5000 积分，每天签到得 100 积分，装完 10 分钟上手。\n"
+        )
+        src = tmp_path / "facts.md"
+        src.write_text(draft, encoding="utf-8")
+        out = tmp_path / "out3"
+        assert main(["--source", str(src), "--no-llm", "--output", str(out)]) == 0
+        checklist = next(iter(out.glob("review-checklist-*.md"))).read_text(encoding="utf-8")
+        assert "5000积分" in checklist
+        assert "100积分" in checklist
+        assert "10分钟" in checklist
+        assert "- [ ] 已核对正文数字" in checklist
+
+    def test_missing_source(self, tmp_path):
+        with pytest.raises(SystemExit) as exc:
+            main(["--source", str(tmp_path / "nope.md")])
+        assert exc.value.code == 2
+
+    def test_invalid_platform(self, tmp_path):
+        src = tmp_path / "draft.md"
+        src.write_text(SAMPLE_DRAFT, encoding="utf-8")
+        assert main(["--source", str(src), "--platforms", "xhs"]) == 2
