@@ -132,6 +132,12 @@ class TestParse:
         assert doc.topics == ["总结"]
         assert doc.sections == [("总结", [])]
 
+    def test_parse_subheading_before_first_h2_in_intro(self):
+        doc = parse_markdown("# 标题\n\n### 小节\n\n内容。\n\n## 章节\n\n正文。\n")
+        assert any("### 小节" in ln for ln in doc.intro)
+        md = _fallback_zhihu_version(doc)
+        assert "### 小节" in md  # 子标题不丢失
+
 
 class TestScore:
     def test_draft_score_shape(self):
@@ -150,6 +156,12 @@ class TestScore:
         ]
         assert _query_keywords("") == []
         assert _query_keywords("workbuddy") == ["workbuddy"]
+
+    def test_query_keywords_dedup(self):
+        assert _query_keywords("安装") == ["安装"]  # 词元与整串重合时去重
+        assert len(_query_keywords("workbuddy 安装配置教程")) == len(
+            set(_query_keywords("workbuddy 安装配置教程"))
+        )
 
     def test_keyword_score_improves_with_tokenized_query(self):
         draft = (
@@ -262,6 +274,13 @@ class TestMaterialGaps:
         # 「扫码添加」与「扫码加」重叠时只报一次
         sigs = detect_promotional_signals("扫码添加好友")
         assert [s["pattern"] for s in sigs] == ["扫码添加"]
+
+    def test_promotional_suffix_boundary(self):
+        # 子串误报：私信我们 / 唯一的办法 不命中
+        assert detect_promotional_signals("欢迎私信我们交流") == []
+        assert detect_promotional_signals("这是唯一的办法") == []
+        # 真实营销仍命中
+        assert [s["pattern"] for s in detect_promotional_signals("私信我报名")] == ["私信我"]
 
     def test_promotional_medium_detected(self):
         sigs = detect_promotional_signals("强烈推荐这个网站，全网第一的教程。")

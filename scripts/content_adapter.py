@@ -82,6 +82,12 @@ PROMOTIONAL_MEDIUM_PATTERNS = [
     "唯一", "100%", "免费领取", "限时", "报名通道", "课程报名",
 ]
 
+# 词边界：命中后若紧跟这些字，视为子串误报（如「私信我们」「唯一的办法」）
+PATTERN_SUFFIX_BLOCKS = {
+    "私信我": {"们"},
+    "唯一": {"的"},
+}
+
 
 def _round_half_up(value: float) -> int:
     return int(value + 0.5) if value >= 0 else int(value - 0.5)
@@ -222,7 +228,10 @@ def parse_markdown(text: str) -> DraftDoc:
             topics.append(current_heading)
             continue
         if s.startswith("### "):
-            current_lines.append(s)
+            if saw_heading:
+                current_lines.append(s)
+            else:
+                intro.append(s)  # 首个 H2 前的子标题进 intro，不丢失
             continue
         if s:
             if saw_heading:
@@ -329,7 +338,8 @@ def _query_keywords(query: str) -> list[str]:
     q = (query or "").strip()
     if not q:
         return []
-    return [q] + [t for t in QUERY_COVERAGE_TERMS if t in q]
+    out = [q] + [t for t in QUERY_COVERAGE_TERMS if t in q]
+    return list(dict.fromkeys(out))  # 去重保序，避免同一词元重复计权
 
 
 # --------------------------------------------------------------------------
@@ -380,6 +390,11 @@ def detect_promotional_signals(text: str) -> list[dict]:
                     start = end
                     continue
                 if severity == "high" and any(s <= idx < e or s < end <= e for s, e in high_spans):
+                    start = end
+                    continue
+                follow = low[end:end + 1]
+                if follow in PATTERN_SUFFIX_BLOCKS.get(pat, set()):
+                    # 子串误报（「私信我们」「唯一的办法」），跳过
                     start = end
                     continue
                 ctx_start = max(0, idx - 12)
