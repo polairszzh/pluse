@@ -42,11 +42,12 @@ REJECT_EXCEPT_RE = re.compile(
     r"(并非(?:谣言|虚假|不实|错误|假消息|问题|坏事|难事)|"
     r"不是(?:谣言|虚假|不实|错误|假消息|问题|坏事|难事)|不是假的|"
     r"没有(?:问题|证据|找到|查到|相关|记录|信息|发现)|"
-    r"尚未(?:公布|发布|披露))"
+    r"尚未(?:公布|发布|披露)|并非没有|不是没有)"
 )
 # 第一手经验信号：个人体验类表述（官方「我们提供」不算个人经验）
 FIRST_PERSON_RE = re.compile(
-    r"(我(?:上周|昨天|最近|实测|亲测|用了|试了|体验)|本人(?:实测|亲测|体验))"
+    r"(我(?:上周|昨天|最近|实测|亲测|用了|试了|体验|处理了|整理了|测试了|跑了|花了|"
+    r"遇到了|发现了|写了|做了|改了|装了)|本人(?:实测|亲测|体验))"
 )
 
 UNIT_FACT_RE = re.compile(
@@ -149,22 +150,35 @@ def _fact_present(fact_norm: str, blob_norm: str) -> bool:
         prev = blob_norm[idx - 1] if idx > 0 else ""
         end = idx + len(fact_norm)
         nxt = blob_norm[end] if end < len(blob_norm) else ""
-        if not prev.isdigit() and not nxt.isdigit():
+        # 后边界排除数字与版本号延续点（1.0 不证实 1.0.2）
+        if not prev.isdigit() and not nxt.isdigit() and nxt != ".":
             return True
         idx = blob_norm.find(fact_norm, idx + 1)
     return False
 
 
-def _is_reject_for_fact(snippet: str, fact_norm: str) -> bool:
-    """否定信号是否针对断言数字：否定词与断言数字出现在同一句（按中文句读切分）"""
-    for sent in re.split(r"[。；！？\n]", snippet or ""):
-        if not REJECT_SIGNAL_RE.search(sent):
-            continue
+def _classify_snippet(snippet: str, fact_norm: str) -> str:
+    """逐句分类 snippet：reject（否定+断言同句）/ support（断言重现）/ none。
+
+    中性表达（尚未公布/没有问题/并非谣言等）所在句跳过，不参与判定——
+    既不算否定也不算支持；逗号也分句，避免「并非谣言，新用户领 5000 积分」
+    的肯定前缀吞掉支持内容。
+    """
+    has_reject = False
+    has_support = False
+    for sent in re.split(r"[。；！？\n，,]", snippet or ""):
         if REJECT_EXCEPT_RE.search(sent):
-            continue  # 「并非谣言」等肯定表述不算否定
-        if _fact_present(fact_norm, sent.replace(" ", "")):
-            return True
-    return False
+            continue  # 中性/肯定语境句跳过
+        sent_norm = sent.replace(" ", "")
+        if REJECT_SIGNAL_RE.search(sent) and _fact_present(fact_norm, sent_norm):
+            has_reject = True
+        elif _fact_present(fact_norm, sent_norm):
+            has_support = True
+    if has_reject:
+        return "reject"
+    if has_support:
+        return "support"
+    return "none"
 
 
 def _search(query: str, session: requests.Session | None = None, timeout: int = 20) -> list[dict]:
@@ -193,11 +207,10 @@ def verify_fact(query: str, fact: str, session: requests.Session | None = None) 
     supports: list[dict] = []
     rejects: list[dict] = []
     for r in results:
-        blob_norm = f"{r['title']} {r['snippet']}".replace(" ", "")
-        is_reject = _is_reject_for_fact(r["snippet"], fact_norm)
-        if is_reject:
+        cls = _classify_snippet(r["snippet"], fact_norm)
+        if cls == "reject":
             rejects.append(r)
-        elif _fact_present(fact_norm, blob_norm):
+        elif cls == "support":
             supports.append(r)
 
     # 只有可信来源（权威）才能确认或否决；普通来源可能是投毒/灌水源，

@@ -66,6 +66,11 @@ class TestExtract:
         cands = extract_fact_candidates("第三方实测处理 5000 行数据。")
         assert any(c["fact"] == "5000行" for c in cands)
 
+    def test_wo_chuli_first_person(self):
+        # 「我处理了 3000 行」是第一手经验，跳过外部验证
+        cands = extract_fact_candidates("我处理了 3000 行数据。")
+        assert cands == []
+
 
 class TestRisk:
     def test_medical_risk(self):
@@ -182,6 +187,15 @@ class TestVerifyFact:
         r = verify_fact("workbuddy", "2.3.1")
         assert r["status"] == "unverified"  # 2.3.10 不证实 2.3.1
 
+    def test_version_dot_boundary(self, monkeypatch):
+        # 1.0 不应被 1.0.2 证实（版本号延续点）
+        html = bing_html([
+            ("发布页", "https://www.example.com/x", "最新版本 1.0.2 已发布"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "1.0")
+        assert r["status"] == "unverified"
+
     def test_unverifiable_word_not_conflict(self, monkeypatch):
         html = bing_html([
             ("报道", "https://www.example.com/x", "该说法目前无法核实"),
@@ -242,12 +256,21 @@ class TestVerifyFact:
         ])
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
         r = verify_fact("workbuddy", "5000积分")
-        assert r["status"] == "confirmed"
+        assert r["status"] != "conflict"  # 中性语境不判否定（也不强行确认）
 
     def test_not_yet_announced_not_conflict(self, monkeypatch):
         # 「尚未公布」是中性（未公布 ≠ 断言为假），不判 conflict
         html = bing_html([
             ("官方说明", "https://baike.baidu.com/item/x", "官方尚未公布 5000 积分详情"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "unverified"  # 中性结果不参与判定，无法确认
+
+    def test_double_negation_wei_mei_not_conflict(self, monkeypatch):
+        # 「并非没有推出」= 确实推出了（双重否定为肯定）
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "官方并非没有推出 5000 积分"),
         ])
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
         r = verify_fact("workbuddy", "5000积分")
