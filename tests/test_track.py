@@ -27,6 +27,7 @@ from search_ai import (
     probe_deepseek,
     probe_search_inference,
     re_slug,
+    render_json,
     render_markdown,
     save_report,
     store_results,
@@ -224,6 +225,7 @@ class TestDeepSeekProbe:
         assert result.cited is True
         assert result.sentiment == "positive"
         assert result.meta["answer"]
+        assert result.confidence == "confirmed"  # 真实 API 探测
 
     def test_cited_false(self, monkeypatch):
         monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
@@ -342,6 +344,7 @@ class TestSearchInference:
         assert result.source == "search_inference"
         assert result.degraded is True
         assert len(result.meta["results"]) == 2
+        assert result.confidence == "likely"  # 搜索推断
 
     def test_cited_false(self, monkeypatch):
         html = BING_HTML.replace("AI搜索优化", "别的话题")
@@ -472,6 +475,16 @@ class TestDB:
         history = load_history("品牌A", db_path=db)
         assert history[0]["mine_cited"] == 1
         assert json.loads(history[0]["mine_ids"]) == ["https://a.com/1", "我的昵称"]
+
+    def test_store_and_load_confidence(self, tmp_path):
+        db = tmp_path / "monitor.db"
+        row = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            confidence="confirmed",
+        )
+        store_results([row], db_path=db, run_at="2026-08-06T10:00:00+08:00")
+        history = load_history("品牌A", db_path=db)
+        assert history[0]["confidence"] == "confirmed"
 
     def test_default_run_at_has_microsecond_precision(self, tmp_path):
         db = tmp_path / "monitor.db"
@@ -662,6 +675,28 @@ class TestReport:
         assert "DeepSeek" in md
         assert "不等同于该平台真实引用" in md
         assert "验证方式" in md
+
+    def test_render_markdown_shows_confidence(self):
+        results = [
+            ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+                        confidence="confirmed"),
+            ProbeResult("品牌A", "kimi", "ok", False, None, "c2", "search_inference", True,
+                        confidence="likely"),
+        ]
+        md = render_markdown("品牌A", results, {"series": {}, "changes": []}, [])
+        assert "| Confirmed |" in md
+        assert "| Likely |" in md
+
+    def test_render_json_includes_confidence(self):
+        results = [
+            ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+                        confidence="confirmed"),
+            ProbeResult("品牌A", "kimi", "ok", False, None, "c2", "search_inference", True,
+                        confidence="likely"),
+        ]
+        data = render_json("品牌A", results, {"series": {}, "changes": []}, [])
+        confs = {r["platform"]: r["confidence"] for r in data["results"]}
+        assert confs == {"deepseek": "confirmed", "kimi": "likely"}
 
     def test_render_markdown_filters_changes_by_requested_platforms(self):
         results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]
