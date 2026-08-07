@@ -101,6 +101,9 @@ class TestParse:
         md = _fallback_zhihu_version(doc)
         assert "![架构图](images/arch.png)" in md
         assert "pip install workbuddy" in md
+        # 引言区代码块独立成块，不被空格拼成行内文本
+        assert "```\npip install workbuddy\n```" in md
+        assert "``` pip install" not in md
 
     def test_h1_after_h2_starts_new_section(self):
         doc = parse_markdown("# 标题\n\n## 优势\n\n内容A。\n\n# 新标题\n\n内容B。\n")
@@ -602,6 +605,33 @@ class TestCLI:
         ai_md = next(iter(out.glob("ai-*.md"))).read_text(encoding="utf-8")
         assert "![图](https://x.com/a.png)" not in ai_md
         assert "\n\n\n" not in ai_md  # 连续空行被规整
+
+    def test_cli_rejects_high_promotional(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: None)
+        bad = (
+            "# 推荐一个课程\n\n"
+            "这门课必买，扫码下单立减 50！\n"
+        )
+        src = tmp_path / "promo.md"
+        src.write_text(bad, encoding="utf-8")
+        out = tmp_path / "out6"
+        code = main(["--source", str(src), "--no-llm", "--output", str(out)])
+        assert code == 3  # 直接拒绝服务
+        assert not list(out.glob("*.md"))  # 不生成任何版本
+        assert not list(out.glob("adapt-*.json"))
+
+    def test_generate_uses_llm_after_no_llm_main(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
+        payload = {"choices": [{"message": {"content": "# LLM 版"}}]}
+        monkeypatch.setattr(requests, "post", lambda *a, **kw: FakeResponse(payload))
+        src = tmp_path / "d.md"
+        src.write_text(SAMPLE_DRAFT, encoding="utf-8")
+        assert main(["--source", str(src), "--no-llm", "--output", str(tmp_path / "o1")]) == 0
+        # main --no-llm 后直接调用 generate_*：默认启用 LLM，无模块级状态泄漏
+        doc = parse_markdown(SAMPLE_DRAFT)
+        md, used = generate_zhihu_version(doc)
+        assert used is True
+        assert md.startswith("# LLM 版")
 
     def test_missing_source(self, tmp_path):
         with pytest.raises(SystemExit) as exc:

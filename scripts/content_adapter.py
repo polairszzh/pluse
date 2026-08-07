@@ -42,9 +42,6 @@ DRAFT_WEIGHTS = {
 
 PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2}
 
-# 模块级 LLM 开关（--no-llm 时关闭；不覆盖 search_ai._load_key，避免污染全局）
-_LLM_ENABLED = True
-
 # AI 优化版用途标注：内部参考，非直接发布物
 AI_PURPOSE_NOTE = (
     "<!-- AI 优化版 · 内部参考，非直接发布物：用于校验 AI 可引用性，"
@@ -558,9 +555,11 @@ def _rewrite_instructions(
 # --------------------------------------------------------------------------
 
 
-def _llm_rewrite(system: str, user: str, timeout: int = 90) -> str | None:
-    """调用 DeepSeek 生成；任何失败返回 None（调用方回退脚手架）"""
-    if not _LLM_ENABLED:
+def _llm_rewrite(
+    system: str, user: str, timeout: int = 90, enabled: bool = True
+) -> str | None:
+    """调用 DeepSeek 生成；enabled=False 或任何失败返回 None（调用方回退脚手架）"""
+    if not enabled:
         return None
     key = search_ai._load_key()
     if key is None:
@@ -703,11 +702,12 @@ def generate_ai_version(
     doc: DraftDoc,
     dims: dict[str, int] | None = None,
     query: str | None = None,
+    llm: bool = True,
 ) -> tuple[str, bool]:
     """生成 AI 优化版；返回 (markdown, 是否走了 LLM)"""
-    llm = _llm_rewrite(_ai_system(dims, query), doc.raw)
-    if llm:
-        return llm, True
+    out = _llm_rewrite(_ai_system(dims, query), doc.raw, enabled=llm)
+    if out:
+        return out, True
     return _fallback_ai_version(doc), False
 
 
@@ -737,14 +737,47 @@ def _zhihu_system(dims: dict[str, int] | None = None, query: str | None = None) 
     return "\n\n".join(parts)
 
 
+def _format_zhihu_lines(lines_in: list[str]) -> list[str]:
+    """把引言/节内行格式化为知乎版：代码块独立成块、图片/标题原样、普通文本拼段"""
+    out: list[str] = []
+    in_code = False
+    para: list[str] = []
+
+    def flush_para() -> None:
+        nonlocal para
+        if para:
+            out.append(re.sub(r"\s+", " ", " ".join(para)).strip())
+            out.append("")
+            para = []
+
+    for line in lines_in:
+        s = line.strip()
+        if s.startswith("```"):
+            flush_para()
+            in_code = not in_code
+            out.append(line)
+            if not in_code:
+                out.append("")
+            continue
+        if in_code:
+            out.append(line)
+            continue
+        if s.startswith(("![", "#")):
+            flush_para()
+            out.append(line)
+            out.append("")
+            continue
+        para.append(line)
+    flush_para()
+    return out
+
+
 def _fallback_zhihu_version(doc: DraftDoc) -> str:
     """无 LLM 时的规则脚手架：结构化重排 + 段落切分 + 保留代码/图片"""
     lines = [f"# {doc.title}", ""]
     # 引言：首段
     if doc.intro:
-        intro = re.sub(r"\s+", " ", " ".join(doc.intro)).strip()
-        lines.append(intro)
-        lines.append("")
+        lines.extend(_format_zhihu_lines(doc.intro))
     for heading, body in doc.sections:
         lines.append(f"## {heading}")
         lines.append("")
@@ -810,11 +843,12 @@ def generate_zhihu_version(
     doc: DraftDoc,
     dims: dict[str, int] | None = None,
     query: str | None = None,
+    llm: bool = True,
 ) -> tuple[str, bool]:
     """生成知乎版；返回 (markdown, 是否走了 LLM)"""
-    llm = _llm_rewrite(_zhihu_system(dims, query), doc.raw)
-    if llm:
-        return llm, True
+    out = _llm_rewrite(_zhihu_system(dims, query), doc.raw, enabled=llm)
+    if out:
+        return out, True
     return _fallback_zhihu_version(doc), False
 
 
@@ -989,10 +1023,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    global _LLM_ENABLED
     args = build_parser().parse_args(argv)
-    # 每次运行按参数重置，避免同进程多次调用残留 --no-llm 状态
-    _LLM_ENABLED = not args.no_llm
     platforms = [p.strip().lower() for p in (args.platforms or "zhihu,ai").split(",") if p.strip()]
     platforms = list(dict.fromkeys(platforms))
     supported = {"zhihu", "ai"}
@@ -1011,13 +1042,33 @@ def main(argv: list[str] | None = None) -> int:
         keywords = _query_keywords(query)
         draft_score = score_draft(doc.title, doc.body_text or doc.raw, keywords)
         gaps = detect_material_gaps(doc, query)
+
+        high_promo = [
+            g for g in gaps
+            if g["type"] == "promotional_signal" and g["severity"] == "high"
+        ]
+        if high_promo:
+            print("拒绝生成：检测到明确的营销转化信号，Pulse 不帮这类内容做适配。", file=sys.stderr)
+            for gap in high_promo:
+                print(f"  [拒绝] {gap['detail']}", file=sys.stderr)
+            print(
+                "请移除营销转化引导（扫码/私信/优惠码/必买/限时抢购等），"
+                "或补充明确的利益关系声明后重试。",
+                file=sys.stderr,
+            )
+            return 3
+
         out_dir.mkdir(parents=True, exist_ok=True)
 
         versions: dict[str, tuple[str, bool]] = {}
         if "ai" in platforms:
-            versions["ai"] = generate_ai_version(doc, draft_score["dimensions"], query)
+            versions["ai"] = generate_ai_version(
+                doc, draft_score["dimensions"], query, llm=not args.no_llm
+            )
         if "zhihu" in platforms:
-            versions["zhihu"] = generate_zhihu_version(doc, draft_score["dimensions"], query)
+            versions["zhihu"] = generate_zhihu_version(
+                doc, draft_score["dimensions"], query, llm=not args.no_llm
+            )
         if not versions:
             print("未生成任何版本。", file=sys.stderr)
             return 2
