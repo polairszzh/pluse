@@ -30,6 +30,7 @@ from urllib.parse import urlsplit
 
 import requests
 from audit import Recommendation
+from verifier import dedupe_recommendations, detect_conflicts, sort_recommendations
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SNAPSHOT_DIR = PROJECT_ROOT / "data" / "snapshots"
@@ -748,7 +749,9 @@ def build_recommendations(
             falsifiability_check="两周后重跑，被提及平台数量不下降",
         ))
 
-    recs.sort(key=lambda r: PRIORITY_ORDER.get(r.priority, 9))
+    recs = sort_recommendations(dedupe_recommendations(recs))
+    for a, b, note in detect_conflicts(recs):
+        print(f"  [冲突提示] {note}（矛盾建议保留，发布前人工复核取舍）", file=sys.stderr)
     return recs
 
 
