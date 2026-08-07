@@ -6,6 +6,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 import requests
 from fact_checker import (
+    _host_authority,
     extract_fact_candidates,
     risk_flag,
     risk_severity,
@@ -55,6 +56,11 @@ class TestExtract:
         item = next(c for c in cands if c["fact"] == "5000积分")
         assert risk_flag(item["context"]) == "医学/健康"
 
+    def test_official_we_not_first_person(self):
+        # 官方口径「我们提供」不是第一手经验，应进入验证
+        cands = extract_fact_candidates("我们提供 5000 积分给新用户。")
+        assert any(c["fact"] == "5000积分" for c in cands)
+
 
 class TestRisk:
     def test_medical_risk(self):
@@ -78,6 +84,15 @@ class TestRisk:
 
     def test_no_risk_low_severity(self):
         assert risk_severity(None) == "low"  # 无风险领域不默认中危
+
+    def test_ugc_platform_not_authority(self):
+        # UGC 平台（知乎/小红书等）不视为权威来源
+        assert _host_authority("zhihu.com") == 1
+        assert _host_authority("xiaohongshu.com") == 1
+        assert _host_authority("douyin.com") == 1
+        # 公司官方门户仍权威
+        assert _host_authority("tencent.com") == 2
+        assert _host_authority("codebuddy.cn") == 2
 
 
 class TestVerifyFact:
@@ -161,6 +176,15 @@ class TestVerifyFact:
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
         r = verify_fact("workbuddy", "5000积分")
         assert r["status"] == "unverified"  # 「无法核实」不是否定信号，不判冲突
+
+    def test_double_negation_not_conflict(self, monkeypatch):
+        # 权威页「该活动并非谣言」是肯定表述，不应判 conflict
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "该活动并非谣言，新用户领 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "confirmed"  # 双重否定 = 肯定，且含数字支持
 
     def test_unverified(self, monkeypatch):
         html = bing_html([("无关文章", "https://www.example.com/x", "普通内容没有提到数字")])

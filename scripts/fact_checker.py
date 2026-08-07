@@ -27,16 +27,21 @@ AUTHORITY_HOSTS = {
     # 主流媒体
     "xinhuanet.com", "people.com.cn", "cctv.com", "gmw.cn", "cnr.cn",
     "chinanews.com.cn", "chinadaily.com.cn", "thepaper.cn",
-    # 著名平台/公司官方（品牌/产品验证场景）
-    "zhihu.com", "codebuddy.cn", "tencent.com", "qq.com", "baidu.com",
-    "alibaba.com", "bytedance.com", "douyin.com", "kuaishou.com",
-    "xiaohongshu.com",
+    # 著名公司官方门户（品牌/产品验证场景；UGC 平台不在此列——用户内容不能确认断言）
+    "codebuddy.cn", "tencent.com", "baidu.com", "alibaba.com", "bytedance.com",
 }
 
 _SEVERITY_ORDER = {"high": 2, "medium": 1, "low": 0}
 
 REJECT_SIGNAL_RE = re.compile(r"(不存在|并非|假的|谣言|辟谣|错误信息|不实)")
-FIRST_PERSON_RE = re.compile(r"(我|我们|本人|实测|亲测)")
+# 肯定表述排除：并非/不是 + 否定词 = 肯定（「该活动并非谣言」不是否定信号）
+REJECT_EXCEPT_RE = re.compile(
+    r"(并非(?:谣言|虚假|不实|错误)|不是(?:谣言|虚假|不实|错误)|不是假的)"
+)
+# 第一手经验信号：个人体验类表述（官方「我们提供」不算个人经验）
+FIRST_PERSON_RE = re.compile(
+    r"(我(?:上周|昨天|最近|实测|亲测|用了|试了|体验)|本人(?:实测|亲测|体验)|实测|亲测)"
+)
 
 UNIT_FACT_RE = re.compile(
     r"(\d+(?:\.\d+)?\s*(?:多\s*)?(?:积分|元|分钟|小时|天|秒|GB|MB|%|万|亿|字|行))"
@@ -168,7 +173,9 @@ def verify_fact(query: str, fact: str, session: requests.Session | None = None) 
     rejects: list[dict] = []
     for r in results:
         blob_norm = f"{r['title']} {r['snippet']}".replace(" ", "")
-        is_reject = bool(REJECT_SIGNAL_RE.search(r["snippet"]))
+        is_reject = bool(REJECT_SIGNAL_RE.search(r["snippet"])) and not bool(
+            REJECT_EXCEPT_RE.search(r["snippet"])
+        )
         if is_reject:
             rejects.append(r)
         elif _fact_present(fact_norm, blob_norm):
