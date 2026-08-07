@@ -333,6 +333,24 @@ class TestMaterialGaps:
         gaps = detect_material_gaps(doc)
         assert all(g["type"] != "unverified_links" for g in gaps)
 
+    def test_unverified_links_includes_non_placeholder_image(self):
+        doc = parse_markdown(
+            "# 标题\n\n"
+            "![外部图](https://cdn.example.com/img.png)\n\n"
+            "![占位](https://picsum.photos/1)\n\n"
+            "参考 [链接](https://other.com/x)\n"
+        )
+        gaps = detect_material_gaps(doc)
+        unverified = [
+            g for g in gaps
+            if g["type"] == "unverified_links"
+        ]
+        assert unverified
+        detail = unverified[0]["detail"]
+        assert "cdn.example.com" in detail  # 非占位图图片链接仍计入
+        assert "other.com" in detail
+        assert "picsum.photos" not in detail  # 占位图已在高危缺口，不重复
+
 
 class TestReviewChecklist:
     def test_scan_facts(self):
@@ -472,6 +490,12 @@ class TestFallback:
         md = _fallback_zhihu_version(doc)
         assert long_item in md  # 前缀保留、不被切分
 
+    def test_zhihu_fallback_blank_lines_no_double(self):
+        doc = parse_markdown("# 标题\n\n## 章节\n\n段一。\n\n\n段二。\n")
+        md = _fallback_zhihu_version(doc)
+        assert "段一。\n\n段二。" in md
+        assert "\n\n\n" not in md  # 无连续空行
+
     def test_split_paragraph(self):
         parts = _split_paragraph("第一句。第二句很长。" * 40, 180)
         assert len(parts) > 1
@@ -566,6 +590,11 @@ class TestFallback:
         md = "\n".join(_format_zhihu_lines(["段一。", "---", "段二。"]))
         assert "段一。\n\n---\n\n段二。" in md
         assert "段一。---" not in md  # 分隔线不被并入段落
+
+    def test_format_zhihu_lines_blank_line_no_merge(self):
+        md = "\n".join(_format_zhihu_lines(["段一。", "", "段二。"]))
+        assert "段一。\n\n段二。" in md
+        assert "段一。段二。" not in md  # 空行不并入段落
 
     def test_fallback_zhihu_intro_has_no_code(self):
         doc = parse_markdown(SAMPLE_DRAFT)

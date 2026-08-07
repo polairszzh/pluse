@@ -447,8 +447,9 @@ def detect_material_gaps(doc: DraftDoc, query: str | None = None) -> list[dict]:
             })
 
     # 2) 外部链接待核实（排除占位图 URL，避免重复报告）
+    # 只排除占位图服务的 host（已报高危缺口），非占位图图片链接仍计入待核实
     placeholder_hosts = {
-        _host_of(i) for i in doc.images if urllib.parse.urlparse(i).scheme in ("http", "https")
+        _host_of(i) for i in doc.images if _host_of(i) in PLACEHOLDER_IMAGE_HOSTS
     }
     urls = sorted({
         u for u in _links_in_text(scan_text)
@@ -836,6 +837,9 @@ def _format_zhihu_lines(lines_in: list[str]) -> list[str]:
         if in_code:
             out.append(line)
             continue
+        if not s:
+            flush_para()  # 空行作为段落分隔，不并入段落
+            continue
         if s.startswith("|"):
             # 表格行连续输出，行间不加空行（避免拆散表格）
             flush_para()
@@ -886,6 +890,8 @@ def _fallback_zhihu_version(doc: DraftDoc) -> str:
             if in_code:
                 lines.append(line)
                 continue
+            if not line.strip():
+                continue  # 正文空行跳过，避免连续空行（段落间由行尾空行分隔）
             if line.startswith("|"):
                 # 表格行连续输出，行间不加空行
                 if not table_mode:
