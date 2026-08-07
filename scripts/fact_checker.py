@@ -33,10 +33,13 @@ AUTHORITY_HOSTS = {
 
 _SEVERITY_ORDER = {"high": 2, "medium": 1, "low": 0}
 
-REJECT_SIGNAL_RE = re.compile(r"(不存在|并非|假的|谣言|辟谣|错误信息|不实)")
+REJECT_SIGNAL_RE = re.compile(
+    r"(不存在|并未|并无|没有|未曾|从未|未提供|未推出|未发布|尚未|"
+    r"不含|不包含|未包含|不包括|并非|不是|假的|谣言|假消息|辟谣|错误信息|不实)"
+)
 # 肯定表述排除：并非/不是 + 否定词 = 肯定（「该活动并非谣言」不是否定信号）
 REJECT_EXCEPT_RE = re.compile(
-    r"(并非(?:谣言|虚假|不实|错误)|不是(?:谣言|虚假|不实|错误)|不是假的)"
+    r"(并非(?:谣言|虚假|不实|错误|假消息)|不是(?:谣言|虚假|不实|错误|假消息)|不是假的)"
 )
 # 第一手经验信号：个人体验类表述（官方「我们提供」不算个人经验）
 FIRST_PERSON_RE = re.compile(
@@ -146,6 +149,18 @@ def _fact_present(fact_norm: str, blob_norm: str) -> bool:
     return False
 
 
+def _is_reject_for_fact(snippet: str, fact_norm: str) -> bool:
+    """否定信号是否针对断言数字：否定词与断言数字出现在同一句（按中文句读切分）"""
+    for sent in re.split(r"[。；！？\n]", snippet or ""):
+        if not REJECT_SIGNAL_RE.search(sent):
+            continue
+        if REJECT_EXCEPT_RE.search(sent):
+            continue  # 「并非谣言」等肯定表述不算否定
+        if _fact_present(fact_norm, sent.replace(" ", "")):
+            return True
+    return False
+
+
 def _search(query: str, session: requests.Session | None = None, timeout: int = 20) -> list[dict]:
     http = session or requests
     resp = http.get(
@@ -173,9 +188,7 @@ def verify_fact(query: str, fact: str, session: requests.Session | None = None) 
     rejects: list[dict] = []
     for r in results:
         blob_norm = f"{r['title']} {r['snippet']}".replace(" ", "")
-        is_reject = bool(REJECT_SIGNAL_RE.search(r["snippet"])) and not bool(
-            REJECT_EXCEPT_RE.search(r["snippet"])
-        )
+        is_reject = _is_reject_for_fact(r["snippet"], fact_norm)
         if is_reject:
             rejects.append(r)
         elif _fact_present(fact_norm, blob_norm):

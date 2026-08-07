@@ -186,6 +186,33 @@ class TestVerifyFact:
         r = verify_fact("workbuddy", "5000积分")
         assert r["status"] == "confirmed"  # 双重否定 = 肯定，且含数字支持
 
+    def test_wei_mei_reject(self, monkeypatch):
+        # 「并未」等常用否定词也要识别：权威页否定断言 → conflict
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "官方并未推出 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "conflict"
+
+    def test_negation_bound_to_same_sentence(self, monkeypatch):
+        # 否定词在别的句（不含断言数字）不算针对该断言：仍可被支持确认
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "官方没有相关活动。新用户可领 5000 积分。"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "confirmed"  # 否定不绑定该断言，支持句含数字
+
+    def test_except_fake_news(self, monkeypatch):
+        # 「并非假消息」是肯定表述，不判否定
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "该活动并非假消息，新用户领 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "confirmed"
+
     def test_unverified(self, monkeypatch):
         html = bing_html([("无关文章", "https://www.example.com/x", "普通内容没有提到数字")])
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
