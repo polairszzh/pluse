@@ -43,17 +43,20 @@ REJECT_SIGNAL_RE = re.compile(
 NEUTRAL_ALWAYS_RE = re.compile(
     r"(并非(?:谣言|虚假|不实|错误|假消息|问题|坏事|难事)|"
     r"不是(?:谣言|虚假|不实|错误|假消息|问题|坏事|难事)|不是假的|"
-    r"尚未(?:公布|发布|披露)|并非没有|不是没有|有没有|是否存在|是否有|"
-    r"(?:谣言|不实)(?:已澄清|已辟谣)|已澄清|属实)"
+    r"尚未(?:公布|发布|披露)|并非没有|不是没有|有没有|是否存在|是否有)"
 )
+# 支持信号：澄清/属实/确认/证实——句含断言数字时视为支持（不是中性）
+SUPPORT_SIGNAL_RE = re.compile(r"(属实|已澄清|已辟谣|确认|证实)")
 # 「没有 X」类固定短语：后跟数字断言时豁免解除（「没有相关 5000 积分活动」是明确否定）
 NEUTRAL_NO_X_RE = re.compile(r"没有(?:问题|证据|找到|查到|相关|记录|信息|发现)")
 # 第一手经验信号：个人体验类表述（官方「我们提供」不算个人经验）
 FIRST_PERSON_RE = re.compile(
     r"(我(?:上周|昨天|最近|实测|亲测|用了|试了|体验|处理了|整理了|测试了|跑了|花了|"
-    r"遇到了|发现了|写了|做了|改了|装了)|本人(?:实测|亲测|体验)|"
-    r"(?:用了|试了|花了|跑了|遇到了|发现了)\s*\d)"
+    r"遇到了|发现了|写了|做了|改了|装了)|本人(?:实测|亲测|体验))"
 )
+# 省略主语的第一手经验延续：子句以体验动词开头 + 数字（「用了 5 分钟」；
+# 「该工具用了 3 分钟」以名词开头，不匹配）
+NO_SUBJECT_EXPERIENCE_RE = re.compile(r"^(?:用了|试了|花了|跑了|遇到了|发现了)\s*\d")
 
 UNIT_FACT_RE = re.compile(
     r"(\d+(?:,\d{3})*(?:\.\d+)?\s*(?:多\s*)?(?:积分|元|分钟|小时|天|秒|GB|MB|%|万|亿|字|行))"
@@ -104,7 +107,7 @@ def extract_fact_candidates(text: str) -> list[dict]:
             (c for c in re.split(r"[，,]", sentence) if fact in re.sub(r"\s+", "", c)),
             sentence,
         )
-        if FIRST_PERSON_RE.search(clause):
+        if FIRST_PERSON_RE.search(clause) or NO_SUBJECT_EXPERIENCE_RE.search(clause.strip()):
             return  # 第一手经验不做外部验证
         if fact not in seen:
             seen[fact] = sentence
@@ -183,7 +186,9 @@ def _classify_snippet(snippet: str, fact_norm: str) -> str:
         if _is_neutral(sent, fact_norm):
             continue  # 中性/肯定语境句跳过
         sent_norm = sent.replace(" ", "")
-        if REJECT_SIGNAL_RE.search(sent) and _fact_present(fact_norm, sent_norm):
+        if SUPPORT_SIGNAL_RE.search(sent) and _fact_present(fact_norm, sent_norm):
+            has_support = True  # 属实/已澄清/证实：肯定信号，视为支持
+        elif REJECT_SIGNAL_RE.search(sent) and _fact_present(fact_norm, sent_norm):
             has_reject = True
         elif _fact_present(fact_norm, sent_norm):
             has_support = True

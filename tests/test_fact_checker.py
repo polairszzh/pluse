@@ -90,6 +90,11 @@ class TestExtract:
         cands = extract_fact_candidates("该工具处理了 3000 行数据。")
         assert any(c["fact"] == "3000行" for c in cands)
 
+    def test_tool_used_not_first_person(self):
+        # 「该工具用了 3 分钟」以名词开头，不是第一手经验延续
+        cands = extract_fact_candidates("该工具用了 3 分钟完成处理。")
+        assert any(c["fact"] == "3分钟" for c in cands)
+
     def test_comma_clause_first_person_only(self):
         # 逗号后的公开断言不被第一人称子句误伤
         cands = extract_fact_candidates("我上周处理了 3000 行，新用户领 5000 积分。")
@@ -341,7 +346,16 @@ class TestVerifyFact:
         ])
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
         r = verify_fact("workbuddy", "5000积分")
-        assert r["status"] != "conflict"
+        assert r["status"] == "confirmed"  # 澄清后属实 → 权威支持
+
+    def test_shuoshi_support(self, monkeypatch):
+        # 「活动属实」是支持信号，权威源应判 confirmed（不是中性跳过）
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "5000 积分活动属实"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "confirmed"
 
     def test_unverified(self, monkeypatch):
         html = bing_html([("无关文章", "https://www.example.com/x", "普通内容没有提到数字")])
