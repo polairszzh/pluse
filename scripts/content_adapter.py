@@ -173,7 +173,7 @@ def parse_markdown(text: str) -> DraftDoc:
 
     def flush() -> None:
         nonlocal current_lines
-        if current_heading and current_lines:
+        if current_heading:
             sections.append((current_heading, current_lines))
         current_lines = []
 
@@ -794,7 +794,7 @@ def _format_zhihu_lines(lines_in: list[str]) -> list[str]:
             in_code = not in_code
             out.append(line)
             if not in_code:
-                out.append("")
+                _ensure_blank(out)
             continue
         if in_code:
             out.append(line)
@@ -803,7 +803,7 @@ def _format_zhihu_lines(lines_in: list[str]) -> list[str]:
             # 表格行连续输出，行间不加空行（避免拆散表格）
             flush_para()
             if not table_mode:
-                out.append("")
+                _ensure_blank(out)
             out.append(line)
             table_mode = True
             continue
@@ -819,6 +819,12 @@ def _format_zhihu_lines(lines_in: list[str]) -> list[str]:
         para.append(line)
     flush_para()
     return out
+
+
+def _ensure_blank(lines_out: list[str]) -> None:
+    """仅当末行非空时才追加空行，避免连续空行"""
+    if lines_out and lines_out[-1] != "":
+        lines_out.append("")
 
 
 def _fallback_zhihu_version(doc: DraftDoc) -> str:
@@ -838,7 +844,7 @@ def _fallback_zhihu_version(doc: DraftDoc) -> str:
                 in_code = not in_code
                 lines.append(line)
                 if not in_code:
-                    lines.append("")
+                    _ensure_blank(lines)
                 continue
             if in_code:
                 lines.append(line)
@@ -846,7 +852,7 @@ def _fallback_zhihu_version(doc: DraftDoc) -> str:
             if line.startswith("|"):
                 # 表格行连续输出，行间不加空行
                 if not table_mode:
-                    lines.append("")
+                    _ensure_blank(lines)
                 lines.append(line)
                 table_mode = True
                 continue
@@ -924,8 +930,36 @@ def _postprocess_llm_output(content: str, version: str) -> tuple[str, list[str]]
         if imgs:
             text = re.sub(r"!\[[^\]]*\]\([^)]+\)", "", text)
             warnings.append(f"AI 版移除了 {len(imgs)} 处图片引用")
-    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = _collapse_blank_lines(text)  # 跳过代码块压缩空行，避免破坏代码排版
     return text.strip(), warnings
+
+
+def _collapse_blank_lines(text: str) -> str:
+    """代码块外连续空行压缩为至多一个空行，代码块内原样保留"""
+    out: list[str] = []
+    in_code = False
+    blank_run = 0
+    for line in text.splitlines():
+        if line.strip().startswith("```"):
+            if blank_run >= 2:
+                out.append("")
+            blank_run = 0
+            in_code = not in_code
+            out.append(line)
+            continue
+        if in_code:
+            out.append(line)
+            continue
+        if not line.strip():
+            blank_run += 1
+            continue
+        if blank_run >= 2:
+            out.append("")
+        blank_run = 0
+        out.append(line)
+    if blank_run >= 2:
+        out.append("")
+    return "\n".join(out)
 
 
 def build_manifest(

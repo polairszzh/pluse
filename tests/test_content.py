@@ -127,6 +127,11 @@ class TestParse:
         assert doc.topics == ["优势"]
         assert doc.sections == [("优势", ["内容A。"]), ("新标题", ["内容B。"])]
 
+    def test_parse_empty_h2_in_sections(self):
+        doc = parse_markdown("# 标题\n\n## 总结\n")
+        assert doc.topics == ["总结"]
+        assert doc.sections == [("总结", [])]
+
 
 class TestScore:
     def test_draft_score_shape(self):
@@ -410,6 +415,18 @@ class TestFallback:
         # 代码围栏连续：代码行不被切分、不被空行隔开
         assert "```\npip install workbuddy --upgrade\nworkbuddy config --init\n```" in block
 
+    def test_zhihu_fallback_no_double_blank_before_table(self):
+        doc = parse_markdown(
+            "# 标题\n\n"
+            "## 数据\n\n"
+            "| A | B |\n"
+            "|---|---|\n"
+            "| 1 | 2 |\n"
+        )
+        md = _fallback_zhihu_version(doc)
+        assert "## 数据\n\n| A | B |\n|---|---|\n| 1 | 2 |" in md
+        assert "## 数据\n\n\n|" not in md  # 无连续空行
+
     def test_split_paragraph(self):
         parts = _split_paragraph("第一句。第二句很长。" * 40, 180)
         assert len(parts) > 1
@@ -551,6 +568,15 @@ class TestLLM:
         )
         assert "title: X" not in text
         assert "# 标题" in text
+
+    def test_postprocess_preserves_code_blank_lines(self):
+        text = "段一。\n\n\n```python\nprint(1)\n\n\nprint(2)\n```\n\n\n段二。\n"
+        out, _ = _postprocess_llm_output(text, "zhihu")
+        # 代码块内连续空行保留
+        assert "```python\nprint(1)\n\n\nprint(2)\n```" in out
+        # 代码块外压缩
+        assert "段一。\n\n```python" in out
+        assert "```\n\n段二。" in out
 
     def test_zhihu_llm_gets_score_instructions(self, monkeypatch):
         monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
