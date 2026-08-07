@@ -89,7 +89,7 @@ class TestVerifyFact:
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
         r = verify_fact("workbuddy", "5000积分")
         assert r["status"] == "confirmed"
-        assert r["authoritative"] is True  # codebuddy.cn 不在权威白名单，但 support 存在
+        assert r["authoritative"] is True  # codebuddy.cn 在权威白名单
 
     def test_confirmed_with_authority(self, monkeypatch):
         html = bing_html([

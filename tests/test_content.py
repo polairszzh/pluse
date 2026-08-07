@@ -877,7 +877,7 @@ class TestCLI:
         monkeypatch.setattr("search_ai._load_key", lambda: None)
         html = (
             '<ol id="b_results"><li class="b_algo">'
-            '<h2><a href="https://x.com/r">辟谣</a></h2>'
+            '<h2><a href="https://baike.baidu.com/item/x">辟谣</a></h2>'
             "<p>该说法不存在，官方并未推出 5000 积分</p></li>"
             "</ol>"
         )

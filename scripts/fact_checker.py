@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import concurrent.futures
 import re
 import urllib.parse
 
@@ -210,13 +211,20 @@ def verify_fact(query: str, fact: str, session: requests.Session | None = None) 
 def verify_facts(
     text: str,
     query: str,
-    session: requests.Session | None = None,
 ) -> list[dict]:
-    """提取草稿数字断言并逐一验证，返回判定清单（含风险领域标记）"""
-    out: list[dict] = []
-    for cand in extract_fact_candidates(text):
-        result = verify_fact(query, cand["fact"], session=session)
+    """提取草稿数字断言并并发验证，返回判定清单（含风险领域标记）。
+
+    并发搜索（默认 4 线程）避免多断言串行叠加耗时，使用 requests 模块级默认连接。
+    """
+    cands = extract_fact_candidates(text)
+    if not cands:
+        return []
+
+    def run(cand: dict) -> dict:
+        result = verify_fact(query, cand["fact"])  # 并发场景不共享 session，用模块级 requests
         result["context"] = cand["context"]
         result["risk"] = risk_flag(cand["context"])
-        out.append(result)
-    return out
+        return result
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        return list(executor.map(run, cands))
