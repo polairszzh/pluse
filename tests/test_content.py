@@ -58,8 +58,9 @@ pip install workbuddy
 
 
 class FakeResponse:
-    def __init__(self, data=None):
+    def __init__(self, data=None, text=""):
         self._data = data
+        self.text = text
 
     def raise_for_status(self):
         pass
@@ -871,6 +872,32 @@ class TestCLI:
         md, used = generate_zhihu_version(doc)
         assert used is True
         assert md.startswith("# LLM 版")
+
+    def test_cli_rejects_conflict_fact(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: None)
+        html = (
+            '<ol id="b_results"><li class="b_algo">'
+            '<h2><a href="https://x.com/r">辟谣</a></h2>'
+            "<p>该说法不存在，官方并未推出 5000 积分</p></li>"
+            "</ol>"
+        )
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        src = tmp_path / "d.md"
+        src.write_text("# 标题\n\n新用户领 5000 积分。\n", encoding="utf-8")
+        out = tmp_path / "outx"
+        code = main(["--source", str(src), "--no-llm", "--output", str(out)])
+        assert code == 3  # 数据断言与来源冲突 → 拒绝
+        assert not list(out.glob("*.md"))
+
+    def test_cli_marks_unverified_fact(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: None)
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=""))
+        src = tmp_path / "d2.md"
+        src.write_text("# 标题\n\n新用户领 5000 积分。\n", encoding="utf-8")
+        out = tmp_path / "outy"
+        assert main(["--source", str(src), "--no-llm", "--output", str(out)]) == 0
+        manifest = json.loads(next(iter(out.glob("adapt-*.json"))).read_text(encoding="utf-8"))
+        assert any(g["type"] == "fact_unverified" for g in manifest["material_gaps"])
 
     def test_missing_source(self, tmp_path):
         with pytest.raises(SystemExit) as exc:
