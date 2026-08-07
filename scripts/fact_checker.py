@@ -70,7 +70,7 @@ HIGH_RISK_PATTERNS = {
 # 中危风险领域：信息经常变动（价格政策、软件版本），无法核实标 medium 提示即可
 MEDIUM_RISK_PATTERNS = {
     "价格/政策": r"(价格|售价|定价|费用|收费|资费|报价|优惠|积分|政策|计费)",
-    "软件版本": r"\d+\.\d+(?:\.\d+)?",
+    "软件版本": r"(?:版本|发布|更新|升级|v\.?|ver\.?)\s*\d+\.\d+(?:\.\d+)?",
 }
 
 
@@ -162,8 +162,8 @@ def _fact_present(fact_norm: str, blob_norm: str) -> bool:
         prev = blob_norm[idx - 1] if idx > 0 else ""
         end = idx + len(fact_norm)
         nxt = blob_norm[end] if end < len(blob_norm) else ""
-        # 后边界排除数字与版本号延续点（1.0 不证实 1.0.2）
-        if not prev.isdigit() and not nxt.isdigit() and nxt != ".":
+        # 前后边界均排除数字与版本号延续点（3.1 不因 2.3.1 证实、1.0 不证实 1.0.2）
+        if not prev.isdigit() and prev != "." and not nxt.isdigit() and nxt != ".":
             return True
         idx = blob_norm.find(fact_norm, idx + 1)
     return False

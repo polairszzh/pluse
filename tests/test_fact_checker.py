@@ -99,6 +99,11 @@ class TestRisk:
         assert risk_flag("WorkBuddy 最新版本 2.3.1") == "软件版本"
         assert risk_severity("软件版本") == "medium"
 
+    def test_version_risk_requires_context(self):
+        # 无版本上下文的任意小数不标软件版本
+        assert risk_flag("成本 3.5 元") is None
+        assert risk_flag("售价 3.5 元") == "价格/政策"
+
     def test_price_policy_medium(self):
         assert risk_flag("每天签到 100 积分") == "价格/政策"
         assert risk_severity("价格/政策") == "medium"
@@ -208,6 +213,15 @@ class TestVerifyFact:
         ])
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
         r = verify_fact("workbuddy", "1.0")
+        assert r["status"] == "unverified"
+
+    def test_version_prefix_dot_boundary(self, monkeypatch):
+        # 3.1 不应被 2.3.1 证实（版本号前边界延续点）
+        html = bing_html([
+            ("发布页", "https://www.example.com/x", "最新版本 2.3.1 已发布"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "3.1")
         assert r["status"] == "unverified"
 
     def test_unverifiable_word_not_conflict(self, monkeypatch):
