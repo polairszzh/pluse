@@ -403,6 +403,12 @@ class TestRewriteInstructions:
         assert rest  # 剩余保留
         assert first + rest == long_text
 
+    def test_first_150_ignores_version_dot(self):
+        text = "This is Python 3.12 guide. " + "more content here " * 30
+        first, _ = _first_150(text)
+        assert first.endswith("guide.")  # 在真实句点截断
+        assert "3.12" in first  # 版本号句点未被当作句读
+
 
 class TestFallback:
     def test_ai_version_structure(self, monkeypatch):
@@ -610,6 +616,11 @@ class TestLLM:
         # 代码块外压缩
         assert "段一。\n\n```python" in out
         assert "```\n\n段二。" in out
+
+    def test_postprocess_keeps_single_blank(self):
+        # 段落间单个空行必须保留（否则 Markdown 并段）
+        out, _ = _postprocess_llm_output("段一。\n\n段二。\n", "zhihu")
+        assert "段一。\n\n段二。" in out
 
     def test_zhihu_llm_gets_score_instructions(self, monkeypatch):
         monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")

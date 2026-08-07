@@ -668,13 +668,20 @@ def _first_150(text: str) -> tuple[str, str]:
     if len(text) <= 150:
         return text, ""
     cut = text[:150]
-    idx = max(
-        cut.rfind("。"), cut.rfind("！"), cut.rfind("？"),
-        cut.rfind("."), cut.rfind("；"),
+    idx_cn = max(
+        cut.rfind("。"), cut.rfind("！"), cut.rfind("？"), cut.rfind("；")
     )
-    if idx == -1:
+    if idx_cn != -1:
+        return cut[: idx_cn + 1], text[idx_cn + 1:]
+    # 无中文句读时才考虑英文句点，且要求句点后是空白/句尾（避免版本号/小数点在句中截断）
+    idx_en = -1
+    for i in range(len(cut) - 1, -1, -1):
+        if cut[i] == "." and (i == len(cut) - 1 or cut[i + 1].isspace()):
+            idx_en = i
+            break
+    if idx_en == -1:
         return cut, text[150:]
-    return cut[: idx + 1], text[idx + 1:]
+    return cut[: idx_en + 1], text[idx_en + 1:]
 
 
 def _fallback_ai_version(doc: DraftDoc) -> str:
@@ -961,7 +968,7 @@ def _collapse_blank_lines(text: str) -> str:
     blank_run = 0
     for line in text.splitlines():
         if line.strip().startswith("```"):
-            if blank_run >= 2:
+            if blank_run:
                 out.append("")
             blank_run = 0
             in_code = not in_code
@@ -973,11 +980,11 @@ def _collapse_blank_lines(text: str) -> str:
         if not line.strip():
             blank_run += 1
             continue
-        if blank_run >= 2:
+        if blank_run:
             out.append("")
         blank_run = 0
         out.append(line)
-    if blank_run >= 2:
+    if blank_run:
         out.append("")
     return "\n".join(out)
 
