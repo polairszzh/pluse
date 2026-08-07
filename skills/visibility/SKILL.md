@@ -51,9 +51,10 @@ Workflow:
 5. Compare the 趋势对比 section against previous snapshots to show trends
 6. Present the per-platform summary + changes + P0 recommendations + report path
 
-Data honesty (Phase 2):
-- DeepSeek is a real API probe (answer body contains the brand name, exact match; raw answer in `meta.answer` for review). No key configured → status is `no_key`, never faked.
-- Kimi / Doubao / Yuanbao have no public API; Pulse uses Bing search results as an **inference signal** of retrieval-library presence, NOT a real citation. Keep this limitation in the report.
+  Data honesty (Phase 2):
+  - DeepSeek is a real API probe (answer body contains the brand name, exact match; raw answer in `meta.answer` for review). No key configured → status is `no_key`, never faked.
+  - Kimi / Doubao / Yuanbao have no public API; Pulse uses Bing search results as an **inference signal** of retrieval-library presence, NOT a real citation. Keep this limitation in the report.
+  - Every platform result carries a confidence label: DeepSeek = `Confirmed` (real API probe), Kimi/Doubao/Yuanbao = `Likely` (search inference). Shown in CLI summary, snapshot report/JSON and dashboard.
 - `--mine` matching is substring-based: URL matching works best in search inference, title/author name matching is more common in AI answers. A negative result is honest (not cited yet), not a guarantee.
 
 ### `/pulse adapt <topic>`

@@ -157,10 +157,11 @@ async function loadLatest(query) {
   for (const item of items) {
     const tr = el("tr");
     tr.appendChild(el("td", "", item.label));
-    const tdStatus = el("td");
-    tdStatus.innerHTML = statusPill(item.status);
-    tr.appendChild(tdStatus);
-    const tdCited = el("td");
+      const tdStatus = el("td");
+      tdStatus.innerHTML = statusPill(item.status);
+      tr.appendChild(tdStatus);
+      tr.appendChild(el("td", "", item.confidence_label));
+      const tdCited = el("td");
     tdCited.innerHTML = citedText(item.cited);
     tr.appendChild(tdCited);
     const tdMine = el("td");

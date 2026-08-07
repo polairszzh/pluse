@@ -184,6 +184,7 @@ class ProbeResult:
     meta: dict = field(default_factory=dict)
     mine_cited: bool | None = None      # 我的内容标识是否出现在探测结果中
     mine_ids: list[str] = field(default_factory=list)  # 本次检查的我的内容标识
+    confidence: str | None = None      # confirmed(真实API) | likely(搜索推断) | hypothesis(启发式)
 
 
 # --------------------------------------------------------------------------
@@ -351,7 +352,7 @@ def probe_deepseek(
     return ProbeResult(
         query=query, platform="deepseek", status="ok", cited=cited,
         sentiment=classify_sentiment(answer), context=_truncate(answer, 300),
-        source="api", degraded=False,
+        source="api", degraded=False, confidence="confirmed",
         meta={
             "answer": _truncate(answer, 1500),
             "model": DEEPSEEK_MODEL,
@@ -462,6 +463,7 @@ def probe_search_inference(
     return ProbeResult(
         query=query, platform=platform, status="ok", cited=cited,
         sentiment=None, context=context, source="search_inference", degraded=True,
+        confidence="likely",
         meta={
             "results": results,
             "note": "搜索引擎存在信号，不等同于该平台真实引用；品牌名出现在标题/摘要即视为存在信号",
@@ -515,9 +517,10 @@ CREATE TABLE IF NOT EXISTS probes (
     source TEXT NOT NULL,
     degraded INTEGER NOT NULL DEFAULT 0,
     error TEXT,
-    meta TEXT,
-    mine_cited INTEGER,
-    mine_ids TEXT
+      meta TEXT,
+      mine_cited INTEGER,
+      mine_ids TEXT,
+      confidence TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_probes_query_platform_run
     ON probes(query, platform, run_at);
@@ -533,13 +536,15 @@ def connect(db_path: Path = DEFAULT_DB) -> sqlite3.Connection:
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    """旧库补列：mine_cited / mine_ids（ALTER TABLE ADD COLUMN）"""
+    """旧库补列：mine_cited / mine_ids / confidence（ALTER TABLE ADD COLUMN）"""
     cols = {row[1] for row in conn.execute("PRAGMA table_info(probes)").fetchall()}
     with conn:
         if "mine_cited" not in cols:
             conn.execute("ALTER TABLE probes ADD COLUMN mine_cited INTEGER")
         if "mine_ids" not in cols:
             conn.execute("ALTER TABLE probes ADD COLUMN mine_ids TEXT")
+        if "confidence" not in cols:
+            conn.execute("ALTER TABLE probes ADD COLUMN confidence TEXT")
 
 
 def store_results(
@@ -558,14 +563,15 @@ def store_results(
                 mine_cited = 1 if r.mine_cited is True else (0 if r.mine_cited is False else None)
                 conn.execute(
                     "INSERT INTO probes(query, platform, run_at, status, cited, sentiment,"
-                    " context, source, degraded, error, meta, mine_cited, mine_ids)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " context, source, degraded, error, meta, mine_cited, mine_ids, confidence)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         r.query, r.platform, run_at, r.status, cited, r.sentiment,
                         r.context, r.source, 1 if r.degraded else 0, r.error,
                         json.dumps(r.meta if r.meta else {}, ensure_ascii=False),
                         mine_cited,
                         json.dumps(r.mine_ids or [], ensure_ascii=False),
+                        r.confidence,
                     ),
                 )
     finally:
@@ -753,6 +759,7 @@ def build_recommendations(
 
 STATUS_LABEL = {"ok": "正常", "no_key": "未配置密钥", "error": "失败"}
 SENTIMENT_LABEL = {"positive": "正面", "neutral": "中性", "negative": "负面"}
+CONFIDENCE_LABEL = {"confirmed": "Confirmed", "likely": "Likely", "hypothesis": "Hypothesis"}
 
 
 def render_markdown(
@@ -772,22 +779,23 @@ def render_markdown(
     lines.append("")
     with_mine = any(r.mine_ids for r in results)
     if with_mine:
-        lines.append("| 平台 | 状态 | 被提及 | 我的内容 | 情感 | 上下文 / 说明 |")
-        lines.append("|---|---|---|---|---|---|")
+        lines.append("| 平台 | 状态 | 置信度 | 被提及 | 我的内容 | 情感 | 上下文 / 说明 |")
+        lines.append("|---|---|---|---|---|---|---|")
     else:
-        lines.append("| 平台 | 状态 | 被提及 | 情感 | 上下文 / 说明 |")
-        lines.append("|---|---|---|---|---|")
+        lines.append("| 平台 | 状态 | 置信度 | 被提及 | 情感 | 上下文 / 说明 |")
+        lines.append("|---|---|---|---|---|---|")
     for r in results:
         cited_txt = {True: "是", False: "否", None: "未知"}.get(r.cited, "未知")
         mine_txt = {True: "是", False: "否", None: "—"}.get(r.mine_cited, "—")
         sentiment = SENTIMENT_LABEL.get(r.sentiment or "", "—")
+        conf = CONFIDENCE_LABEL.get(r.confidence or "", "—")
         if r.error:
             context = _md_cell(f"{r.context}（{r.error}）")
         else:
             context = _md_cell(r.context)
         row = (
             f"| {PLATFORMS[r.platform]['label']} | {STATUS_LABEL.get(r.status, r.status)} "
-            f"| {cited_txt} "
+            f"| {conf} | {cited_txt} "
         )
         if with_mine:
             row += f"| {mine_txt} "
@@ -991,8 +999,8 @@ def main(argv: list[str] | None = None) -> int:
         if r.status == "ok":
             cited = "是" if r.cited else "否"
             extra = f" · 情感 {SENTIMENT_LABEL.get(r.sentiment or '', '—')}" if r.sentiment else ""
-            degraded = " · Bing 推断" if r.degraded else ""
-            print(f"  {label}：{STATUS_LABEL[r.status]} · 被提及 {cited}{extra}{degraded}{mine}")
+            conf = f" · 置信度 {CONFIDENCE_LABEL.get(r.confidence or '', '—')}"
+            print(f"  {label}：{STATUS_LABEL[r.status]} · 被提及 {cited}{extra}{conf}{mine}")
         else:
             print(f"  {label}：{STATUS_LABEL.get(r.status, r.status)} · {_md_cell(r.context)}{mine}")
     print(f"趋势对比：{trend['total_runs']} 次快照 · {len(trend['changes'])} 处引用状态变化")

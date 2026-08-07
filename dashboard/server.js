@@ -54,6 +54,7 @@ const PLATFORM_LABELS = {
 
 const STATUS_LABELS = { ok: "正常", no_key: "未配置密钥", error: "失败" };
 const SENTIMENT_LABELS = { positive: "正面", neutral: "中性", negative: "负面" };
+const CONFIDENCE_LABELS = { confirmed: "Confirmed", likely: "Likely", hypothesis: "Hypothesis" };
 
 function openDb() {
   if (!fs.existsSync(DB_PATH)) return null;
@@ -230,9 +231,11 @@ function apiLatest(query) {
         platform: r.platform,
         label: PLATFORM_LABELS[r.platform] || r.platform,
         run_at: fmtRunAt(r.run_at),
-        status: r.status,
-        status_label: STATUS_LABELS[r.status] || r.status,
-        cited: r.cited === 1 ? true : r.cited === 0 ? false : null,
+          status: r.status,
+          status_label: STATUS_LABELS[r.status] || r.status,
+          confidence: r.confidence || null,
+          confidence_label: CONFIDENCE_LABELS[r.confidence] || "—",
+          cited: r.cited === 1 ? true : r.cited === 0 ? false : null,
         mine_cited: r.mine_cited === 1 ? true : r.mine_cited === 0 ? false : null,
         sentiment: r.sentiment,
         sentiment_label: SENTIMENT_LABELS[r.sentiment] || "—",
