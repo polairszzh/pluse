@@ -71,8 +71,16 @@ def _round_half_up(value: float) -> int:
 
 
 def _text_without_code(text: str) -> str:
-    """去掉围栏代码块，避免代码里的 URL/数字/关键词被误报或误计分"""
-    return re.sub(r"```.*?```", "", text or "", flags=re.DOTALL)
+    """去掉围栏代码块（含未闭合），避免代码里的 URL/数字/关键词被误报或误计分"""
+    out: list[str] = []
+    in_code = False
+    for line in (text or "").splitlines():
+        if line.strip().startswith("```"):
+            in_code = not in_code
+            continue
+        if not in_code:
+            out.append(line)
+    return "\n".join(out)
 
 
 def _slug(title: str, max_len: int = 40) -> str:
@@ -408,7 +416,6 @@ def _scan_facts(text: str) -> list[str]:
 def _rewrite_instructions(
     dims: dict[str, int] | None,
     query: str | None = None,
-    mention_gap: bool = True,
 ) -> str:
     """按四维得分生成改写强度指令；dims 为 None 时返回空（贴近原稿）"""
     if not dims:
@@ -428,8 +435,10 @@ def _rewrite_instructions(
     if cit < 70:
         parts.append("每个 H2 下第一段写成 130-170 字自包含答案块：结论前置、直接回答、带具体信息")
     if qual < 60:
-        tail = "缺失素材在文末【素材缺口】列明" if mention_gap else "缺失素材在文末用 HTML 注释列明"
-        parts.append(f"补充具体数字、案例或第一手经验增强可信度；不得编造数据/链接/引用，{tail}")
+        parts.append(
+            "补充具体数字、案例或第一手经验增强可信度；不得编造数据/链接/引用，"
+            "缺失素材在文末用 HTML 注释列明，不要额外生成可见的素材缺口章节"
+        )
     if struct < 60:
         parts.append("按「是什么 → 为什么用 → 怎么安装配置」重排 H2/H3，段落 120-180 字")
 
@@ -489,7 +498,7 @@ def _clean_ai_text(text: str) -> str:
 
 
 def _ai_system(dims: dict[str, int] | None = None, query: str | None = None) -> str:
-    extra = _rewrite_instructions(dims, query, mention_gap=False)
+    extra = _rewrite_instructions(dims, query)
     return AI_SYSTEM.rstrip() + (f"\n\n{extra}" if extra else "")
 
 
@@ -584,7 +593,7 @@ ZHIHU_SYSTEM = (
 
 
 def _zhihu_system(dims: dict[str, int] | None = None, query: str | None = None) -> str:
-    extra = _rewrite_instructions(dims, query, mention_gap=True)
+    extra = _rewrite_instructions(dims, query)
     return ZHIHU_SYSTEM.rstrip() + (f"\n\n{extra}" if extra else "")
 
 
@@ -599,7 +608,18 @@ def _fallback_zhihu_version(doc: DraftDoc) -> str:
     for heading, body in doc.sections:
         lines.append(f"## {heading}")
         lines.append("")
+        in_code = False
         for line in body:
+            if line.strip().startswith("```"):
+                # 代码块围栏：原样保留，结束围栏后补空行分隔，代码行不切分不加空行
+                in_code = not in_code
+                lines.append(line)
+                if not in_code:
+                    lines.append("")
+                continue
+            if in_code:
+                lines.append(line)
+                continue
             if line.startswith(("![", "#")):
                 lines.append(line)
                 lines.append("")
@@ -686,7 +706,7 @@ def build_manifest(
     return {
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "source_title": doc.title,
-        "source_words": len(doc.raw),
+        "source_chars": len(doc.raw),
         "query": query,
         "draft_score": draft_score,
         "material_gaps": gaps,

@@ -189,6 +189,10 @@ class TestReviewChecklist:
         # 无单位的版本号不列入
         assert all("10/11" not in f and "10.15" not in f for f in facts)
 
+    def test_text_without_code_unclosed(self):
+        assert _text_without_code("正文 ok\n```\ncurl https://x\n") == "正文 ok"
+        assert _text_without_code("正文 ok\n```\ncurl https://x\n```\n正文尾") == "正文 ok\n正文尾"
+
 
 class TestRewriteInstructions:
     def test_low_keyword_forces_title_rule(self):
@@ -215,6 +219,13 @@ class TestRewriteInstructions:
     def test_none_dims_empty(self):
         assert _rewrite_instructions(None) == ""
 
+    def test_low_quality_mentions_html_comment_not_visible_section(self):
+        ins = _rewrite_instructions(
+            {"关键词覆盖": 90, "AI 可引用性": 90, "内容质量 (E-E-A-T)": 40, "结构与格式": 90},
+        )
+        assert "HTML 注释" in ins
+        assert "【素材缺口】" not in ins
+
 
 class TestFallback:
     def test_ai_version_structure(self, monkeypatch):
@@ -237,6 +248,22 @@ class TestFallback:
         assert "![架构图](images/arch.png)" in md
         assert "## WorkBuddy 有哪些优势" in md
         assert "写在最后" in md
+
+    def test_zhihu_fallback_keeps_code_block_intact(self):
+        doc = parse_markdown(
+            "# 标题\n\n"
+            "## 安装步骤\n\n"
+            "先运行下面的命令：\n\n"
+            "```\n"
+            "pip install workbuddy --upgrade\n"
+            "workbuddy config --init\n"
+            "```\n\n"
+            "然后重启。\n"
+        )
+        md = _fallback_zhihu_version(doc)
+        block = md.split("## 安装步骤")[1]
+        # 代码围栏连续：代码行不被切分、不被空行隔开
+        assert "```\npip install workbuddy --upgrade\nworkbuddy config --init\n```" in block
 
     def test_split_paragraph(self):
         parts = _split_paragraph("第一句。第二句很长。" * 40, 180)
@@ -320,6 +347,8 @@ class TestLLM:
         system = captured["payload"]["messages"][0]["content"]
         assert "改写强度较高" in system
         assert "标题必须包含目标关键词" in system
+        assert "HTML 注释" in system
+        assert "【素材缺口】" not in system
 
     def test_ai_llm_does_not_force_visible_gap_section(self, monkeypatch):
         monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
@@ -356,6 +385,7 @@ class TestCLI:
         assert len(zhihu_files) == 1
         assert len(manifests) == 1
         manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+        assert isinstance(manifest["source_chars"], int)
         assert manifest["draft_score"]["engagement"]["status"] == "未发布"
         assert manifest["material_gaps"] == []
         assert manifest["human_review"]["status"] == "pending"
