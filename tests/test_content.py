@@ -15,6 +15,7 @@ from content_adapter import (
     _rewrite_instructions,
     _scan_facts,
     _split_paragraph,
+    _text_without_code,
     detect_material_gaps,
     generate_ai_version,
     generate_zhihu_version,
@@ -108,6 +109,11 @@ class TestScore:
         assert tokenized["dimensions"]["关键词覆盖"] > whole["dimensions"]["关键词覆盖"]
         assert tokenized["dimensions"]["关键词覆盖"] > 40
 
+    def test_keyword_in_code_not_counted(self):
+        draft = "# X\n\n正文没有目标词。\n\n```\nworkbuddy secret\n```\n"
+        s = score_draft("X", draft, ["workbuddy"])
+        assert s["dimensions"]["关键词覆盖"] == 10
+
 
 class TestMaterialGaps:
     def test_bad_draft_all_gap_types(self):
@@ -149,6 +155,25 @@ class TestMaterialGaps:
         placeholder = [g for g in gaps if g["type"] == "placeholder_image"]
         assert len(placeholder) == 2  # 不同 URL 不合并
         assert len(gaps) == len({(g["type"], g["detail"]) for g in gaps})
+
+    def test_code_blocks_ignored(self):
+        doc = parse_markdown(
+            "# WorkBuddy\n\n"
+            "正文没有链接、数字和关键词。\n\n"
+            "```\n"
+            "curl https://example.com/x -o out && echo '100% done in 5 minutes'\n"
+            "install --setup\n"
+            "```\n"
+        )
+        gaps = detect_material_gaps(doc, "workbuddy 安装配置教程")
+        # 代码里的 URL 不报待核实链接
+        assert all(g["type"] != "unverified_links" for g in gaps)
+        # 代码里的 install 不算「安装」章节覆盖 → 「安装」仍报缺失
+        assert any(g["type"] == "query_coverage_missing" for g in gaps)
+        assert any("安装" in g["detail"] for g in gaps if g["type"] == "query_coverage_missing")
+        # 代码里的数字不进入事实核对清单
+        facts = _scan_facts(_text_without_code(doc.raw))
+        assert facts == []
 
 
 class TestReviewChecklist:
@@ -225,6 +250,28 @@ class TestFallback:
         assert "WorkBuddy 是一款 AI 工作流自动化工具" in md
         assert "WorkBuddy 有哪些优势？" in md
         assert "怎么安装和配置 WorkBuddy？" in md
+
+    def test_fallback_ai_no_h2_uses_full_intro(self):
+        long_intro = "WorkBuddy 是腾讯云推出的桌面 AI 智能体工作台。" * 20
+        doc = parse_markdown(f"# 无 H2 草稿\n\n{long_intro}\n")
+        md = _fallback_ai_version(doc)
+        assert "它是什么？" in md
+        assert long_intro in md  # 引言全文保留，不截断
+        assert "核心内容：" not in md  # 无默认话题占位句
+        assert "有哪些优势" not in md
+
+    def test_fallback_ai_intro_keeps_rest_and_strips_images(self):
+        tail = "这是很长的补充内容，用于验证引言后半段不会被丢弃。"
+        doc = parse_markdown(
+            "# 标题\n\n"
+            "![示意图](https://x.com/a.png)\n\n"
+            f"第一句。{tail * 8}\n\n"
+            "## WorkBuddy 有哪些优势\n\n"
+            "优势一。\n"
+        )
+        md = _fallback_ai_version(doc)
+        assert "![示意图](https://x.com/a.png)" not in md  # 引言图片被去掉
+        assert tail in md  # 引言 150 字之后的内容仍保留
 
     def test_fallback_zhihu_intro_has_no_code(self):
         doc = parse_markdown(SAMPLE_DRAFT)

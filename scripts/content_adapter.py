@@ -70,6 +70,11 @@ def _round_half_up(value: float) -> int:
     return int(value + 0.5) if value >= 0 else int(value - 0.5)
 
 
+def _text_without_code(text: str) -> str:
+    """去掉围栏代码块，避免代码里的 URL/数字/关键词被误报或误计分"""
+    return re.sub(r"```.*?```", "", text or "", flags=re.DOTALL)
+
+
 def _slug(title: str, max_len: int = 40) -> str:
     slug = re.sub(r"[^\w\u4e00-\u9fff]+", "-", title or "untitled").strip("-")
     return slug[:max_len] or "untitled"
@@ -234,7 +239,9 @@ def _draft_recommendations(title: str, dims: dict[str, int]) -> list[dict]:
 
 def score_draft(title: str, text: str, keywords: list[str] | None = None) -> dict:
     """草稿四维打分：AI 可引用性/内容质量/关键词覆盖/结构（归一化），互动维度标未发布"""
-    base = audit_article(title=title, content_text=text, keywords=keywords)
+    base = audit_article(
+        title=title, content_text=_text_without_code(text), keywords=keywords
+    )
     sub = base.sub_scores
     dims = {
         "AI 可引用性": sub["AI 可引用性"].score,
@@ -297,6 +304,7 @@ def detect_material_gaps(doc: DraftDoc, query: str | None = None) -> list[dict]:
     """
     gaps: list[dict] = []
     raw = doc.raw or ""
+    scan_text = _text_without_code(raw)
 
     # 1) 占位图
     for img in doc.images:
@@ -314,7 +322,7 @@ def detect_material_gaps(doc: DraftDoc, query: str | None = None) -> list[dict]:
         _host_of(i) for i in doc.images if urllib.parse.urlparse(i).scheme in ("http", "https")
     }
     urls = sorted({
-        u for u in _links_in_text(raw)
+        u for u in _links_in_text(scan_text)
         if _host_of(u) and _host_of(u) not in placeholder_hosts
     })
     if urls:
@@ -329,7 +337,7 @@ def detect_material_gaps(doc: DraftDoc, query: str | None = None) -> list[dict]:
     # 3) query 要求的话题覆盖
     q = (query or "").strip()
     if q:
-        low = raw.lower()
+        low = scan_text.lower()
         missing = [
             term for term, words in QUERY_COVERAGE_TERMS.items()
             if term in q and not any(w in low for w in words)
@@ -343,7 +351,7 @@ def detect_material_gaps(doc: DraftDoc, query: str | None = None) -> list[dict]:
             })
 
     # 4) 图片 alt
-    for line in re.findall(r"!\[[^\]]*\]\([^)]+\)", raw):
+    for line in re.findall(r"!\[[^\]]*\]\([^)]+\)", scan_text):
         alt = _image_alt(line)
         if not alt or alt.lower() in GENERIC_ALT:
             gaps.append({
@@ -474,6 +482,12 @@ AI_SYSTEM = (
 )
 
 
+def _clean_ai_text(text: str) -> str:
+    """AI 版文本清理：去图片引用 + 压缩空白（AI 版不用图）"""
+    text = re.sub(r"!\[[^\]]*\]\([^)]+\)", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _ai_system(dims: dict[str, int] | None = None, query: str | None = None) -> str:
     extra = _rewrite_instructions(dims, query, mention_gap=False)
     return AI_SYSTEM.rstrip() + (f"\n\n{extra}" if extra else "")
@@ -482,14 +496,35 @@ def _ai_system(dims: dict[str, int] | None = None, query: str | None = None) -> 
 def _fallback_ai_version(doc: DraftDoc) -> str:
     """无 LLM 时的规则脚手架：把每个 H2 话题重组为问答对 + 自包含首段"""
     lines = [f"# {doc.title}：快速了解与使用指南", ""]
-    fallback_topics = doc.topics or ["它是什么", "有哪些优势", "怎么安装与配置"]
+    if not doc.topics:
+        # 无 H2：整篇引言即「它是什么」自包含答案，不生成默认话题占位
+        intro_text = _clean_ai_text(" ".join(doc.intro))
+        if intro_text:
+            lines.append("## 它是什么？")
+            lines.append("")
+            lines.append(intro_text)
+            lines.append("")
+        lines.append("## 总结")
+        lines.append("")
+        lines.append(
+            f"{doc.title}的核心要点已整理为自包含问答块，"
+            "发布后可观察 AI 平台对该话题的回答是否引用本文。"
+        )
+        lines.append("")
+        return "\n".join(lines)
+    fallback_topics = doc.topics
     if doc.intro and not any(("是什么" in t or "介绍" in t) for t in fallback_topics):
         # 引言回答「它是什么」，是 AI 引用最可能摘取的内容，先补一个问答块
-        intro_text = re.sub(r"\s+", " ", " ".join(doc.intro)).strip()
-        lines.append("## 它是什么？")
-        lines.append("")
-        lines.append(intro_text[:150])
-        lines.append("")
+        intro_text = _clean_ai_text(" ".join(doc.intro))
+        if intro_text:
+            lines.append("## 它是什么？")
+            lines.append("")
+            lines.append(intro_text[:150])
+            lines.append("")
+            rest = intro_text[150:]
+            if rest:
+                lines.append(rest)
+                lines.append("")
     used: list[str] = []
     for topic in fallback_topics:
         if topic in used:
@@ -711,7 +746,7 @@ def build_review_checklist(
     else:
         lines.append("- [x] 无自动检测到的素材缺口（仍建议通读全文）")
     lines += ["", "## 2. 事实核对（LLM 只改文风、不验证事实，请人工核实）", ""]
-    facts = _scan_facts(doc.body_text or doc.raw)
+    facts = _scan_facts(_text_without_code(doc.body_text or doc.raw))
     if facts:
         lines.append("以下带单位的具体数字断言来自草稿，请与官网/官方文档核对：")
         lines.extend(f"- [ ] {fact}" for fact in facts)
