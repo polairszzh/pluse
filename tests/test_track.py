@@ -18,6 +18,7 @@ from search_ai import (
     _parse_bing,
     _parse_platforms,
     _shell_quote,
+    build_delta,
     build_recommendations,
     build_trend,
     classify_sentiment,
@@ -486,6 +487,32 @@ class TestDB:
         history = load_history("品牌A", db_path=db)
         assert history[0]["confidence"] == "confirmed"
 
+    def test_build_delta(self, tmp_path):
+        db = tmp_path / "monitor.db"
+        r1 = ProbeResult(
+            "品牌A", "deepseek", "ok", False, "neutral", "c", "api", False,
+            mine_cited=False, mine_ids=["https://a.com/1"],
+        )
+        r2 = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=True, mine_ids=["https://a.com/1"],
+        )
+        store_results([r1], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        store_results([r2], db_path=db, run_at="2026-08-02T10:00:00+08:00")
+        delta = build_delta("品牌A", db_path=db)
+        item = delta["platforms"]["deepseek"]
+        assert item["cited_change"] == "added"
+        assert item["sentiment_flip"] == "neutral→positive"
+        assert item["mine_change"] == "gained"
+
+    def test_build_delta_single_run_no_history(self, tmp_path):
+        db = tmp_path / "monitor.db"
+        r = ProbeResult("品牌A", "deepseek", "ok", False, "neutral", "c", "api", False)
+        store_results([r], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        delta = build_delta("品牌A", db_path=db)
+        assert delta["has_history"] is False
+        assert delta["platforms"] == {}
+
     def test_default_run_at_has_microsecond_precision(self, tmp_path):
         db = tmp_path / "monitor.db"
         run_at = store_results(
@@ -697,6 +724,17 @@ class TestReport:
         data = render_json("品牌A", results, {"series": {}, "changes": []}, [])
         confs = {r["platform"]: r["confidence"] for r in data["results"]}
         assert confs == {"deepseek": "confirmed", "kimi": "likely"}
+
+    def test_render_markdown_shows_delta(self):
+        delta = {
+            "platforms": {
+                "deepseek": {"cited_change": "added", "sentiment_flip": "neutral→positive"},
+            }
+        }
+        md = render_markdown("品牌A", [], {"series": {}, "changes": []}, [], delta)
+        assert "与上次对比" in md
+        assert "新增被提及" in md
+        assert "neutral→positive" in md
 
     def test_render_markdown_filters_changes_by_requested_platforms(self):
         results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]
