@@ -123,6 +123,11 @@ class TestExtract:
         cands = extract_fact_candidates("我处理了 3000 行数据。")
         assert cands == []
 
+    def test_wo_shanggeyue_first_person(self):
+        # 「我上个月处理了 3000 行」是第一手经验，跳过外部验证
+        cands = extract_fact_candidates("我上个月处理了 3000 行数据。")
+        assert cands == []
+
     def test_tool_processed_not_first_person(self):
         # 「该工具处理了 3000 行」是公开陈述，不是第一手经验
         cands = extract_fact_candidates("该工具处理了 3000 行数据。")
@@ -565,6 +570,24 @@ class TestVerifyFact:
         # 「未发放」仍是明确否定（与未发布区分）
         html = bing_html([
             ("官方说明", "https://baike.baidu.com/item/x", "官方未发放 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "conflict"
+
+    def test_mei_you_quxiao_not_conflict(self, monkeypatch):
+        # 「没有取消」= 活动仍在（双重否定为肯定），不判 conflict
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "官方没有取消 5000 积分活动"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "conflict"
+
+    def test_cheng_qing_mao_hao_reject(self, monkeypatch):
+        # 「已澄清：5000 积分是谣言」= 澄清结果为否定（冒号场景）→ conflict
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "官方已澄清：5000 积分是谣言"),
         ])
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
         r = verify_fact("workbuddy", "5000积分")
