@@ -59,6 +59,7 @@ NEUTRAL_ALWAYS_RE = re.compile(
     r"无法核实|无法确认|无可奉告|"
     r"没有证实|没有确认|"
     r"没有(?:取消|撤销|终止|删除|下线|停用|停止)|"
+    r"没有(?:门槛|限制|上限|条件|风险)|不是(?:每个人|人人|谁都)|"
     r"不是(?:新用户|会员|所有人|所有用户)|并非所有|"
     r"未(?:经)?证实|未确认|尚未证实|"
     r"未被证实|无法证实|"
@@ -252,7 +253,10 @@ def _classify_snippet(snippet: str, fact_norm: str) -> str:
                 # 「不属实/非属实」= 明确否定
                 if has_digit:
                     has_reject = True
-            elif WEAK_REJECT_RE.search(sent) and re.search(r"(证实|确认|澄清(?:为|是|[:：]))", sent):
+            elif WEAK_REJECT_RE.search(sent) and re.search(
+                r"(证实|确认|澄清(?:为|是|[:：])|澄清.*?(?:是|为).*?(?:谣言|假消息))",
+                sent,
+            ):
                 # 「已被证实/确认为谣言/假消息」= 证实否定 → 归弱否定
                 if has_digit:
                     weak_reject = True

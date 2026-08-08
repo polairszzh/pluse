@@ -611,6 +611,33 @@ class TestVerifyFact:
         r = verify_fact("workbuddy", "5000积分")
         assert r["status"] != "conflict"
 
+    def test_mei_you_menkan_not_conflict(self, monkeypatch):
+        # 「没有门槛领」是肯定（无门槛可领），不判 conflict
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "没有门槛领 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "conflict"
+
+    def test_bu_shi_meigeren_not_conflict(self, monkeypatch):
+        # 「不是每个人都有」是限定表述，不判 conflict
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "不是每个人都有 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "conflict"
+
+    def test_cheng_qing_shi_yaoyan_reject(self, monkeypatch):
+        # 「已澄清 5000 积分是谣言」（无冒号/为/是紧跟）→ 否定 → conflict
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "官方已澄清 5000 积分是谣言"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "conflict"
+
     def test_parse_error_degrades_to_empty(self, monkeypatch):
         # _parse_bing 解析异常不应吞掉整个搜索 → 按无结果处理（unverified）
         html = bing_html([("官方", "https://baike.baidu.com/item/x", "新用户领 5000 积分")])
