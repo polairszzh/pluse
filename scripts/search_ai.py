@@ -652,17 +652,26 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
     }
 
 
-def build_delta(query: str, db_path: Path = DEFAULT_DB, trend: dict | None = None) -> dict:
+def build_delta(
+    query: str,
+    db_path: Path = DEFAULT_DB,
+    trend: dict | None = None,
+    platforms: list[str] | None = None,
+) -> dict:
     """本次与上次有效快照的对比基线：引用新增/丢失、情感反转、我的内容变化"""
     trend = trend or build_trend(query, db_path=db_path)
-    platforms: dict[str, dict] = {}
-    for platform, points in trend["series"].items():
+    series = trend["series"]
+    if platforms is not None:
+        requested = set(platforms)
+        series = {p: pts for p, pts in series.items() if p in requested}
+    delta_platforms: dict[str, dict] = {}
+    for platform, points in series.items():
         if not points:
             continue
         latest = points[-1]
         if latest["status"] != "ok":
             # 本次探测无有效数据：不把历史两次快照的对比误报成「本次 vs 上次」
-            platforms[platform] = {
+            delta_platforms[platform] = {
                 "run_at": latest["run_at"],
                 "status": latest["status"],
                 "note": "本次探测无有效数据，未参与与上次对比",
@@ -692,15 +701,15 @@ def build_delta(query: str, db_path: Path = DEFAULT_DB, trend: dict | None = Non
         # 两个有效快照均无可对比数据（cited/sentiment/mine 全缺）时不写入空壳条目，
         # 避免 has_history=False 时渲染出全「—」的对比行
         if any(k in item for k in ("cited_change", "sentiment_flip", "mine_change")):
-            platforms[platform] = item
+            delta_platforms[platform] = item
     # has_history 仅表示存在真实对比（引用/情感/我的内容任一变化或一致判定），
     # 不含「本次无有效数据」的 note 条目，避免 JSON 消费方误读
     compared = [
         item
-        for item in platforms.values()
+        for item in delta_platforms.values()
         if any(k in item for k in ("cited_change", "sentiment_flip", "mine_change"))
     ]
-    return {"query": query, "platforms": platforms, "has_history": bool(compared)}
+    return {"query": query, "platforms": delta_platforms, "has_history": bool(compared)}
 
 
 # --------------------------------------------------------------------------
@@ -872,7 +881,7 @@ def render_markdown(
             lines.append("")
             lines.append("| 平台 | 引用变化 | 情感变化 | 我的内容 |")
             lines.append("|---|---|---|---|")
-            cited_label = {"added": "新增被提及", "lost": "丢失被提及", "same": "—"}
+            cited_label = {"added": "新增被提及", "lost": "丢失被提及", "same": "无变化"}
             mine_label = {"gained": "新增被引用", "lost": "丢失被引用"}
             for platform, item in rows:
                 label = PLATFORMS.get(platform, {}).get("label", platform)
@@ -1061,7 +1070,7 @@ def main(argv: list[str] | None = None) -> int:
         results = [PLATFORMS[p]["probe"](args.query, mine_ids=mine_ids) for p in platforms]
         store_results(results, db_path=db_path)
         trend = build_trend(args.query, db_path=db_path)
-        delta = build_delta(args.query, db_path=db_path, trend=trend)
+        delta = build_delta(args.query, db_path=db_path, trend=trend, platforms=platforms)
         recs = build_recommendations(args.query, results)
         paths = save_report(args.query, results, trend, recs, out_dir, delta)
     except FileNotFoundError as exc:

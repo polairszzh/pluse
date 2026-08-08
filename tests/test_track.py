@@ -573,6 +573,29 @@ class TestDB:
             "品牌A", db_path=db
         )
 
+    def test_build_delta_filters_by_requested_platforms(self, tmp_path):
+        # 只对本次探测的平台生成对比，历史其他平台不混入
+        db = tmp_path / "monitor.db"
+
+        def mk(p, cited):
+            return ProbeResult(
+                "品牌A", p, "ok", cited, "positive", "c", "api",
+                degraded=False,
+            )
+
+        store_results(
+            [mk("deepseek", False), mk("kimi", True)],
+            db_path=db, run_at="2026-08-01T10:00:00+08:00",
+        )
+        store_results(
+            [mk("deepseek", True), mk("kimi", False)],
+            db_path=db, run_at="2026-08-02T10:00:00+08:00",
+        )
+        delta = build_delta("品牌A", db_path=db, platforms=["deepseek"])
+        assert set(delta["platforms"]) == {"deepseek"}
+        assert delta["platforms"]["deepseek"]["cited_change"] == "added"
+        assert delta["has_history"] is True
+
     def test_default_run_at_has_microsecond_precision(self, tmp_path):
         db = tmp_path / "monitor.db"
         run_at = store_results(
@@ -846,6 +869,12 @@ class TestReport:
         }
         md = render_markdown("品牌A", [], {"series": {}, "changes": []}, [], delta)
         assert "与上次对比" not in md
+
+    def test_render_markdown_delta_same_shown_as_no_change(self):
+        # cited_change == "same" 时显示「无变化」，与 CLI 一致，避免唯一对比也成全「—」行
+        delta = {"platforms": {"deepseek": {"cited_change": "same"}}}
+        md = render_markdown("品牌A", [], {"series": {}, "changes": []}, [], delta)
+        assert "无变化" in md
 
     def test_render_markdown_filters_changes_by_requested_platforms(self):
         results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]
