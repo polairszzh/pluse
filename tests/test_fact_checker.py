@@ -75,6 +75,14 @@ class TestExtract:
         assert "5,000积分" not in facts
         assert "000积分" not in facts
 
+    def test_wan_unit_combined(self):
+        # 「万/亿」与单位组合提取：1万积分 / 5000万元
+        cands = extract_fact_candidates("新用户领 1万积分，公司融资 5000万元。")
+        facts = {c["fact"] for c in cands}
+        assert "1万积分" in facts
+        assert "5000万元" in facts
+        assert "1万" not in facts  # 不单独提取数量级
+
     def test_fullwidth_space_normalized(self):
         # 全角空格归一化：5　000 积分 与 5000积分 同断言
         cands = extract_fact_candidates("新用户领 5　000 积分。")  # 全角空格
@@ -182,6 +190,7 @@ class TestRisk:
         assert _host_authority("tencent.com") == 2
         assert _host_authority("codebuddy.cn") == 2
         assert _host_authority(_host_of("https://codebuddy.cn:443/x")) == 2  # 端口剥离后仍权威
+        assert _host_authority("www.gov.cn") == 2  # www 保留后仍匹配 .gov.cn
         # 官方子域按主域匹配
         assert _host_authority("cloud.tencent.com") == 2
         assert _host_authority("news.xinhuanet.com") == 2
@@ -531,6 +540,24 @@ class TestVerifyFact:
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
         r = verify_fact("workbuddy", "5000积分")
         assert r["status"] == "conflict"
+
+    def test_bu_shushi_reject(self, monkeypatch):
+        # 「不属实」是明确否定（否定前缀 + 支持词）
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "5000 积分活动不属实"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "conflict"
+
+    def test_wei_bei_zhengshi_neutral(self, monkeypatch):
+        # 「未被证实」是中性，不判 confirmed
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "5000 积分未被证实"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "confirmed"
 
     def test_wuxian_not_conflict(self, monkeypatch):
         # 「无限领 5000 积分」是正常表述
