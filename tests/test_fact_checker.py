@@ -525,6 +525,24 @@ class TestVerifyFact:
         r = verify_fact("workbuddy", "5000积分")
         assert r["status"] == "conflict"
 
+    def test_wu_renhe_reject(self, monkeypatch):
+        # 「无任何 5000 积分」是明确否定（无 + 任何 + 数字）
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "官方无任何 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "conflict"
+
+    def test_mei_you_zhengshi_not_conflict(self, monkeypatch):
+        # 「没有证实」是中性（未证实 ≠ 否定/属实），不判 conflict
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "官方没有证实 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "conflict"
+
     def test_parse_error_degrades_to_empty(self, monkeypatch):
         # _parse_bing 解析异常不应吞掉整个搜索 → 按无结果处理（unverified）
         html = bing_html([("官方", "https://baike.baidu.com/item/x", "新用户领 5000 积分")])
