@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 import requests
 from fact_checker import (
     _host_authority,
+    _host_of,
     extract_fact_candidates,
     risk_flag,
     risk_severity,
@@ -180,6 +181,7 @@ class TestRisk:
         # 公司官方门户仍权威
         assert _host_authority("tencent.com") == 2
         assert _host_authority("codebuddy.cn") == 2
+        assert _host_authority(_host_of("https://codebuddy.cn:443/x")) == 2  # 端口剥离后仍权威
         # 官方子域按主域匹配
         assert _host_authority("cloud.tencent.com") == 2
         assert _host_authority("news.xinhuanet.com") == 2
@@ -459,6 +461,24 @@ class TestVerifyFact:
         # 「无门槛领 5000 积分」是正常表述（门槛为零），不判 conflict
         html = bing_html([
             ("官方说明", "https://baike.baidu.com/item/x", "无门槛领 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "conflict"
+
+    def test_no_xiangguan_modifier_reject(self, monkeypatch):
+        # 「没有相关的 5000 积分活动」：修饰词后的否定仍判 conflict
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "官方没有相关的 5000 积分活动"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "conflict"
+
+    def test_wulun_not_conflict(self, monkeypatch):
+        # 「无论新老用户均可领」是肯定（「无论」不是否定）
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "无论新老用户均可领 5000 积分"),
         ])
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
         r = verify_fact("workbuddy", "5000积分")

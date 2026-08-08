@@ -54,6 +54,7 @@ NEUTRAL_ALWAYS_RE = re.compile(
     r"尚未(?:公布|发布|披露)|并非没有|不是没有|有没有|是否存在|是否有|"
     r"无法核实|无法确认|无可奉告|"
     r"无(?:门槛|需|限|限制|上限)|没有(?:门槛|限制|上限)|无限|不是(?:新用户|会员|所有人)|"
+    r"无论|无惧|无忧|无关|无疑|无妨|"
     r"未(?:经)?证实|未确认|尚未证实|"
     r"网传|传闻|传称|据悉|有消息称)"
 )
@@ -95,7 +96,8 @@ MEDIUM_RISK_PATTERNS = {
 
 def _host_of(url: str) -> str:
     try:
-        return urllib.parse.urlparse(url).netloc.lower().removeprefix("www.")
+        host = urllib.parse.urlparse(url).netloc.lower().removeprefix("www.")
+        return host.split(":")[0]  # 剥离端口（codebuddy.cn:443 → codebuddy.cn）
     except ValueError:
         return ""
 
@@ -252,7 +254,9 @@ def _is_neutral(sent: str, fact_norm: str) -> bool:
     if not m:
         return False
     after = sent[m.end():]
-    return not bool(re.match(r"\s*\d", after))
+    # 允许修饰词（的/了/过/些）在数字前：「没有相关的 5000 积分活动」仍是明确否定
+    stripped = re.sub(r"^[\s的了过些]+", "", after)
+    return not bool(re.match(r"\d", stripped))
 
 
 def _search(query: str, session: requests.Session | None = None, timeout: int = 20) -> list[dict]:
