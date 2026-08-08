@@ -40,7 +40,7 @@ _SEVERITY_ORDER = {"high": 2, "medium": 1, "low": 0}
 
 # 明确否定词：作为 reject 的独立条件（含强否定；弱词见 WEAK_REJECT_RE）
 REJECT_SIGNAL_RE = re.compile(
-    r"(不存在|并未|没有|未提供|不提供|未推出|否认|未发放|不发放|未发布|未给|"
+    r"(不存在|并未|没有|未提供|不提供|未推出|否认|未发放|不发放|未给|"
     r"不含|不包含|未包含|不包括|假的|虚假|错误信息|不实|并非|不是)"
 )
 # 单字「无」：仅与断言数字相邻（允许「任何」在中间）时是否定（「无条件/无风险领取」不命中）
@@ -54,14 +54,14 @@ NEUTRAL_ALWAYS_RE = re.compile(
     r"(并非(?:谣言|虚假|不实|错误|假消息|问题|坏事|难事|骗局)|"
     r"不是(?:谣言|虚假|不实|错误|假消息|问题|坏事|难事|骗局)|不是假的|"
     r"尚未(?:公布|发布|披露)|并非没有|不是没有|有没有|是否存在|是否有|"
+    r"未发布|未公布|未公开|未披露|"
     r"并未否认|没有否认|不否认|未否认|不是不|并非不|"
     r"无法核实|无法确认|无可奉告|"
     r"没有证实|没有确认|"
     r"不是(?:新用户|会员|所有人|所有用户)|并非所有|"
-    r"未(?:经)?证实|未确认|尚未证实|"
-    r"未被证实|无法证实|"
-    r"未公布|未公开|未披露|"
-    r"网传|传闻|传称|据悉|有消息称)"
+      r"未(?:经)?证实|未确认|尚未证实|"
+      r"未被证实|无法证实|"
+      r"网传|传闻|传称|据悉|有消息称|有谣言称|谣言称|据传)"
 )
 # 支持信号：明确的肯定词——句含断言数字时视为支持。
 # 「已辟谣」是否定信号（在 REJECT_SIGNAL_RE）；「已澄清」REJECT 优先保护（已澄清：X 不存在 → conflict）
@@ -228,7 +228,10 @@ def _classify_snippet(snippet: str, fact_norm: str) -> str:
     support_seen = False
     for sent in re.split(r"[。；！？\n，]|,(?!\d)", snippet or ""):
         if _is_neutral(sent, fact_norm):
-            continue  # 中性/肯定语境句跳过
+            # 中性句不参与判定，但断言数字重现仍计入（供跨子句支持回看）
+            if _fact_present(fact_norm, re.sub(r"\s+", "", sent)):
+                snippet_has_digit = True
+            continue
         sent_norm = re.sub(r"\s+", "", sent)
         has_digit = _fact_present(fact_norm, sent_norm)
         if has_digit:
