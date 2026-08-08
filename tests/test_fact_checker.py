@@ -54,8 +54,17 @@ class TestExtract:
         assert cands == []  # 第一手经验不做外部验证
 
     def test_dedup(self):
-        cands = extract_fact_candidates("5000 积分。再次提到 5000积分。")
+        cands = extract_fact_candidates("新用户领 5000 积分，再领 5000 积分。")
         assert sum(1 for c in cands if c["fact"] == "5000积分") == 1
+
+    def test_cross_subject_not_merged(self):
+        # 跨主体同数字断言不合并（A 公司 vs B 公司）
+        cands = extract_fact_candidates("A 公司新用户领 5000 积分。B 公司新用户领 5000 积分。")
+        assert sum(1 for c in cands if c["fact"] == "5000积分") == 2
+
+    def test_version_lowercase_extracted(self):
+        cands = extract_fact_candidates("latest version 2.3.1 released")
+        assert any(c["fact"] == "2.3.1" for c in cands)
 
     def test_thousands_separator(self):
         # 千分位逗号归一化：「5,000 积分」提取为 5000积分（非 5,000积分/000积分）
@@ -77,11 +86,13 @@ class TestExtract:
         assert "5000积分" in facts  # 公开断言仍验证
         assert "5000行" not in facts  # 第一手经验跳过
 
-    def test_keeps_higher_risk_context(self):
-        # 同一断言首次低危句、后高危句（医疗）时，保留高危上下文
+    def test_cross_context_kept_with_own_risk(self):
+        # 不同语境的同数字断言分开保留，各带自己的风险（价格 vs 医学）
         cands = extract_fact_candidates("售价 5000 积分。该偏方 5000 积分可治愈。")
-        item = next(c for c in cands if c["fact"] == "5000积分")
-        assert risk_flag(item["context"]) == "医学/健康"
+        items = [c for c in cands if c["fact"] == "5000积分"]
+        assert len(items) == 2
+        risks = {risk_flag(c["context"]) for c in items}
+        assert "医学/健康" in risks and "价格/政策" in risks
 
     def test_official_we_not_first_person(self):
         # 官方口径「我们提供」不是第一手经验，应进入验证
@@ -416,6 +427,33 @@ class TestVerifyFact:
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
         r = verify_fact("workbuddy", "5000积分")
         assert r["status"] == "conflict"
+
+    def test_fouren_reject(self, monkeypatch):
+        # 「否认推出」是明确否定
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "官方否认推出 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "conflict"
+
+    def test_wufa_heshi_not_conflict(self, monkeypatch):
+        # 「无法核实」是中性，不是否定
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "该说法无法核实"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "conflict"
+
+    def test_not_scam_not_conflict(self, monkeypatch):
+        # 「不是骗局」是肯定表述（否认骗局标签）
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "5000 积分不是骗局"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "conflict"
 
     def test_support_requires_digit(self, monkeypatch):
         # 权威页仅「已澄清/属实」而无断言数字，不判 confirmed

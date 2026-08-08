@@ -40,7 +40,7 @@ _SEVERITY_ORDER = {"high": 2, "medium": 1, "low": 0}
 
 # 明确否定词：作为 reject 的独立条件（含强否定；弱词见 WEAK_REJECT_RE）
 REJECT_SIGNAL_RE = re.compile(
-    r"(不存在|并未|没有|未提供|不提供|未推出|未发放|不发放|未发布|未给|"
+    r"(不存在|并未|没有|未提供|不提供|未推出|否认|未发放|不发放|未发布|未给|"
     r"不含|不包含|未包含|不包括|无|假的|错误信息|不实|并非|不是)"
 )
 # 弱否定词：仅当无任何支持词时才算否定（「X 是谣言」= 否定；「此前有谣言称 X，现已证实」= 支持）
@@ -49,9 +49,10 @@ WEAK_REJECT_RE = re.compile(r"(谣言|辟谣|假消息)")
 # 始终中性的表达：疑问句（有没有/是否存在）、双重否定（并非没有）、未公布（尚未公布）、
 # 肯定前缀（并非谣言/不是问题）——豁免不解除
 NEUTRAL_ALWAYS_RE = re.compile(
-    r"(并非(?:谣言|虚假|不实|错误|假消息|问题|坏事|难事)|"
-    r"不是(?:谣言|虚假|不实|错误|假消息|问题|坏事|难事)|不是假的|"
-    r"尚未(?:公布|发布|披露)|并非没有|不是没有|有没有|是否存在|是否有)"
+    r"(并非(?:谣言|虚假|不实|错误|假消息|问题|坏事|难事|骗局)|"
+    r"不是(?:谣言|虚假|不实|错误|假消息|问题|坏事|难事|骗局)|不是假的|"
+    r"尚未(?:公布|发布|披露)|并非没有|不是没有|有没有|是否存在|是否有|"
+    r"无法核实|无法确认|无可奉告)"
 )
 # 支持信号：明确的肯定词——句含断言数字时视为支持。
 # 「已辟谣」是否定信号（在 REJECT_SIGNAL_RE）；「已澄清」REJECT 优先保护（已澄清：X 不存在 → conflict）
@@ -73,7 +74,7 @@ UNIT_FACT_RE = re.compile(
       r"(\d+(?:[,\s]\d{3})*(?:\.\d+)?\s*(?:多\s*)?(?:积分|元|分钟|小时|天|秒|GB|MB|%|万|亿|字|行))"
 )
 VERSION_RE = re.compile(
-    r"(?:版本|发布|更新|升级|v\.?|ver\.?|Version)\s*(\d+\.\d+(?:\.\d+)?)"
+    r"(?:版本|发布|更新|升级|v\.?|ver\.?|Version|version)\s*(\d+\.\d+(?:\.\d+)?)"
 )
 
 # 高危风险领域：误导会造成实际伤害（医疗健康、教育招考），无法核实强制高危
@@ -85,7 +86,7 @@ HIGH_RISK_PATTERNS = {
 # 中危风险领域：信息经常变动（价格政策、软件版本），无法核实标 medium 提示即可
 MEDIUM_RISK_PATTERNS = {
     "价格/政策": r"(价格|售价|定价|费用|收费|资费|报价|优惠|积分|政策|计费)",
-    "软件版本": r"(?:版本|发布|更新|升级|v\.?|ver\.?|Version)\s*\d+\.\d+(?:\.\d+)?",
+    "软件版本": r"(?:版本|发布|更新|升级|v\.?|ver\.?|Version|version)\s*\d+\.\d+(?:\.\d+)?",
 }
 
 
@@ -113,7 +114,7 @@ def _host_authority(host: str) -> int:
 
 def extract_fact_candidates(text: str) -> list[dict]:
     """提取 (fact, context)：数字断言 + 所在句上下文；第一手经验断言跳过，同断言去重"""
-    seen: dict[str, str] = {}
+    seen: dict[tuple[str, str], str] = {}
 
     def add(fact: str, start: int, end: int) -> None:
         sentence = _sentence_around(text, start, end)
@@ -126,20 +127,26 @@ def extract_fact_candidates(text: str) -> list[dict]:
         )
         if FIRST_PERSON_RE.search(clause) or NO_SUBJECT_EXPERIENCE_RE.search(clause.strip()):
             return  # 第一手经验不做外部验证
-        if fact not in seen:
-            seen[fact] = sentence
+        key = (fact, _subject_key(sentence))
+        if key not in seen:
+            seen[key] = sentence
             return
         # 同一断言多次出现：保留风险等级更高的上下文（防高危句被低危首现覆盖）
-        cur = _SEVERITY_ORDER.get(risk_severity(risk_flag(seen[fact])), 0)
+        cur = _SEVERITY_ORDER.get(risk_severity(risk_flag(seen[key])), 0)
         new = _SEVERITY_ORDER.get(risk_severity(risk_flag(sentence)), 0)
         if new > cur:
-            seen[fact] = sentence
+            seen[key] = sentence
 
     for m in UNIT_FACT_RE.finditer(text or ""):
         add(re.sub(r"\s+", "", m.group(1)).replace(",", ""), m.start(), m.end())
     for m in VERSION_RE.finditer(text or ""):
         add(m.group(1), m.start(1), m.end(1))
-    return [{"fact": f, "context": c} for f, c in seen.items()]
+    return [{"fact": f, "context": c} for (f, _), c in seen.items()]
+
+
+def _subject_key(context: str) -> str:
+    """断言主体键：上下文去数字/标点后取前 15 字（区分跨主体断言，同主体重复合并）"""
+    return re.sub(r"[\d\s，。；！？、,:：]+", "", context or "")[:15]
 
 
 def _sentence_around(text: str, start: int, end: int) -> str:
@@ -257,10 +264,17 @@ def _search(query: str, session: requests.Session | None = None, timeout: int = 
     return _parse_bing(resp.text)
 
 
-def verify_fact(query: str, fact: str, session: requests.Session | None = None) -> dict:
+def verify_fact(
+    query: str,
+    fact: str,
+    session: requests.Session | None = None,
+    context: str = "",
+) -> dict:
     """对单个数字断言做多源交叉验证，返回四级判定（confirmed / conflict / untrusted / unverified）"""
     fact_norm = re.sub(r"\s+", "", fact)
     search_q = f"{query} {fact}"
+    if context:
+        search_q += f" {_subject_key(context)}"  # 断言主体进搜索词，降低张冠李戴
     try:
         results = _search(search_q, session=session)
     except requests.exceptions.RequestException as exc:
@@ -325,7 +339,7 @@ def verify_facts(
 
     def run(cand: dict) -> dict:
         try:
-            result = verify_fact(query, cand["fact"])  # 并发场景不共享 session
+            result = verify_fact(query, cand["fact"], context=cand["context"])
         except Exception:  # noqa: BLE001 — 单个断言验证异常不拖垮其他断言
             result = {"fact": cand["fact"], "status": "unverified", "reason": "验证异常"}
         result["context"] = cand["context"]
