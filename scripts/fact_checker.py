@@ -54,6 +54,7 @@ NEUTRAL_ALWAYS_RE = re.compile(
     r"(并非(?:谣言|虚假|不实|错误|假消息|问题|坏事|难事|骗局)|"
     r"不是(?:谣言|虚假|不实|错误|假消息|问题|坏事|难事|骗局)|不是假的|"
     r"尚未(?:公布|发布|披露)|并非没有|不是没有|有没有|是否存在|是否有|"
+    r"并未否认|没有否认|不是不|并非不|"
     r"无法核实|无法确认|无可奉告|"
     r"无(?:门槛|需|限|限制|上限)|没有(?:门槛|限制|上限)|无限|不是(?:新用户|会员|所有人)|"
     r"无论|无惧|无忧|无关|无疑|无妨|"
@@ -275,7 +276,10 @@ def _search(query: str, session: requests.Session | None = None, timeout: int = 
         timeout=timeout,
     )
     resp.raise_for_status()
-    return _parse_bing(resp.text)
+    try:
+        return _parse_bing(resp.text)
+    except Exception:  # noqa: BLE001 — 解析异常不吞掉整个搜索，按无结果处理
+        return []
 
 
 def verify_fact(

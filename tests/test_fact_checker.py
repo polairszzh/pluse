@@ -466,6 +466,27 @@ class TestVerifyFact:
         r = verify_fact("workbuddy", "5000积分")
         assert r["status"] != "conflict"
 
+    def test_wei_wei_fouren_not_conflict(self, monkeypatch):
+        # 「并未否认」是双重否定（默认承认），不判 conflict
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "官方并未否认 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "conflict"
+
+    def test_parse_error_degrades_to_empty(self, monkeypatch):
+        # _parse_bing 解析异常不应吞掉整个搜索 → 按无结果处理（unverified）
+        html = bing_html([("官方", "https://baike.baidu.com/item/x", "新用户领 5000 积分")])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+
+        def boom(text, limit=10):
+            raise ValueError("parse boom")
+
+        monkeypatch.setattr("fact_checker._parse_bing", boom)
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "unverified"
+
     def test_no_xiangguan_modifier_reject(self, monkeypatch):
         # 「没有相关的 5000 积分活动」：修饰词后的否定仍判 conflict
         html = bing_html([
