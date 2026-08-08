@@ -702,6 +702,42 @@ class TestVerifyFact:
         r = verify_fact("workbuddy", "5000积分")
         assert r["status"] == "conflict"
 
+    def test_shi_bu_shi_not_conflict(self, monkeypatch):
+        # 「是不是真的」是疑问句，不判 conflict
+        html = bing_html([
+            ("来源", "https://baike.baidu.com/item/x", "新用户5000积分是不是真的？"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "conflict"
+
+    def test_hai_you_mei_you_not_conflict(self, monkeypatch):
+        # 「还有没有」是疑问/口语，不判 conflict
+        html = bing_html([
+            ("来源", "https://baike.baidu.com/item/x", "还有没有 5000 积分？"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "conflict"
+
+    def test_yi_zheng_shi_wei_zhao_dao_not_confirmed(self, monkeypatch):
+        # 「已证实。未找到 X 活动」：未找到是未确认，不判 confirmed
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "官方已证实。未找到 5000积分活动"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "confirmed"
+
+    def test_negation_without_digit_not_confirmed(self, monkeypatch):
+        # 「并未推出该活动」（无数字否定）+ 数字支持句：不判 confirmed（保守降级）
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "官方并未推出该活动。新用户领 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "confirmed"
+
     def test_parse_error_degrades_to_empty(self, monkeypatch):
         # _parse_bing 解析异常不应吞掉整个搜索 → 按无结果处理（unverified）
         html = bing_html([("官方", "https://baike.baidu.com/item/x", "新用户领 5000 积分")])

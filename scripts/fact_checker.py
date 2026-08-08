@@ -56,6 +56,7 @@ NEUTRAL_ALWAYS_RE = re.compile(
     r"(并非(?:谣言|虚假|不实|错误|假消息|问题|坏事|难事|骗局)|"
     r"不是(?:谣言|虚假|不实|错误|假消息|问题|坏事|难事|骗局)|不是假的|"
     r"尚未(?:公布|发布|披露|推出)|并非没有|不是没有|有没有|是否存在|是否有|"
+    r"是不是|是不是真的|还有没有|没有了|没了|"
     r"未发布|未公布|未公开|未披露|"
     r"并未否认|没有否认|不否认|未否认|不是不|并非不|"
     r"无法核实|无法确认|无可奉告|"
@@ -79,7 +80,7 @@ NEUTRAL_NO_X_RE = re.compile(r"没有(?:问题|相关|记录|信息)")
 
 # 未确认类中性句：句内数字不参与跨子句支持回看（「尚未公布 5000 积分」≠ 断言重现）
 NEUTRAL_UNCONFIRMED_RE = re.compile(
-    r"(尚未|未)(?:公布|公开|披露|发布|证实|确认|核实)|无法(?:核实|证实|确认)"
+    r"(尚未|未|没有)(?:公布|公开|披露|发布|证实|确认|核实|找到|查到|发现)|无法(?:核实|证实|确认)"
 )
 # 第一手经验信号：个人体验类表述（官方「我们提供」不算个人经验）
 FIRST_PERSON_RE = re.compile(
@@ -240,6 +241,7 @@ def _classify_snippet(snippet: str, fact_norm: str) -> str:
     weak_reject = False
     snippet_has_digit = False
     support_seen = False
+    no_digit_negation = False
     for sent in re.split(r"[。；！？\n，]|,(?!\d)", snippet or ""):
         if _is_neutral(sent, fact_norm):
             # 中性句不参与判定；传闻/疑似类中性句的数字可参与跨子句支持回看，
@@ -253,6 +255,8 @@ def _classify_snippet(snippet: str, fact_norm: str) -> str:
             snippet_has_digit = True
         if (REJECT_SIGNAL_RE.search(sent) or NO_ADJACENT_RE.search(sent)) and has_digit:
             has_reject = True  # 明确否定词优先
+        elif REJECT_SIGNAL_RE.search(sent) or NO_ADJACENT_RE.search(sent):
+            no_digit_negation = True  # 无数字否定（如「并未推出该活动」）：不参与支持确认
         elif STRONG_SUPPORT_RE.search(sent):
             if WEAK_REJECT_RE.search(sent) and re.search(r"(证实|确认)\s*(?:为|是)?\s*(?:谣言|假消息)", sent):
                 if has_digit:
@@ -274,12 +278,14 @@ def _classify_snippet(snippet: str, fact_norm: str) -> str:
             has_support = True  # 「已澄清 X」同句支持（澄清对象），不跨子句
         elif has_digit:
             has_support = True
-    if support_seen and snippet_has_digit:
+    if support_seen and snippet_has_digit and not no_digit_negation:
         has_support = True
     if weak_reject and not has_support:
         has_reject = True
     if has_reject:
         return "reject"
+    if no_digit_negation:
+        return "none"  # 存在无数字否定（如「并未推出该活动」）：数字支持不确认，保守降级
     if has_support:
         return "support"
     return "none"
