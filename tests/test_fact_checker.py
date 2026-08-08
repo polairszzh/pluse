@@ -83,6 +83,11 @@ class TestExtract:
         assert "5000万元" in facts
         assert "1万" not in facts  # 不单独提取数量级
 
+    def test_no_newline_cross(self):
+        # 断言不跨换行提取
+        cands = extract_fact_candidates("新用户领 5000\n积分。")
+        assert all(c["fact"] != "5000积分" for c in cands)
+
     def test_fullwidth_space_normalized(self):
         # 全角空格归一化：5　000 积分 与 5000积分 同断言
         cands = extract_fact_candidates("新用户领 5　000 积分。")  # 全角空格
@@ -540,6 +545,33 @@ class TestVerifyFact:
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
         r = verify_fact("workbuddy", "5000积分")
         assert r["status"] == "conflict"
+
+    def test_yi_cheng_qing_wei_yaoyan_reject(self, monkeypatch):
+        # 「已澄清为谣言」= 澄清结果是否定 → conflict
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "5000 积分活动已澄清为谣言"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "conflict"
+
+    def test_wu_menkan_support(self, monkeypatch):
+        # 「无门槛领」是支持句：权威源应 confirmed（不再整句中性别名降级）
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "无门槛领 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "confirmed"
+
+    def test_not_all_users_not_conflict(self, monkeypatch):
+        # 「不是所有用户都能领」是限定表述，不判 conflict
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "不是所有用户都能领 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "conflict"
 
     def test_bu_shushi_reject(self, monkeypatch):
         # 「不属实」是明确否定（否定前缀 + 支持词）

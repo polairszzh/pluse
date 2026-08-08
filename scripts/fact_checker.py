@@ -56,8 +56,7 @@ NEUTRAL_ALWAYS_RE = re.compile(
     r"尚未(?:公布|发布|披露)|并非没有|不是没有|有没有|是否存在|是否有|"
     r"并未否认|没有否认|不是不|并非不|"
     r"无法核实|无法确认|无可奉告|"
-    r"无(?:门槛|需|限|限制|上限)|没有(?:门槛|限制|上限)|无限|不是(?:新用户|会员|所有人)|"
-    r"无论|无惧|无忧|无关|无疑|无妨|"
+    r"不是(?:新用户|会员|所有人|所有用户)|并非所有|"
     r"未(?:经)?证实|未确认|尚未证实|"
     r"未被证实|无法证实|"
     r"网传|传闻|传称|据悉|有消息称)"
@@ -79,8 +78,8 @@ NO_SUBJECT_EXPERIENCE_RE = re.compile(
 )
 
 UNIT_FACT_RE = re.compile(
-    r"(\d+(?:[,\s]\d{3})*(?:\.\d+)?\s*(?:多\s*)?"
-    r"(?:万|亿)?\s*(?:积分|元|分钟|小时|天|秒|GB|MB|%|万|亿|字|行|人|用户|粉丝))"
+    r"(\d+(?:[, \t\u3000\xa0]\d{3})*(?:\.\d+)?[ \t\u3000\xa0]*(?:多[ \t\u3000\xa0]*)?"
+    r"(?:万|亿)?[ \t\u3000\xa0]*(?:积分|元|分钟|小时|天|秒|GB|MB|%|万|亿|字|行|人|用户|粉丝))"
 )
 VERSION_RE = re.compile(
     r"(?:版本|发布|更新|升级|v\.?|ver\.?|Version|version)\s*(\d+\.\d+(?:\.\d+)?)"
@@ -239,7 +238,7 @@ def _classify_snippet(snippet: str, fact_norm: str) -> str:
                 # 「不属实/非属实」= 明确否定
                 if has_digit:
                     has_reject = True
-            elif WEAK_REJECT_RE.search(sent) and re.search(r"(证实|确认)", sent):
+            elif WEAK_REJECT_RE.search(sent) and re.search(r"(证实|确认|澄清(?:为|是))", sent):
                 # 「已被证实/确认为谣言/假消息」= 证实否定 → 归弱否定
                 if has_digit:
                     weak_reject = True
