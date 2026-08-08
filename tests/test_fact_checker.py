@@ -489,6 +489,42 @@ class TestVerifyFact:
         r = verify_fact("workbuddy", "5000积分")
         assert r["status"] != "conflict"
 
+    def test_bu_fouren_not_conflict(self, monkeypatch):
+        # 「不否认」= 默认承认，不判 conflict
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "官方不否认 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "conflict"
+
+    def test_wei_fouren_not_conflict(self, monkeypatch):
+        # 「未否认」= 默认承认，不判 conflict
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "官方未否认 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "conflict"
+
+    def test_wei_gongbu_not_confirmed(self, monkeypatch):
+        # 「未公布」是中性（未公开 ≠ 属实），不判 confirmed
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "官方未公布 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "confirmed"
+
+    def test_xujia_xinxi_reject(self, monkeypatch):
+        # 「虚假信息」是明确否定
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "5000 积分是虚假信息"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "conflict"
+
     def test_parse_error_degrades_to_empty(self, monkeypatch):
         # _parse_bing 解析异常不应吞掉整个搜索 → 按无结果处理（unverified）
         html = bing_html([("官方", "https://baike.baidu.com/item/x", "新用户领 5000 积分")])
