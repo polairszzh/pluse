@@ -70,6 +70,13 @@ class TestExtract:
         cands = extract_fact_candidates("新用户领 5　000 积分。")  # 全角空格
         assert any(c["fact"] == "5000积分" for c in cands)
 
+    def test_thousands_clause_first_person(self):
+        # 千分位逗号不当作子句分隔：公开断言（新用户领 5,000 积分）不被第一人称子句误伤
+        cands = extract_fact_candidates("我上周处理了 5,000 行，新用户领 5,000 积分。")
+        facts = {c["fact"] for c in cands}
+        assert "5000积分" in facts  # 公开断言仍验证
+        assert "5000行" not in facts  # 第一手经验跳过
+
     def test_keeps_higher_risk_context(self):
         # 同一断言首次低危句、后高危句（医疗）时，保留高危上下文
         cands = extract_fact_candidates("售价 5000 积分。该偏方 5000 积分可治愈。")
@@ -137,6 +144,7 @@ class TestRisk:
         # 无版本上下文的任意小数不标软件版本
         assert risk_flag("成本 3.5 元") is None
         assert risk_flag("售价 3.5 元") == "价格/政策"
+        assert risk_flag("Version 2.3.1 released") == "软件版本"
 
     def test_price_policy_medium(self):
         assert risk_flag("每天签到 100 积分") == "价格/政策"
@@ -393,6 +401,15 @@ class TestVerifyFact:
         # 「此前有谣言称 X，现已证实」：支持词跨子句回看，覆盖弱否定
         html = bing_html([
             ("官方说明", "https://baike.baidu.com/item/x", "此前有谣言称 5000 积分，现已证实"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "confirmed"
+
+    def test_thousands_matches_in_search(self, monkeypatch):
+        # 搜索结果「5,000积分」与草稿断言「5000积分」匹配（千分位归一）
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "新用户领 5,000 积分"),
         ])
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
         r = verify_fact("workbuddy", "5000积分")

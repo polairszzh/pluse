@@ -83,7 +83,7 @@ HIGH_RISK_PATTERNS = {
 # 中危风险领域：信息经常变动（价格政策、软件版本），无法核实标 medium 提示即可
 MEDIUM_RISK_PATTERNS = {
     "价格/政策": r"(价格|售价|定价|费用|收费|资费|报价|优惠|积分|政策|计费)",
-    "软件版本": r"(?:版本|发布|更新|升级|v\.?|ver\.?)\s*\d+\.\d+(?:\.\d+)?",
+    "软件版本": r"(?:版本|发布|更新|升级|v\.?|ver\.?|Version)\s*\d+\.\d+(?:\.\d+)?",
 }
 
 
@@ -117,8 +117,9 @@ def extract_fact_candidates(text: str) -> list[dict]:
         sentence = _sentence_around(text, start, end)
         # 只检查断言数字所在子句（按逗号切分）是否为第一手经验：
         # 「我上周处理了 3000 行，新用户领 5000 积分」只跳过 3000行，5000积分 仍验证
+        # 子句定位：ASCII 逗号仅作千分位时不切（5,000 行），比较时去逗号归一
         clause = next(
-            (c for c in re.split(r"[，,]", sentence) if fact in re.sub(r"\s+", "", c)),
+            (c for c in re.split(r"[，]|,(?!\d)", sentence) if fact in re.sub(r"[\s,]", "", c)),
             sentence,
         )
         if FIRST_PERSON_RE.search(clause) or NO_SUBJECT_EXPERIENCE_RE.search(clause.strip()):
@@ -179,6 +180,8 @@ def risk_severity(risk: str | None) -> str:
 
 def _fact_present(fact_norm: str, blob_norm: str) -> bool:
     """断言数字是否重现于文本：要求数字前后均无数字边界（15000 不证实 5000、2.3.10 不证实 2.3.1）"""
+    fact_norm = fact_norm.replace(",", "")
+    blob_norm = blob_norm.replace(",", "")
     idx = blob_norm.find(fact_norm)
     while idx != -1:
         prev = blob_norm[idx - 1] if idx > 0 else ""
@@ -201,7 +204,7 @@ def _classify_snippet(snippet: str, fact_norm: str) -> str:
     has_reject = False
     has_support = False
     weak_reject = False
-    for sent in re.split(r"[。；！？\n，,]", snippet or ""):
+    for sent in re.split(r"[。；！？\n，]|,(?!\d)", snippet or ""):
         if _is_neutral(sent, fact_norm):
             continue  # 中性/肯定语境句跳过
         sent_norm = re.sub(r"\s+", "", sent)
