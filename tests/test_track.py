@@ -504,6 +504,7 @@ class TestDB:
         assert item["cited_change"] == "added"
         assert item["sentiment_flip"] == "neutral→positive"
         assert item["mine_change"] == "gained"
+        assert delta["has_history"] is True
 
     def test_build_delta_single_run_no_history(self, tmp_path):
         db = tmp_path / "monitor.db"
@@ -534,6 +535,8 @@ class TestDB:
         assert item["status"] == "error"
         assert "无有效数据" in item["note"]
         assert "cited_change" not in item
+        # note 条目不算真实对比，has_history 不得为 True
+        assert delta["has_history"] is False
 
     def test_build_delta_accepts_prebuilt_trend(self, tmp_path):
         # 复用 main 已构建的 trend，避免 build_delta 内部重复读库
@@ -959,6 +962,33 @@ class TestCLI:
         assert code == 0
         captured = capsys.readouterr().out
         assert "我的内容 —" in captured
+
+    def test_main_prints_delta_mine_only_change(self, tmp_path, monkeypatch, capsys):
+        # 仅「我的内容」变化（cited/flip 均无变化）时，控制台仍应打印对比条目
+        calls = {"n": 0}
+
+        def fake_probe(query, mine_ids=None):
+            calls["n"] += 1
+            return ProbeResult(
+                query, "deepseek", "ok", None, None, "ctx", "api",
+                degraded=False,
+                mine_cited=calls["n"] > 1,
+                mine_ids=mine_ids or [],
+            )
+
+        monkeypatch.setitem(search_ai.PLATFORMS["deepseek"], "probe", fake_probe)
+        db = tmp_path / "monitor.db"
+        out = tmp_path / "snap"
+        assert main([
+            "--query", "codex", "--platforms", "deepseek",
+            "--mine", "https://a.com/1", "--db", str(db), "--output", str(out),
+        ]) == 0
+        assert main([
+            "--query", "codex", "--platforms", "deepseek",
+            "--mine", "https://a.com/1", "--db", str(db), "--output", str(out),
+        ]) == 0
+        captured = capsys.readouterr().out
+        assert "我的内容新增被引用" in captured
 
     def test_invalid_platform_rejected(self, tmp_path):
         with pytest.raises(SystemExit) as exc:

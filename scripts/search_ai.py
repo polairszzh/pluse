@@ -690,7 +690,14 @@ def build_delta(query: str, db_path: Path = DEFAULT_DB, trend: dict | None = Non
             elif not last["mine_cited"] and prev["mine_cited"]:
                 item["mine_change"] = "lost"
         platforms[platform] = item
-    return {"query": query, "platforms": platforms, "has_history": bool(platforms)}
+    # has_history 仅表示存在真实对比（引用/情感/我的内容任一变化或一致判定），
+    # 不含「本次无有效数据」的 note 条目，避免 JSON 消费方误读
+    compared = [
+        item
+        for item in platforms.values()
+        if any(k in item for k in ("cited_change", "sentiment_flip", "mine_change"))
+    ]
+    return {"query": query, "platforms": platforms, "has_history": bool(compared)}
 
 
 # --------------------------------------------------------------------------
@@ -1083,7 +1090,7 @@ def main(argv: list[str] | None = None) -> int:
             flip = item.get("sentiment_flip")
             mine = {"gained": " · 我的内容新增被引用", "lost": " · 我的内容丢失被引用"}.get(item.get("mine_change"), "")
             parts = [p for p in (cited, flip) if p]
-            if parts:
+            if parts or mine:
                 print(f"  与上次对比 · {label}：{'、'.join(parts)}{mine}")
     print(f"行动建议：{len(recs)} 条（P0={sum(1 for r in recs if r.priority == 'P0')}）")
     for p in paths:
