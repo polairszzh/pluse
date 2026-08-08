@@ -455,6 +455,51 @@ class TestVerifyFact:
         r = verify_fact("workbuddy", "5000积分")
         assert r["status"] != "conflict"
 
+    def test_wu_menkan_not_conflict(self, monkeypatch):
+        # 「无门槛领 5000 积分」是正常表述（门槛为零），不判 conflict
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "无门槛领 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "conflict"
+
+    def test_wuxian_not_conflict(self, monkeypatch):
+        # 「无限领 5000 积分」是正常表述
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "用户无限领 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "conflict"
+
+    def test_bu_shi_xinyonghu_not_conflict(self, monkeypatch):
+        # 「不是新用户也能领」是肯定（非新用户也可领）
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "不是新用户也能领 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "conflict"
+
+    def test_wei_zhengshi_not_confirmed(self, monkeypatch):
+        # 「官方未证实」是中性（未证实 ≠ 属实），不判 confirmed
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "官方未证实 5000 积分消息"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "confirmed"
+
+    def test_wangchuan_not_confirmed(self, monkeypatch):
+        # 「网传」是未证实传闻，不判 confirmed
+        html = bing_html([
+            ("来源", "https://baike.baidu.com/item/x", "网传 5000 积分活动"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "confirmed"
+
     def test_support_requires_digit(self, monkeypatch):
         # 权威页仅「已澄清/属实」而无断言数字，不判 confirmed
         html = bing_html([
