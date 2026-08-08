@@ -538,6 +538,23 @@ class TestDB:
         # note 条目不算真实对比，has_history 不得为 True
         assert delta["has_history"] is False
 
+    def test_build_delta_skips_shell_entries_without_comparison(self, tmp_path):
+        # 两个有效快照均无可对比数据时，不写入空壳条目
+        db = tmp_path / "monitor.db"
+        r1 = ProbeResult(
+            "品牌A", "deepseek", "ok", None, None, "c", "api",
+            degraded=False,
+        )
+        r2 = ProbeResult(
+            "品牌A", "deepseek", "ok", None, None, "c", "api",
+            degraded=False,
+        )
+        store_results([r1], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        store_results([r2], db_path=db, run_at="2026-08-02T10:00:00+08:00")
+        delta = build_delta("品牌A", db_path=db)
+        assert delta["platforms"] == {}
+        assert delta["has_history"] is False
+
     def test_build_delta_accepts_prebuilt_trend(self, tmp_path):
         # 复用 main 已构建的 trend，避免 build_delta 内部重复读库
         db = tmp_path / "monitor.db"
@@ -819,6 +836,16 @@ class TestReport:
         }
         md = render_markdown("品牌A", [], {"series": {}, "changes": []}, [], delta)
         assert "本次探测无有效数据，未参与与上次对比" in md
+
+    def test_render_markdown_delta_skips_shell_rows(self):
+        # 外部传入仅含 run_at 的空壳条目时，不渲染全「—」的对比表格
+        delta = {
+            "platforms": {
+                "deepseek": {"run_at": "t", "previous_run_at": "t0"},
+            }
+        }
+        md = render_markdown("品牌A", [], {"series": {}, "changes": []}, [], delta)
+        assert "与上次对比" not in md
 
     def test_render_markdown_filters_changes_by_requested_platforms(self):
         results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]

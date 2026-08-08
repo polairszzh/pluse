@@ -689,7 +689,10 @@ def build_delta(query: str, db_path: Path = DEFAULT_DB, trend: dict | None = Non
                 item["mine_change"] = "gained"
             elif not last["mine_cited"] and prev["mine_cited"]:
                 item["mine_change"] = "lost"
-        platforms[platform] = item
+        # 两个有效快照均无可对比数据（cited/sentiment/mine 全缺）时不写入空壳条目，
+        # 避免 has_history=False 时渲染出全「—」的对比行
+        if any(k in item for k in ("cited_change", "sentiment_flip", "mine_change")):
+            platforms[platform] = item
     # has_history 仅表示存在真实对比（引用/情感/我的内容任一变化或一致判定），
     # 不含「本次无有效数据」的 note 条目，避免 JSON 消费方误读
     compared = [
@@ -857,22 +860,30 @@ def render_markdown(
     lines.append("")
     delta = delta or {"platforms": {}}
     if delta.get("platforms"):
-        lines.append("## 与上次对比")
-        lines.append("")
-        lines.append("| 平台 | 引用变化 | 情感变化 | 我的内容 |")
-        lines.append("|---|---|---|---|")
-        cited_label = {"added": "新增被提及", "lost": "丢失被提及", "same": "—"}
-        mine_label = {"gained": "新增被引用", "lost": "丢失被引用"}
-        for platform, item in delta["platforms"].items():
-            label = PLATFORMS.get(platform, {}).get("label", platform)
-            if item.get("note"):
-                lines.append(f"| {label} | {item['note']} | — | — |")
-                continue
-            cited = cited_label.get(item.get("cited_change"), "—")
-            flip = item.get("sentiment_flip", "—")
-            mine = mine_label.get(item.get("mine_change"), "—")
-            lines.append(f"| {label} | {cited} | {flip} | {mine} |")
-        lines.append("")
+        # 仅渲染有 note 或任一对比键的行，避免外部传入空壳条目时出现全「—」行
+        rows = [
+            (platform, item)
+            for platform, item in delta["platforms"].items()
+            if item.get("note")
+            or any(k in item for k in ("cited_change", "sentiment_flip", "mine_change"))
+        ]
+        if rows:
+            lines.append("## 与上次对比")
+            lines.append("")
+            lines.append("| 平台 | 引用变化 | 情感变化 | 我的内容 |")
+            lines.append("|---|---|---|---|")
+            cited_label = {"added": "新增被提及", "lost": "丢失被提及", "same": "—"}
+            mine_label = {"gained": "新增被引用", "lost": "丢失被引用"}
+            for platform, item in rows:
+                label = PLATFORMS.get(platform, {}).get("label", platform)
+                if item.get("note"):
+                    lines.append(f"| {label} | {item['note']} | — | — |")
+                    continue
+                cited = cited_label.get(item.get("cited_change"), "—")
+                flip = item.get("sentiment_flip", "—")
+                mine = mine_label.get(item.get("mine_change"), "—")
+                lines.append(f"| {label} | {cited} | {flip} | {mine} |")
+            lines.append("")
 
     lines.append("## 趋势对比")
     lines.append("")
