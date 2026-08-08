@@ -209,6 +209,7 @@ class TestRisk:
         assert _host_authority("tieba.baidu.com") == 1
         assert _host_authority("baijiahao.baidu.com") == 1  # 百家号 UGC
         assert _host_authority("mp.weixin.qq.com") == 1  # 公众号 UGC
+        assert _host_authority("www.baidu.com") == 1  # 搜索页不作为权威来源
         # 维基语言子域权威
         assert _host_authority("en.wikipedia.org") == 2
         assert _host_authority("ja.wikipedia.org") == 2
@@ -691,6 +692,15 @@ class TestVerifyFact:
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
         r = verify_fact("workbuddy", "5000积分")
         assert r["status"] != "conflict"
+
+    def test_yi_cheng_qing_x_shi_yaoyan_reject(self, monkeypatch):
+        # 「已澄清，X 是谣言」：弱否定优先于已澄清的跨子句支持 → conflict
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "官方已澄清，5000积分是谣言"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "conflict"
 
     def test_parse_error_degrades_to_empty(self, monkeypatch):
         # _parse_bing 解析异常不应吞掉整个搜索 → 按无结果处理（unverified）

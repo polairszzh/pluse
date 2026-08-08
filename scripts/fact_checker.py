@@ -27,8 +27,9 @@ AUTHORITY_HOSTS = {
     # 主流媒体
     "xinhuanet.com", "people.com.cn", "cctv.com", "gmw.cn", "cnr.cn",
     "chinanews.com.cn", "chinadaily.com.cn", "thepaper.cn",
-    # 著名公司官方门户（品牌/产品验证场景；UGC 平台不在此列——用户内容不能确认断言）
-    "codebuddy.cn", "tencent.com", "baidu.com", "alibaba.com", "bytedance.com",
+    # 著名公司官方门户（品牌/产品验证场景；UGC 平台不在此列——用户内容不能确认断言；
+    # baidu.com 为搜索页聚合内容，不作为权威来源）
+    "codebuddy.cn", "tencent.com", "alibaba.com", "bytedance.com",
 }
 # 主域子域匹配时排除的 UGC 服务子域（百度知道/贴吧/文库、QQ 空间等）
 UGC_HOST_SUFFIXES = (
@@ -42,7 +43,7 @@ _SEVERITY_ORDER = {"high": 2, "medium": 1, "low": 0}
 REJECT_SIGNAL_RE = re.compile(
     r"(不存在|并未|没有|未提供|不提供|未推出|否认|未发放|不发放|未给|"
     r"不含|不包含|未包含|不包括|取消|停止|下线|撤销|终止|停发|不送|不发|叫停|下架|"
-    r"假的|虚假|错误信息|不实|并非|不是)"
+    r"假的|虚假|不属实|非属实|错误信息|不实|并非|不是)"
 )
 # 单字「无」：仅与断言数字相邻（允许「任何」在中间）时是否定（「无条件/无风险领取」不命中）
 NO_ADJACENT_RE = re.compile(r"无\s*(?:任何\s*)?\d")
@@ -69,9 +70,10 @@ NEUTRAL_ALWAYS_RE = re.compile(
       r"未找到|未查到|未发现|"
       r"网传|传闻|传称|据悉|有消息称|有谣言称|谣言称|据传)"
 )
-# 支持信号：明确的肯定词——句含断言数字时视为支持。
-# 「已辟谣」是否定信号（在 REJECT_SIGNAL_RE）；「已澄清」REJECT 优先保护（已澄清：X 不存在 → conflict）
-SUPPORT_SIGNAL_RE = re.compile(r"(属实|确认|证实|已澄清)")
+# 明确肯定词：可跨子句回看（「有谣言称 X，现已证实」）
+STRONG_SUPPORT_RE = re.compile(r"(属实|确认|证实)")
+# 澄清类支持词：仅同句支持（「谣言已澄清」），不跨子句（避免「已澄清，X 是谣言」误判）
+CLEAR_SUPPORT_RE = re.compile(r"已澄清")
 # 「没有 X」类固定短语：后跟数字断言时豁免解除（「没有相关 5000 积分活动」是明确否定）
 NEUTRAL_NO_X_RE = re.compile(r"没有(?:问题|相关|记录|信息)")
 
@@ -251,22 +253,25 @@ def _classify_snippet(snippet: str, fact_norm: str) -> str:
             snippet_has_digit = True
         if (REJECT_SIGNAL_RE.search(sent) or NO_ADJACENT_RE.search(sent)) and has_digit:
             has_reject = True  # 明确否定词优先
-        elif SUPPORT_SIGNAL_RE.search(sent):
-            if re.search(r"(不属实|非属实)", sent):
-                # 「不属实/非属实」= 明确否定
+        elif STRONG_SUPPORT_RE.search(sent):
+            if WEAK_REJECT_RE.search(sent) and re.search(r"(证实|确认)\s*(?:为|是)?\s*(?:谣言|假消息)", sent):
                 if has_digit:
-                    has_reject = True
-            elif WEAK_REJECT_RE.search(sent) and re.search(
-                r"(证实|确认|澄清(?:为|是|[:：])|澄清.*?(?:是|为).*?(?:谣言|假消息))",
+                    weak_reject = True  # 证实/确认为谣言 → 否定
+            else:
+                support_seen = True  # 明确肯定词（属实/确认/证实）可跨子句回看
+        elif WEAK_REJECT_RE.search(sent) and has_digit:
+            if re.search(
+                r"(证实|确认|澄清(?:为|是|[:：])|澄清.{0,8}?(?:是|为).{0,4}?(?:谣言|假消息)|"
+                r"(?:是|为)\s*(?:谣言|假消息))",
                 sent,
             ):
-                # 「已被证实/确认为谣言/假消息」= 证实否定 → 归弱否定
-                if has_digit:
-                    weak_reject = True
+                weak_reject = True  # X 是/为/证实/澄清为谣言 → 否定
+            elif CLEAR_SUPPORT_RE.search(sent):
+                has_support = True  # 「谣言已澄清」→ 澄清对象为支持
             else:
-                support_seen = True  # 支持词跨子句回看（「现已证实」），须 snippet 内出现过断言数字
-        elif WEAK_REJECT_RE.search(sent) and has_digit:
-            weak_reject = True  # 弱否定（谣言/辟谣）：无支持词时才判否定
+                weak_reject = True  # 孤立「谣言/辟谣」提及 → 保守否定
+        elif CLEAR_SUPPORT_RE.search(sent) and has_digit:
+            has_support = True  # 「已澄清 X」同句支持（澄清对象），不跨子句
         elif has_digit:
             has_support = True
     if support_seen and snippet_has_digit:
