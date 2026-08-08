@@ -60,15 +60,21 @@ NEUTRAL_ALWAYS_RE = re.compile(
     r"没有证实|没有确认|"
     r"没有(?:取消|撤销|终止|删除|下线|停用|停止)|"
     r"不是(?:新用户|会员|所有人|所有用户)|并非所有|"
-      r"未(?:经)?证实|未确认|尚未证实|"
-      r"未被证实|无法证实|"
-      r"网传|传闻|传称|据悉|有消息称|有谣言称|谣言称|据传)"
+    r"未(?:经)?证实|未确认|尚未证实|"
+    r"未被证实|无法证实|"
+    r"没有(?:找到|查到|发现|证据)|"
+    r"网传|传闻|传称|据悉|有消息称|有谣言称|谣言称|据传)"
 )
 # 支持信号：明确的肯定词——句含断言数字时视为支持。
 # 「已辟谣」是否定信号（在 REJECT_SIGNAL_RE）；「已澄清」REJECT 优先保护（已澄清：X 不存在 → conflict）
 SUPPORT_SIGNAL_RE = re.compile(r"(属实|确认|证实|已澄清)")
 # 「没有 X」类固定短语：后跟数字断言时豁免解除（「没有相关 5000 积分活动」是明确否定）
-NEUTRAL_NO_X_RE = re.compile(r"没有(?:问题|证据|找到|查到|相关|记录|信息|发现)")
+NEUTRAL_NO_X_RE = re.compile(r"没有(?:问题|相关|记录|信息)")
+
+# 未确认类中性句：句内数字不参与跨子句支持回看（「尚未公布 5000 积分」≠ 断言重现）
+NEUTRAL_UNCONFIRMED_RE = re.compile(
+    r"(尚未|未)(?:公布|公开|披露|发布|证实|确认|核实)|无法(?:核实|证实|确认)"
+)
 # 第一手经验信号：个人体验类表述（官方「我们提供」不算个人经验）
 FIRST_PERSON_RE = re.compile(
     r"(我(?:上(?:周|个?月|个?星期|个?季度|个?年)|前(?:天|几天|阵子)|最近|刚刚|刚才|昨日|"
@@ -230,8 +236,9 @@ def _classify_snippet(snippet: str, fact_norm: str) -> str:
     support_seen = False
     for sent in re.split(r"[。；！？\n，]|,(?!\d)", snippet or ""):
         if _is_neutral(sent, fact_norm):
-            # 中性句不参与判定，但断言数字重现仍计入（供跨子句支持回看）
-            if _fact_present(fact_norm, re.sub(r"\s+", "", sent)):
+            # 中性句不参与判定；传闻/疑似类中性句的数字可参与跨子句支持回看，
+            # 未确认类（尚未公布/未证实等）的数字不算断言重现
+            if _fact_present(fact_norm, re.sub(r"\s+", "", sent)) and not NEUTRAL_UNCONFIRMED_RE.search(sent):
                 snippet_has_digit = True
             continue
         sent_norm = re.sub(r"\s+", "", sent)
