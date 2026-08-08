@@ -27,6 +27,7 @@ from pathlib import Path
 
 import requests
 import search_ai
+from fact_checker import risk_severity, verify_facts
 from scorer import audit_article, grade
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -1195,6 +1196,41 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 3
+
+        # 置信度防火墙：对草稿中的公开声明型数字断言做多源交叉验证（尽力而为，失败降级不阻断）
+        try:
+            scan_text = _text_without_code(_strip_frontmatter(doc.raw))
+            fact_results = verify_facts(scan_text, query)
+        except Exception:  # noqa: BLE001 — 防火墙尽力而为：任何异常都降级，不阻断生成
+            fact_results = []
+        conflicts = [r for r in fact_results if r["status"] == "conflict"]
+        if conflicts:
+            print("拒绝生成：检测到数据断言与检索结果冲突，Pulse 不帮无法核实的数据做适配。", file=sys.stderr)
+            for r in conflicts:
+                snippet = "；".join(r["reject_snippets"][:2])
+                print(
+                    f"  [拒绝] 断言「{r['fact']}」（{r['context'][:30]}…）与来源矛盾：{snippet}",
+                    file=sys.stderr,
+                )
+            print("请核实数据来源或移除该断言后重试。", file=sys.stderr)
+            return 3
+        for r in fact_results:
+            if r["status"] in ("unverified", "untrusted"):
+                risk_note = f"（{r['risk']}领域）" if r["risk"] else ""
+                if r["status"] == "untrusted":
+                    detail = f"数据断言「{r['fact']}」仅检索到普通来源，可信度不足{risk_note}（普通网页可能为投毒/灌水来源）"
+                    suggestion = "发布前通过权威渠道核验，或移除该断言"
+                else:
+                    detail = f"数据断言「{r['fact']}」无法核实{risk_note}：{r.get('reason', '未检索到来源')}"
+                    suggestion = "发布前通过官方渠道核验，或在正文标注不确定性"
+                gaps.append({
+                    "type": "fact_unverified",
+                    "severity": risk_severity(r["risk"]),
+                    "detail": detail,
+                    "suggestion": suggestion,
+                })
+        severity_order = {"high": 0, "medium": 1, "low": 2}
+        gaps.sort(key=lambda g: severity_order.get(g["severity"], 9))
 
         out_dir.mkdir(parents=True, exist_ok=True)
 
