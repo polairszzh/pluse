@@ -490,12 +490,12 @@ class TestDB:
     def test_build_delta(self, tmp_path):
         db = tmp_path / "monitor.db"
         r1 = ProbeResult(
-            "品牌A", "deepseek", "ok", False, "neutral", "c", "api", False,
-            mine_cited=False, mine_ids=["https://a.com/1"],
+            "品牌A", "deepseek", "ok", False, "neutral", "c", "api",
+            degraded=False, mine_cited=False, mine_ids=["https://a.com/1"],
         )
         r2 = ProbeResult(
-            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
-            mine_cited=True, mine_ids=["https://a.com/1"],
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api",
+            degraded=False, mine_cited=True, mine_ids=["https://a.com/1"],
         )
         store_results([r1], db_path=db, run_at="2026-08-01T10:00:00+08:00")
         store_results([r2], db_path=db, run_at="2026-08-02T10:00:00+08:00")
@@ -507,11 +507,51 @@ class TestDB:
 
     def test_build_delta_single_run_no_history(self, tmp_path):
         db = tmp_path / "monitor.db"
-        r = ProbeResult("品牌A", "deepseek", "ok", False, "neutral", "c", "api", False)
+        r = ProbeResult(
+            "品牌A", "deepseek", "ok", False, "neutral", "c", "api",
+            degraded=False,
+        )
         store_results([r], db_path=db, run_at="2026-08-01T10:00:00+08:00")
         delta = build_delta("品牌A", db_path=db)
         assert delta["has_history"] is False
         assert delta["platforms"] == {}
+
+    def test_build_delta_marks_no_valid_data_for_latest_failure(self, tmp_path):
+        # 本次探测失败时，不得把历史两次有效快照的对比误报成「本次 vs 上次」
+        db = tmp_path / "monitor.db"
+        ok_run = ProbeResult(
+            "品牌A", "deepseek", "ok", False, "neutral", "c", "api",
+            degraded=False,
+        )
+        failed_run = ProbeResult(
+            "品牌A", "deepseek", "error", None, None, "网络异常", "api",
+            degraded=True, error="boom",
+        )
+        store_results([ok_run], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        store_results([failed_run], db_path=db, run_at="2026-08-02T10:00:00+08:00")
+        delta = build_delta("品牌A", db_path=db)
+        item = delta["platforms"]["deepseek"]
+        assert item["status"] == "error"
+        assert "无有效数据" in item["note"]
+        assert "cited_change" not in item
+
+    def test_build_delta_accepts_prebuilt_trend(self, tmp_path):
+        # 复用 main 已构建的 trend，避免 build_delta 内部重复读库
+        db = tmp_path / "monitor.db"
+        r1 = ProbeResult(
+            "品牌A", "deepseek", "ok", False, "neutral", "c", "api",
+            degraded=False,
+        )
+        r2 = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api",
+            degraded=False,
+        )
+        store_results([r1], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        store_results([r2], db_path=db, run_at="2026-08-02T10:00:00+08:00")
+        trend = build_trend("品牌A", db_path=db)
+        assert build_delta("品牌A", db_path=db, trend=trend) == build_delta(
+            "品牌A", db_path=db
+        )
 
     def test_default_run_at_has_microsecond_precision(self, tmp_path):
         db = tmp_path / "monitor.db"
@@ -763,6 +803,19 @@ class TestReport:
         lines = md.splitlines()
         idx = lines.index("## 与上次对比")
         assert idx > 0 and lines[idx - 1] == ""
+
+    def test_render_markdown_delta_shows_no_valid_data_note(self):
+        delta = {
+            "platforms": {
+                "deepseek": {
+                    "run_at": "t",
+                    "status": "error",
+                    "note": "本次探测无有效数据，未参与与上次对比",
+                },
+            }
+        }
+        md = render_markdown("品牌A", [], {"series": {}, "changes": []}, [], delta)
+        assert "本次探测无有效数据，未参与与上次对比" in md
 
     def test_render_markdown_filters_changes_by_requested_platforms(self):
         results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]

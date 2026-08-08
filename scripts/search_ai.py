@@ -652,11 +652,22 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
     }
 
 
-def build_delta(query: str, db_path: Path = DEFAULT_DB) -> dict:
+def build_delta(query: str, db_path: Path = DEFAULT_DB, trend: dict | None = None) -> dict:
     """本次与上次有效快照的对比基线：引用新增/丢失、情感反转、我的内容变化"""
-    trend = build_trend(query, db_path=db_path)
+    trend = trend or build_trend(query, db_path=db_path)
     platforms: dict[str, dict] = {}
     for platform, points in trend["series"].items():
+        if not points:
+            continue
+        latest = points[-1]
+        if latest["status"] != "ok":
+            # 本次探测无有效数据：不把历史两次快照的对比误报成「本次 vs 上次」
+            platforms[platform] = {
+                "run_at": latest["run_at"],
+                "status": latest["status"],
+                "note": "本次探测无有效数据，未参与与上次对比",
+            }
+            continue
         valid = [p for p in points if p["status"] == "ok"]
         if len(valid) < 2:
             continue
@@ -846,10 +857,13 @@ def render_markdown(
         cited_label = {"added": "新增被提及", "lost": "丢失被提及", "same": "—"}
         mine_label = {"gained": "新增被引用", "lost": "丢失被引用"}
         for platform, item in delta["platforms"].items():
+            label = PLATFORMS.get(platform, {}).get("label", platform)
+            if item.get("note"):
+                lines.append(f"| {label} | {item['note']} | — | — |")
+                continue
             cited = cited_label.get(item.get("cited_change"), "—")
             flip = item.get("sentiment_flip", "—")
             mine = mine_label.get(item.get("mine_change"), "—")
-            label = PLATFORMS.get(platform, {}).get("label", platform)
             lines.append(f"| {label} | {cited} | {flip} | {mine} |")
         lines.append("")
 
@@ -1029,7 +1043,7 @@ def main(argv: list[str] | None = None) -> int:
         results = [PLATFORMS[p]["probe"](args.query, mine_ids=mine_ids) for p in platforms]
         store_results(results, db_path=db_path)
         trend = build_trend(args.query, db_path=db_path)
-        delta = build_delta(args.query, db_path=db_path)
+        delta = build_delta(args.query, db_path=db_path, trend=trend)
         recs = build_recommendations(args.query, results)
         paths = save_report(args.query, results, trend, recs, out_dir, delta)
     except FileNotFoundError as exc:
@@ -1062,6 +1076,9 @@ def main(argv: list[str] | None = None) -> int:
         cited_label = {"added": "新增被提及", "lost": "丢失被提及", "same": "无变化"}
         for platform, item in delta["platforms"].items():
             label = PLATFORMS.get(platform, {}).get("label", platform)
+            if item.get("note"):
+                print(f"  {label}：{item['note']}")
+                continue
             cited = cited_label.get(item.get("cited_change"))
             flip = item.get("sentiment_flip")
             mine = {"gained": " · 我的内容新增被引用", "lost": " · 我的内容丢失被引用"}.get(item.get("mine_change"), "")
