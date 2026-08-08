@@ -32,14 +32,16 @@ AUTHORITY_HOSTS = {
 }
 # 主域子域匹配时排除的 UGC 服务子域（百度知道/贴吧/文库、QQ 空间等）
 UGC_HOST_SUFFIXES = (
-    "zhidao.baidu.com", "tieba.baidu.com", "wenku.baidu.com", "user.qzone.qq.com",
+    "zhidao.baidu.com", "tieba.baidu.com", "wenku.baidu.com", "baijiahao.baidu.com",
+    "jingyan.baidu.com", "user.qzone.qq.com", "mp.weixin.qq.com",
 )
 
 _SEVERITY_ORDER = {"high": 2, "medium": 1, "low": 0}
 
 # 明确否定词：作为 reject 的独立条件（含强否定；弱词见 WEAK_REJECT_RE）
 REJECT_SIGNAL_RE = re.compile(
-    r"(不存在|并未|没有|未提供|未推出|不含|不包含|未包含|不包括|假的|错误信息|不实|并非|不是)"
+    r"(不存在|并未|没有|未提供|不提供|未推出|未发放|不发放|未发布|未给|"
+    r"不含|不包含|未包含|不包括|无|假的|错误信息|不实|并非|不是)"
 )
 # 弱否定词：仅当无任何支持词时才算否定（「X 是谣言」= 否定；「此前有谣言称 X，现已证实」= 支持）
 WEAK_REJECT_RE = re.compile(r"(谣言|辟谣|假消息)")
@@ -204,19 +206,25 @@ def _classify_snippet(snippet: str, fact_norm: str) -> str:
     has_reject = False
     has_support = False
     weak_reject = False
+    snippet_has_digit = False
+    support_seen = False
     for sent in re.split(r"[。；！？\n，]|,(?!\d)", snippet or ""):
         if _is_neutral(sent, fact_norm):
             continue  # 中性/肯定语境句跳过
         sent_norm = re.sub(r"\s+", "", sent)
         has_digit = _fact_present(fact_norm, sent_norm)
+        if has_digit:
+            snippet_has_digit = True
         if REJECT_SIGNAL_RE.search(sent) and has_digit:
             has_reject = True  # 明确否定词优先
         elif SUPPORT_SIGNAL_RE.search(sent):
-            has_support = True  # 支持词跨子句回看（「现已证实」）
+            support_seen = True  # 支持词跨子句回看（「现已证实」），须 snippet 内出现过断言数字
         elif WEAK_REJECT_RE.search(sent) and has_digit:
             weak_reject = True  # 弱否定（谣言/辟谣）：无支持词时才判否定
         elif has_digit:
             has_support = True
+    if support_seen and snippet_has_digit:
+        has_support = True
     if weak_reject and not has_support:
         has_reject = True
     if has_reject:

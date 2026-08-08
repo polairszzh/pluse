@@ -175,6 +175,8 @@ class TestRisk:
         # UGC 服务子域不因主域匹配误判
         assert _host_authority("zhidao.baidu.com") == 1
         assert _host_authority("tieba.baidu.com") == 1
+        assert _host_authority("baijiahao.baidu.com") == 1  # 百家号 UGC
+        assert _host_authority("mp.weixin.qq.com") == 1  # 公众号 UGC
         # 维基语言子域权威
         assert _host_authority("en.wikipedia.org") == 2
         assert _host_authority("ja.wikipedia.org") == 2
@@ -396,6 +398,33 @@ class TestVerifyFact:
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
         r = verify_fact("workbuddy", "5000积分")
         assert r["status"] == "conflict"
+
+    def test_bu_tigong_reject(self, monkeypatch):
+        # 「不提供」是明确否定
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "官方不提供 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "conflict"
+
+    def test_wu_reject(self, monkeypatch):
+        # 「无」是明确否定
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "活动无 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "conflict"
+
+    def test_support_requires_digit(self, monkeypatch):
+        # 权威页仅「已澄清/属实」而无断言数字，不判 confirmed
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "官方已澄清，该说法属实"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "unverified"  # 无断言数字重现，不算支持
 
     def test_weak_reject_overridden_by_support(self, monkeypatch):
         # 「此前有谣言称 X，现已证实」：支持词跨子句回看，覆盖弱否定
