@@ -736,6 +736,34 @@ class TestReport:
         assert "新增被提及" in md
         assert "neutral→positive" in md
 
+    def test_render_markdown_table_rows_contiguous(self):
+        # 回归：表格行之间不得插入空行（否则破坏 Markdown 表格渲染）
+        results = [
+            ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False),
+            ProbeResult("品牌A", "kimi", "ok", False, None, "c2", "search_inference", True),
+        ]
+        md = render_markdown("品牌A", results, {"series": {}, "changes": []}, [])
+        lines = md.splitlines()
+        start = lines.index("## 本次快照")
+        end = lines.index("## 趋势对比")
+        for i in range(start, end):
+            if (
+                lines[i] == ""
+                and i > start
+                and lines[i - 1].startswith("|")
+                and i + 1 < end
+                and lines[i + 1].startswith("|")
+            ):
+                raise AssertionError("表格行之间出现空行")
+
+    def test_render_markdown_delta_preceded_by_blank_when_no_results(self):
+        # 回归：results 为空时，与上次对比章节前仍应有空行分隔
+        delta = {"platforms": {"deepseek": {"cited_change": "added"}}}
+        md = render_markdown("品牌A", [], {"series": {}, "changes": []}, [], delta)
+        lines = md.splitlines()
+        idx = lines.index("## 与上次对比")
+        assert idx > 0 and lines[idx - 1] == ""
+
     def test_render_markdown_filters_changes_by_requested_platforms(self):
         results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]
         trend = {

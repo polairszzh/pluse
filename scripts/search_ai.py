@@ -682,9 +682,9 @@ def build_delta(query: str, db_path: Path = DEFAULT_DB) -> dict:
     return {"query": query, "platforms": platforms, "has_history": bool(platforms)}
 
 
-  # --------------------------------------------------------------------------
-  # 行动建议（每条带 falsifiability check）
-  # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# 行动建议（每条带 falsifiability check）
+# --------------------------------------------------------------------------
 
 
 def build_recommendations(
@@ -835,8 +835,8 @@ def render_markdown(
             row += f"| {mine_txt} "
         row += f"| {sentiment} | {context} |"
         lines.append(row)
-        lines.append("")
 
+    lines.append("")
     delta = delta or {"platforms": {}}
     if delta.get("platforms"):
         lines.append("## 与上次对比")
