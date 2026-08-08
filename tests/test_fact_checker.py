@@ -484,6 +484,33 @@ class TestVerifyFact:
         r = verify_fact("workbuddy", "5000积分")
         assert r["status"] != "conflict"
 
+    def test_wu_tiaojian_not_conflict(self, monkeypatch):
+        # 「无条件领取」是肯定（无 与数字不相邻，不算否定）
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "无条件领取 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "conflict"
+
+    def test_wu_fengxian_not_conflict(self, monkeypatch):
+        # 「无风险领取」是肯定
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "无风险领取 5000 积分"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] != "conflict"
+
+    def test_zhengshi_rumor_reject(self, monkeypatch):
+        # 「已被证实为谣言」= 证实否定 → conflict
+        html = bing_html([
+            ("官方说明", "https://baike.baidu.com/item/x", "5000 积分已被证实为谣言"),
+        ])
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=html))
+        r = verify_fact("workbuddy", "5000积分")
+        assert r["status"] == "conflict"
+
     def test_wuxian_not_conflict(self, monkeypatch):
         # 「无限领 5000 积分」是正常表述
         html = bing_html([

@@ -41,8 +41,10 @@ _SEVERITY_ORDER = {"high": 2, "medium": 1, "low": 0}
 # 明确否定词：作为 reject 的独立条件（含强否定；弱词见 WEAK_REJECT_RE）
 REJECT_SIGNAL_RE = re.compile(
     r"(不存在|并未|没有|未提供|不提供|未推出|否认|未发放|不发放|未发布|未给|"
-    r"不含|不包含|未包含|不包括|无|假的|错误信息|不实|并非|不是)"
+    r"不含|不包含|未包含|不包括|假的|错误信息|不实|并非|不是)"
 )
+# 单字「无」：仅与断言数字相邻时是否定（「无条件/无风险领取」不命中）
+NO_ADJACENT_RE = re.compile(r"无\s*\d")
 # 弱否定词：仅当无任何支持词时才算否定（「X 是谣言」= 否定；「此前有谣言称 X，现已证实」= 支持）
 WEAK_REJECT_RE = re.compile(r"(谣言|辟谣|假消息)")
 # 肯定表述排除：并非/不是 + 否定词 = 肯定（「该活动并非谣言」不是否定信号）
@@ -227,10 +229,15 @@ def _classify_snippet(snippet: str, fact_norm: str) -> str:
         has_digit = _fact_present(fact_norm, sent_norm)
         if has_digit:
             snippet_has_digit = True
-        if REJECT_SIGNAL_RE.search(sent) and has_digit:
+        if (REJECT_SIGNAL_RE.search(sent) or NO_ADJACENT_RE.search(sent)) and has_digit:
             has_reject = True  # 明确否定词优先
         elif SUPPORT_SIGNAL_RE.search(sent):
-            support_seen = True  # 支持词跨子句回看（「现已证实」），须 snippet 内出现过断言数字
+            if WEAK_REJECT_RE.search(sent) and re.search(r"(证实|确认)", sent):
+                # 「已被证实/确认为谣言/假消息」= 证实否定 → 归弱否定
+                if has_digit:
+                    weak_reject = True
+            else:
+                support_seen = True  # 支持词跨子句回看（「现已证实」），须 snippet 内出现过断言数字
         elif WEAK_REJECT_RE.search(sent) and has_digit:
             weak_reject = True  # 弱否定（谣言/辟谣）：无支持词时才判否定
         elif has_digit:
