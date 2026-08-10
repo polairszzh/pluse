@@ -859,6 +859,10 @@ class TestB5IndexCheck:
             "site:zhuanlan.zhihu.com/p/123"
         )
         assert search_ai._site_query("https://a.com") == "site:a.com"
+        # 无协议输入：不得 host+path 重复
+        assert search_ai._site_query("zhuanlan.zhihu.com/p/123") == (
+            "site:zhuanlan.zhihu.com/p/123"
+        )
 
     def test_parse_baidu(self):
         items = search_ai._parse_baidu(BAIDU_HTML)
@@ -923,8 +927,8 @@ class TestB5IndexCheck:
         assert result["sources"]["bing"]["status"] == "not_indexed"
 
     def test_check_index_empty_results_page_is_not_indexed(self, monkeypatch):
-        # 有效结果页但无命中（体积正常、无结果块）→ 未收录，而非探测失败
-        html = "<html>" + "<div>填充内容</div>" * 400 + "</html>"
+        # 有效结果页但无命中（含无结果标记）→ 未收录，而非探测失败
+        html = "<html><body>抱歉，没有找到与 site: 相关的网页</body></html>"
 
         def fake_get(base, params=None, headers=None, timeout=None):
             return FakeResponse(text=html)

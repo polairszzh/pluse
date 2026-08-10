@@ -713,6 +713,10 @@ def _site_query(url: str) -> str:
         parts = urlsplit(url)
     except ValueError:
         return f"site:{url}"
+    if not parts.netloc:
+        # 无协议输入（如 zhuanlan.zhihu.com/p/123）：netloc 为空、path 为整串，
+        # 直接按原样构造，避免 host+path 重复
+        return f"site:{url}"
     host = parts.netloc or url
     path = parts.path or ""
     return f"site:{host}{path}"
@@ -738,12 +742,12 @@ _BLOCK_MARKERS = (
 def _classify_empty_page(html_text: str) -> str:
     """区分空解析结果页的语义：not_indexed（有效无结果）vs error（反爬/解析失败）
 
-    反爬/拦截标记优先判定（反爬页体积可能超过 2KB）；无结果标记或正常体积
-    （>=2KB）视为有效无结果页；其余按解析失败处理。
+    反爬/拦截标记 → 探测失败；明确的无结果标记 → 未收录；
+    无明确特征时不猜测（避免把大体积反爬页误判为未收录），一律按探测失败处理。
     """
     if any(m in html_text for m in _BLOCK_MARKERS):
         return "error"
-    if any(m in html_text for m in _NO_RESULT_MARKERS) or len(html_text) >= 2000:
+    if any(m in html_text for m in _NO_RESULT_MARKERS):
         return "not_indexed"
     return "error"
 
@@ -1874,7 +1878,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--samples",
         type=_positive_int,
-        default=None,
+        default=argparse.SUPPRESS,
         help="每平台采样次数（默认 5）：多次探测计算被提及概率与置信区间；1 为单次判定",
     )
     parser.add_argument(
@@ -1897,7 +1901,7 @@ def main(argv: list[str] | None = None) -> int:
                 ("--mine-owned", args.mine_owned),
                 ("--competitor", args.competitor),
                 ("--platforms", args.platforms),
-                ("--samples", args.samples),
+                ("--samples", getattr(args, "samples", None)),
                 ("--output", args.output),
                 ("--db", args.db),
             )
@@ -1946,7 +1950,7 @@ def main(argv: list[str] | None = None) -> int:
     mine_ids = list(dict.fromkeys(earned_ids + owned_ids))
     db_path = Path(args.db) if args.db else DEFAULT_DB
     out_dir = Path(args.output) if args.output else None
-    samples = args.samples or 5
+    samples = getattr(args, "samples", None) or 5
 
     try:
         raw_samples: list[ProbeResult] = []
