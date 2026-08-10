@@ -180,6 +180,23 @@ class TestB3Quality:
         assert any("版本 2.3.1" in r and "最新" in r for r in risks)
         assert any("5000积分" in r and "注册送" in r for r in risks)
 
+    def test_extract_fact_risks_version_with_colon(self):
+        # 版本与数字之间允许中英文冒号
+        risks = search_ai._extract_fact_risks("版本：2.3.1 和 version: 1.0.2")
+        assert any("版本 2.3.1" in r for r in risks)
+        assert any("版本 1.0.2" in r for r in risks)
+
+    def test_extract_fact_risks_compound_units(self):
+        # 复合数量单位不得被截断：1.8万亿 不能提取成 1.8万
+        risks = search_ai._extract_fact_risks(
+            "估值 1.8万亿，年营收 5000万元，补贴 3亿元"
+        )
+        assert any("1.8万亿" in r for r in risks)
+        assert any("5000万元" in r for r in risks)
+        assert any("3亿元" in r for r in risks)
+        # 不得出现被截断的「1.8万（…）」标签
+        assert not any(r.startswith("1.8万（") for r in risks)
+
     def test_probe_deepseek_cited_type_earned_and_owned(self, monkeypatch):
         monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
         answer = "可参考 https://zhuanlan.zhihu.com/p/123 的教程"

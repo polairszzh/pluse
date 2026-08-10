@@ -122,9 +122,12 @@ def _classify_cited_type(matched: list[str], owned_ids: list[str]) -> str | None
     return "owned"
 
 
-_FACT_VERSION_RE = re.compile(r"(?:版本|version)\s*(\d+(?:\.\d+)+)", re.IGNORECASE)
+_FACT_VERSION_RE = re.compile(
+    r"(?:版本|version)\s*[:：]?\s*(\d+(?:\.\d+)+)", re.IGNORECASE
+)
 _FACT_UNIT_RE = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(元|万|亿|积分|用户|粉丝|下载|安装|人|次|GB|MB|TB|%)"
+    r"(\d+(?:\.\d+)?)\s*"
+    r"(万亿元|亿元|万亿|万元|亿|万|元|积分|用户|粉丝|下载|安装|人|次|GB|MB|TB|%)"
 )
 
 
