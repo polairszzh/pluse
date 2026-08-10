@@ -168,6 +168,12 @@ class TestB3Quality:
         assert not any(r.startswith(("2026", "3 天")) for r in risks)
         assert any("版本 2.3.1" in r for r in risks)
 
+    def test_extract_fact_risks_skips_relative_time(self):
+        # 相对时间表达（X 小时前/X 分钟后）不作为未核实断言
+        answer = "该功能 3 小时前上线，5 分钟后可用，升级需 2 分钟"
+        risks = search_ai._extract_fact_risks(answer)
+        assert risks == []
+
     def test_extract_fact_risks_includes_context(self):
         answer = "WorkBuddy 最新版本 2.3.1，注册送 5000 积分。"
         risks = search_ai._extract_fact_risks(answer)
@@ -1132,6 +1138,16 @@ class TestReport:
         md = render_markdown("品牌A", results, {"series": {}, "changes": []}, [])
         assert "## 风险提示" not in md
 
+    def test_render_markdown_mine_unknown_type_not_marked_owned(self):
+        # mine_cited=True 但 cited_type 缺失（旧数据/手工构造）时不得误标「转载」
+        results = [ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=True, mine_ids=["https://a.com/1"],
+        )]
+        md = render_markdown("品牌A", results, {"series": {}, "changes": []}, [])
+        assert "是（未知）" in md
+        assert "（转载）" not in md
+
     def test_render_markdown_filters_changes_by_requested_platforms(self):
         results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]
         trend = {
@@ -1318,6 +1334,24 @@ class TestCLI:
         # 竞品夺走与引用变化应同条输出，不跳过 cited/flip 变化
         assert "竞品夺走" in captured
         assert "无变化" in captured
+
+    def test_main_prints_mine_unknown_type_when_cited_type_missing(self, tmp_path, monkeypatch, capsys):
+        # mine_cited=True 但 cited_type 缺失时显示「未知」，不得误标「转载」
+        def fake_probe(query, mine_ids=None, owned_ids=None, competitor_ids=None):
+            return ProbeResult(
+                query, "deepseek", "ok", True, "positive", "c", "api", False,
+                mine_cited=True, mine_ids=mine_ids or [],
+            )
+
+        monkeypatch.setitem(search_ai.PLATFORMS["deepseek"], "probe", fake_probe)
+        db = tmp_path / "monitor.db"
+        out = tmp_path / "snap"
+        assert main([
+            "--query", "codex", "--platforms", "deepseek",
+            "--mine", "https://a.com/1", "--db", str(db), "--output", str(out),
+        ]) == 0
+        captured = capsys.readouterr().out
+        assert "我的内容 是（未知）" in captured
 
     def test_main_prints_mine_for_no_key(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr("search_ai._load_key", lambda: None)

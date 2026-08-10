@@ -124,7 +124,7 @@ def _classify_cited_type(matched: list[str], owned_ids: list[str]) -> str | None
 
 _FACT_VERSION_RE = re.compile(r"(?:版本|version)\s*(\d+(?:\.\d+)+)", re.IGNORECASE)
 _FACT_UNIT_RE = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(元|万|亿|积分|用户|粉丝|下载|安装|人|次|小时|分钟|GB|MB|TB|%)"
+    r"(\d+(?:\.\d+)?)\s*(元|万|亿|积分|用户|粉丝|下载|安装|人|次|GB|MB|TB|%)"
 )
 
 
@@ -133,7 +133,7 @@ def _extract_fact_risks(answer: str, limit: int = 5) -> list[str]:
 
     只做「风险提示」不做事实判定：回答里出现这类断言即列入清单，
     报告标注「未经核实」并附断言上下文，由发布前人工核查。
-    年/月/天等日期单位不提取，避免把「2026 年」「3 天前」当风险噪音。
+    年/月/天/小时/分钟等时间单位不提取，避免把「2026 年」「3 天前」「5 分钟后」当风险噪音。
     """
     text = str(answer or "")
     risks: list[str] = []
@@ -1050,7 +1050,12 @@ def render_markdown(
         cited_txt = {True: "是", False: "否", None: "未知"}.get(r.cited, "未知")
         mine_txt = {True: "是", False: "否", None: "—"}.get(r.mine_cited, "—")
         if r.mine_cited is True:
-            mine_txt += "（原创）" if r.cited_type == "earned" else "（转载）"
+            if r.cited_type == "earned":
+                mine_txt += "（原创）"
+            elif r.cited_type == "owned":
+                mine_txt += "（转载）"
+            else:
+                mine_txt += "（未知）"
         sentiment = SENTIMENT_LABEL.get(r.sentiment or "", "—")
         conf = CONFIDENCE_LABEL.get(r.confidence or "", "—")
         if r.error:
@@ -1349,7 +1354,12 @@ def main(argv: list[str] | None = None) -> int:
         if r.mine_ids:
             mine_txt = {True: "是", False: "否", None: "—"}.get(r.mine_cited, "—")
             if r.mine_cited is True:
-                mine_txt += "（原创）" if r.cited_type == "earned" else "（转载）"
+                if r.cited_type == "earned":
+                    mine_txt += "（原创）"
+                elif r.cited_type == "owned":
+                    mine_txt += "（转载）"
+                else:
+                    mine_txt += "（未知）"
             mine = f" · 我的内容 {mine_txt}"
         if r.status == "ok":
             cited = "是" if r.cited else "否"
