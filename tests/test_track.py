@@ -151,15 +151,28 @@ class TestB3Quality:
     def test_extract_fact_risks(self):
         answer = "WorkBuddy 最新版本 2.3.1，注册送 5000 积分，已有 10000 用户使用。"
         risks = search_ai._extract_fact_risks(answer)
-        assert "版本 2.3.1" in risks
-        assert "5000积分" in risks
-        assert "10000用户" in risks
+        assert any("版本 2.3.1" in r for r in risks)
+        assert any("5000积分" in r for r in risks)
+        assert any("10000用户" in r for r in risks)
 
     def test_extract_fact_risks_dedupe_and_limit(self):
         answer = "版本 1.0 与版本 1.0 重复；另有 3 天、4 天、5 天、6 天、7 天、8 天"
         risks = search_ai._extract_fact_risks(answer, limit=5)
         assert len(risks) <= 5
-        assert risks.count("版本 1.0") == 1
+        assert sum(1 for r in risks if "版本 1.0" in r) == 1
+
+    def test_extract_fact_risks_skips_date_units(self):
+        # 年/月/天属于日期表述，不提取为风险噪音
+        answer = "该产品 2026 年发布，3 天前更新，当前版本 2.3.1"
+        risks = search_ai._extract_fact_risks(answer)
+        assert not any(r.startswith(("2026", "3 天")) for r in risks)
+        assert any("版本 2.3.1" in r for r in risks)
+
+    def test_extract_fact_risks_includes_context(self):
+        answer = "WorkBuddy 最新版本 2.3.1，注册送 5000 积分。"
+        risks = search_ai._extract_fact_risks(answer)
+        assert any("版本 2.3.1" in r and "最新" in r for r in risks)
+        assert any("5000积分" in r and "注册送" in r for r in risks)
 
     def test_probe_deepseek_cited_type_earned_and_owned(self, monkeypatch):
         monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
@@ -192,7 +205,7 @@ class TestB3Quality:
         )
         hit = probe_deepseek("WorkBuddy", competitor_ids=["https://comp.example.com"])
         assert hit.competitor_matched is True
-        assert "版本 2.3.1" in hit.fact_risks
+        assert any("版本 2.3.1" in r for r in hit.fact_risks)
         miss = probe_deepseek("WorkBuddy", competitor_ids=["https://nope.example/x"])
         assert miss.competitor_matched is False
         not_checked = probe_deepseek("WorkBuddy")
@@ -758,6 +771,26 @@ class TestDB:
         assert item["mine_change"] == "lost"
         assert delta["has_history"] is True
 
+    def test_build_delta_no_competitor_replaced_when_competitor_persists(self, tmp_path):
+        # 上一轮竞品已命中时不判「夺走」：竞品一直在场，本轮丢失引用不是被替换
+        db = tmp_path / "monitor.db"
+        prev = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=True, mine_ids=["https://a.com/1"],
+            competitor_matched=True,
+        )
+        last = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=False, mine_ids=["https://a.com/1"],
+            competitor_matched=True,
+        )
+        store_results([prev], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        store_results([last], db_path=db, run_at="2026-08-02T10:00:00+08:00")
+        delta = build_delta("品牌A", db_path=db)
+        item = delta["platforms"]["deepseek"]
+        assert item.get("competitor_replaced") is not True
+        assert item["mine_change"] == "lost"
+
     def test_default_run_at_has_microsecond_precision(self, tmp_path):
         db = tmp_path / "monitor.db"
         run_at = store_results(
@@ -1267,7 +1300,9 @@ class TestCLI:
             "--db", str(db), "--output", str(out),
         ]) == 0
         captured = capsys.readouterr().out
+        # 竞品夺走与引用变化应同条输出，不跳过 cited/flip 变化
         assert "竞品夺走" in captured
+        assert "无变化" in captured
 
     def test_main_prints_mine_for_no_key(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr("search_ai._load_key", lambda: None)

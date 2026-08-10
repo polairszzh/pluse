@@ -124,7 +124,7 @@ def _classify_cited_type(matched: list[str], owned_ids: list[str]) -> str | None
 
 _FACT_VERSION_RE = re.compile(r"(?:版本|version)\s*(\d+(?:\.\d+)+)", re.IGNORECASE)
 _FACT_UNIT_RE = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(元|万|亿|积分|用户|粉丝|下载|安装|人|次|年|月|天|小时|分钟|GB|MB|TB|%)"
+    r"(\d+(?:\.\d+)?)\s*(元|万|亿|积分|用户|粉丝|下载|安装|人|次|小时|分钟|GB|MB|TB|%)"
 )
 
 
@@ -132,14 +132,29 @@ def _extract_fact_risks(answer: str, limit: int = 5) -> list[str]:
     """从 AI 回答中提取未核实的数字断言（版本号、价格、数量等），供人工复核
 
     只做「风险提示」不做事实判定：回答里出现这类断言即列入清单，
-    报告标注「未经核实」，由发布前人工核查。
+    报告标注「未经核实」并附断言上下文，由发布前人工核查。
+    年/月/天等日期单位不提取，避免把「2026 年」「3 天前」当风险噪音。
     """
+    text = str(answer or "")
     risks: list[str] = []
-    for m in _FACT_VERSION_RE.finditer(str(answer or "")):
-        risks.append(f"版本 {m.group(1)}")
-    for m in _FACT_UNIT_RE.finditer(str(answer or "")):
-        risks.append(f"{m.group(1)}{m.group(2)}")
-    return list(dict.fromkeys(risks))[:limit]
+    seen: set[str] = set()
+    patterns = (
+        (_FACT_VERSION_RE, lambda m: f"版本 {m.group(1)}"),
+        (_FACT_UNIT_RE, lambda m: f"{m.group(1)}{m.group(2)}"),
+    )
+    for pattern, fmt in patterns:
+        for m in pattern.finditer(text):
+            label = fmt(m)
+            if label in seen:
+                continue
+            seen.add(label)
+            start = max(0, m.start() - 12)
+            end = min(len(text), m.end() + 12)
+            context = " ".join(text[start:end].split())
+            risks.append(f"{label}（…{context}…）")
+            if len(risks) >= limit:
+                return risks
+    return risks
 
 
 _URL_TOKEN_RE = re.compile(r"https?://[^\s<>\"'，。；：！？（）【】「」『』《》]+", re.IGNORECASE)
@@ -820,12 +835,15 @@ def build_delta(
             elif not last["mine_cited"] and prev["mine_cited"]:
                 item["mine_change"] = "lost"
         # lostprompt：上次被引用、本次未被引用但话题仍被提及、本次检出竞品内容出现
+        # 上一轮竞品已命中（competitor_matched=True）时不判「夺走」——竞品一直在场，
+        # 本轮丢失引用不是被替换；上一轮未查（None）按未命中处理，避免旧数据漏报
         if (
             last["mine_checked"] and prev["mine_checked"]
             and prev["mine_cited"] is True
             and last["mine_cited"] is False
             and last["cited"] is True
             and last["competitor_matched"] is True
+            and prev["competitor_matched"] is not True
         ):
             item["competitor_replaced"] = True
             item["competitor_replaced_at"] = last["run_at"]
@@ -1337,7 +1355,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"  {label}：{STATUS_LABEL.get(r.status, r.status)} · {_md_cell(r.context)}{mine}")
         if r.fact_risks:
-            print(f"  ⚠ {label} 回答出现未核实断言：{'、'.join(r.fact_risks)}（建议人工复核）")
+            print(f"  [未核实断言] {label} 回答出现：{'、'.join(r.fact_risks)}（建议人工复核）")
     print(f"趋势对比：{trend['total_runs']} 次快照 · {len(trend['changes'])} 处引用状态变化")
     if delta["platforms"]:
         cited_label = {"added": "新增被提及", "lost": "丢失被提及", "same": "无变化"}
@@ -1346,13 +1364,12 @@ def main(argv: list[str] | None = None) -> int:
             if item.get("note"):
                 print(f"  {label}：{item['note']}")
                 continue
-            if item.get("competitor_replaced"):
-                print(f"  ⚠ 竞品夺走 · {label}：上次被引用，本次被竞品替换（{item['competitor_replaced_at']}）")
-                continue
             cited = cited_label.get(item.get("cited_change"))
             flip = item.get("sentiment_flip")
             mine = {"gained": "我的内容新增被引用", "lost": "我的内容丢失被引用"}.get(item.get("mine_change"), "")
             parts = [p for p in (cited, flip) if p]
+            if item.get("competitor_replaced"):
+                parts.append(f"竞品夺走（{item['competitor_replaced_at']}）")
             if parts or mine:
                 body = "、".join(parts)
                 if mine:
