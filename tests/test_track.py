@@ -189,11 +189,13 @@ class TestB3Quality:
     def test_extract_fact_risks_compound_units(self):
         # 复合数量单位不得被截断：1.8万亿 不能提取成 1.8万
         risks = search_ai._extract_fact_risks(
-            "估值 1.8万亿，年营收 5000万元，补贴 3亿元"
+            "估值 1.8万亿，年营收 5000万元，补贴 3亿元，累计 1000万用户，接待 1.8万人次"
         )
         assert any("1.8万亿" in r for r in risks)
         assert any("5000万元" in r for r in risks)
         assert any("3亿元" in r for r in risks)
+        assert any("1000万用户" in r for r in risks)
+        assert any("1.8万人次" in r for r in risks)
         # 不得出现被截断的「1.8万（…）」标签
         assert not any(r.startswith("1.8万（") for r in risks)
 
@@ -624,7 +626,7 @@ class TestDB:
             "id", "query", "platform", "run_at", "status", "cited", "sentiment",
             "context", "source", "degraded", "error", "meta", "mine_cited",
             "mine_ids", "confidence", "cited_type", "owned_ids",
-            "competitor_matched", "fact_risks",
+            "competitor_matched", "competitor_ids", "fact_risks",
         ]
         assert not any(chr(39) in c for c in cols)
 
@@ -645,7 +647,8 @@ class TestDB:
             meta={"answer": "原始回答", "mine_checked": ["https://a.com/1"]},
             mine_cited=True, mine_ids=["https://a.com/1"],
             cited_type="owned", owned_ids=["https://a.com/1"],
-            competitor_matched=True, fact_risks=["版本 2.3.1"],
+            competitor_matched=True, competitor_ids=["https://comp.example.com"],
+            fact_risks=["版本 2.3.1"],
         )
         store_results([row], db_path=db, run_at="2026-08-06T10:00:00+08:00")
         saved = load_history("品牌A", db_path=db)[0]
@@ -654,6 +657,7 @@ class TestDB:
         assert saved["cited_type"] == "owned"
         assert json.loads(saved["owned_ids"]) == ["https://a.com/1"]
         assert saved["competitor_matched"] == 1
+        assert json.loads(saved["competitor_ids"]) == ["https://comp.example.com"]
         assert json.loads(saved["fact_risks"]) == ["版本 2.3.1"]
 
     def test_build_delta(self, tmp_path):
@@ -820,12 +824,12 @@ class TestDB:
         prev = ProbeResult(
             "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
             mine_cited=True, mine_ids=["https://a.com/1"],
-            competitor_matched=False,
+            competitor_matched=False, competitor_ids=["https://comp.example.com"],
         )
         last = ProbeResult(
             "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
             mine_cited=False, mine_ids=["https://a.com/1"],
-            competitor_matched=True,
+            competitor_matched=True, competitor_ids=["https://comp.example.com"],
         )
         store_results([prev], db_path=db, run_at="2026-08-01T10:00:00+08:00")
         store_results([last], db_path=db, run_at="2026-08-02T10:00:00+08:00")
@@ -850,6 +854,25 @@ class TestDB:
         store_results([last], db_path=db, run_at="2026-08-02T10:00:00+08:00")
         item = build_delta("品牌A", db_path=db)["platforms"]["deepseek"]
         assert item.get("competitor_replaced") is not True
+
+    def test_build_delta_competitor_replaced_inferred_when_competitor_ids_changed(self, tmp_path):
+        # 前后竞品标识不一致（用户更换 --competitor）时不得确认夺走，按推断处理
+        db = tmp_path / "monitor.db"
+        prev = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=True, mine_ids=["https://a.com/1"],
+            competitor_matched=False, competitor_ids=["https://comp-a.example"],
+        )
+        last = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=False, mine_ids=["https://a.com/1"],
+            competitor_matched=True, competitor_ids=["https://comp-b.example"],
+        )
+        store_results([prev], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        store_results([last], db_path=db, run_at="2026-08-02T10:00:00+08:00")
+        item = build_delta("品牌A", db_path=db)["platforms"]["deepseek"]
+        assert item["competitor_replaced"] is True
+        assert item["competitor_replaced_confirmed"] is False
 
     def test_build_delta_no_competitor_replaced_when_competitor_persists(self, tmp_path):
         # 上一轮竞品已命中时不判「夺走」：竞品一直在场，本轮丢失引用不是被替换
@@ -1077,6 +1100,24 @@ class TestRecommendations:
         assert inferred and inferred[0].priority == "P1"
         assert "人工确认" in inferred[0].action
         assert not any(r.priority == "P0" and r.dimension == "竞品夺走" for r in recs)
+
+    def test_competitor_replaced_falsifiability_uses_actual_mine(self):
+        # 复跑命令必须使用实际 mine 标识（标题/作者名），而非硬编码 URL 占位
+        delta = {
+            "platforms": {
+                "deepseek": {
+                    "competitor_replaced": True,
+                    "competitor_replaced_confirmed": True,
+                },
+            }
+        }
+        results = [ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=False, mine_ids=["我的昵称"],
+        )]
+        recs = build_recommendations("品牌A", results, delta=delta)
+        rec = next(r for r in recs if r.dimension == "竞品夺走")
+        assert "--mine '我的昵称'" in rec.falsifiability_check
 
     def test_fact_risks_p1(self):
         results = [ProbeResult(
@@ -1392,6 +1433,7 @@ class TestCLI:
                 mine_cited=calls["n"] == 1,
                 mine_ids=mine_ids or [],
                 competitor_matched=calls["n"] > 1,
+                competitor_ids=competitor_ids or [],
             )
 
         monkeypatch.setitem(search_ai.PLATFORMS["deepseek"], "probe", fake_probe)

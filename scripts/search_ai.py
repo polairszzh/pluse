@@ -127,7 +127,7 @@ _FACT_VERSION_RE = re.compile(
 )
 _FACT_UNIT_RE = re.compile(
     r"(\d+(?:\.\d+)?)\s*"
-    r"(万亿元|亿元|万亿|万元|亿|万|元|积分|用户|粉丝|下载|安装|人|次|GB|MB|TB|%)"
+    r"(万亿元|亿元|万亿|万用户|万人次|万人|万元|万次|亿|万|元|积分|用户|粉丝|下载|安装|人|次|GB|MB|TB|%)"
 )
 
 
@@ -240,6 +240,7 @@ class ProbeResult:
     cited_type: str | None = None       # mine 命中时的引用类型：earned(原创被引) | owned(转载/自有渠道被引)
     owned_ids: list[str] = field(default_factory=list)  # 本次检查的转载/自有渠道标识
     competitor_matched: bool | None = None  # 本次探测是否检测到竞品内容出现
+    competitor_ids: list[str] = field(default_factory=list)  # 本次检查的竞品标识
     fact_risks: list[str] = field(default_factory=list)  # 回答中关于品牌的未核实数字断言
 
 
@@ -342,6 +343,7 @@ def probe_deepseek(
             meta={"note": "在 .env 中配置 DEEPSEEK_API_KEY 后重跑可拿到真实引用判断"},
             mine_ids=mine_ids,
             owned_ids=owned_ids,
+            competitor_ids=competitor_ids,
         )
     payload = {
         "model": DEEPSEEK_MODEL,
@@ -363,6 +365,7 @@ def probe_deepseek(
                 meta={"note": "响应应为 JSON 对象（含 choices 数组），保留原始类型便于排查"},
                 mine_ids=mine_ids,
                 owned_ids=owned_ids,
+                competitor_ids=competitor_ids,
             )
         choices = data.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
@@ -374,6 +377,7 @@ def probe_deepseek(
                 meta={"note": "choices 应为非空列表且首个元素为对象，保留原始响应便于排查"},
                 mine_ids=mine_ids,
                 owned_ids=owned_ids,
+                competitor_ids=competitor_ids,
             )
         message = choices[0].get("message")
         if not isinstance(message, dict):
@@ -385,6 +389,7 @@ def probe_deepseek(
                 meta={"note": "message 应为对象（含 content），保留原始响应便于排查"},
                 mine_ids=mine_ids,
                 owned_ids=owned_ids,
+                competitor_ids=competitor_ids,
             )
         content = message.get("content")
         if content is not None and not isinstance(content, str):
@@ -396,6 +401,7 @@ def probe_deepseek(
                 meta={"note": "content 应为字符串或空，保留原始响应便于排查"},
                 mine_ids=mine_ids,
                 owned_ids=owned_ids,
+                competitor_ids=competitor_ids,
             )
         answer = content or ""
     except requests.exceptions.RequestException as exc:
@@ -405,6 +411,7 @@ def probe_deepseek(
             error=str(exc), meta={"note": "网络或服务异常，未写入有效探测"},
             mine_ids=mine_ids,
             owned_ids=owned_ids,
+            competitor_ids=competitor_ids,
         )
     except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
         return ProbeResult(
@@ -413,6 +420,7 @@ def probe_deepseek(
             error=str(exc), meta={"note": "响应结构与预期不符，保留原始响应便于排查"},
             mine_ids=mine_ids,
             owned_ids=owned_ids,
+            competitor_ids=competitor_ids,
         )
     cited = query.lower() in answer.lower()
     mine_matched = _detect_mine(answer, mine_ids)
@@ -438,6 +446,7 @@ def probe_deepseek(
         cited_type=_classify_cited_type(mine_matched, owned_ids),
         owned_ids=owned_ids,
         competitor_matched=competitor_matched,
+        competitor_ids=competitor_ids,
         fact_risks=fact_risks,
     )
 
@@ -505,6 +514,7 @@ def probe_search_inference(
             meta={"note": "网络或反爬拦截，未写入有效推断"},
             mine_ids=mine_ids,
             owned_ids=owned_ids,
+            competitor_ids=competitor_ids,
         )
 
     results = _parse_bing(html_text)
@@ -516,6 +526,7 @@ def probe_search_inference(
             error="no_results_parsed", meta={"html_len": len(html_text)},
             mine_ids=mine_ids,
             owned_ids=owned_ids,
+            competitor_ids=competitor_ids,
         )
 
     # cited 只看标题+摘要：URL 常含关键词（如 github.com/openai/codex），拼入会误判「被提及」
@@ -578,6 +589,7 @@ def probe_search_inference(
         cited_type=_classify_cited_type(mine_matched, owned_ids),
         owned_ids=owned_ids,
         competitor_matched=competitor_matched,
+        competitor_ids=competitor_ids,
     )
 
 
@@ -638,6 +650,7 @@ CREATE TABLE IF NOT EXISTS probes (
       cited_type TEXT,
       owned_ids TEXT,
       competitor_matched INTEGER,
+      competitor_ids TEXT,
       fact_risks TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_probes_query_platform_run
@@ -669,6 +682,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE probes ADD COLUMN owned_ids TEXT")
         if "competitor_matched" not in cols:
             conn.execute("ALTER TABLE probes ADD COLUMN competitor_matched INTEGER")
+        if "competitor_ids" not in cols:
+            conn.execute("ALTER TABLE probes ADD COLUMN competitor_ids TEXT")
         if "fact_risks" not in cols:
             conn.execute("ALTER TABLE probes ADD COLUMN fact_risks TEXT")
 
@@ -694,8 +709,8 @@ def store_results(
                 conn.execute(
                     "INSERT INTO probes(query, platform, run_at, status, cited, sentiment,"
                     " context, source, degraded, error, meta, mine_cited, mine_ids, confidence,"
-                    " cited_type, owned_ids, competitor_matched, fact_risks)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " cited_type, owned_ids, competitor_matched, competitor_ids, fact_risks)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         r.query, r.platform, run_at, r.status, cited, r.sentiment,
                         r.context, r.source, 1 if r.degraded else 0, r.error,
@@ -706,6 +721,7 @@ def store_results(
                         r.cited_type,
                         json.dumps(r.owned_ids or [], ensure_ascii=False),
                         competitor_matched,
+                        json.dumps(r.competitor_ids or [], ensure_ascii=False),
                         json.dumps(r.fact_risks or [], ensure_ascii=False),
                     ),
                 )
@@ -766,6 +782,7 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
                     bool(r["competitor_matched"])
                     if r["competitor_matched"] is not None else None
                 ),
+                "competitor_ids": _parse_mine_ids(r["competitor_ids"]),
                 "fact_risks": _parse_mine_ids(r["fact_risks"]),
             }
             for r in ordered
@@ -857,9 +874,16 @@ def build_delta(
         ):
             item["competitor_replaced"] = True
             item["competitor_replaced_at"] = last["run_at"]
-            # 上次明确未命中竞品（False）才算已确认夺走；
-            # 上次未检查（None，首次启用 --competitor 的历史）按推断处理，待人工确认
-            item["competitor_replaced_confirmed"] = prev["competitor_matched"] is False
+            # 已确认需要：上次明确未命中竞品（False）且前后竞品标识集合一致；
+            # 上次未检查（None）或换了竞品标识 → 推断，待人工确认
+            same_competitors = (
+                bool(last["competitor_ids"])
+                and bool(prev["competitor_ids"])
+                and set(last["competitor_ids"]) == set(prev["competitor_ids"])
+            )
+            item["competitor_replaced_confirmed"] = (
+                prev["competitor_matched"] is False and same_competitors
+            )
         # 两个有效快照均无可对比数据（cited/sentiment/mine 全缺）时不写入空壳条目，
         # 避免 has_history=False 时渲染出全「—」的对比行
         if any(
@@ -961,6 +985,10 @@ def build_recommendations(
     ]
     if confirmed_replaced:
         names = "、".join(PLATFORMS.get(p, {}).get("label", p) for p, _ in confirmed_replaced)
+        mine_arg = next(
+            (r.mine_ids[0] for r in results if r.mine_ids),
+            "<你的内容URL>",
+        )
         recs.append(Recommendation(
             priority="P0",
             dimension="竞品夺走",
@@ -969,11 +997,15 @@ def build_recommendations(
                    "让 AI 能明确区分你与竞品",
             expected_impact="把 AI 引用从竞品拉回你的内容",
             falsifiability_check=f"重跑 /pulse track --query {_shell_quote(query)} "
-                                 "--mine <你的内容URL> --competitor <竞品标识>，"
+                                 f"--mine {_shell_quote(mine_arg)} --competitor <竞品标识>，"
                                  "对应平台「竞品夺走」风险消失、我的内容变为「是」",
         ))
     if inferred_replaced:
         names = "、".join(PLATFORMS.get(p, {}).get("label", p) for p, _ in inferred_replaced)
+        mine_arg = next(
+            (r.mine_ids[0] for r in results if r.mine_ids),
+            "<你的内容URL>",
+        )
         recs.append(Recommendation(
             priority="P1",
             dimension="竞品夺走（推断）",
@@ -982,7 +1014,7 @@ def build_recommendations(
                    "确属夺走则补充差异化内容强化品牌锚定",
             expected_impact="确认是否为真实竞品夺走，避免误判后浪费优化动作",
             falsifiability_check=f"重跑 /pulse track --query {_shell_quote(query)} "
-                                 "--mine <你的内容URL> --competitor <竞品标识>，"
+                                 f"--mine {_shell_quote(mine_arg)} --competitor <竞品标识>，"
                                  "连续两次检查后「竞品夺走」转为已确认或消失",
         ))
     risk_results = [
