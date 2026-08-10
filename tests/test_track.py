@@ -642,12 +642,15 @@ class TestDB:
         db = tmp_path / "monitor.db"
         row = ProbeResult(
             "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            meta={"answer": "原始回答", "mine_checked": ["https://a.com/1"]},
             mine_cited=True, mine_ids=["https://a.com/1"],
             cited_type="owned", owned_ids=["https://a.com/1"],
             competitor_matched=True, fact_risks=["版本 2.3.1"],
         )
         store_results([row], db_path=db, run_at="2026-08-06T10:00:00+08:00")
         saved = load_history("品牌A", db_path=db)[0]
+        assert json.loads(saved["meta"])["answer"] == "原始回答"
+        assert saved["mine_cited"] == 1
         assert saved["cited_type"] == "owned"
         assert json.loads(saved["owned_ids"]) == ["https://a.com/1"]
         assert saved["competitor_matched"] == 1
