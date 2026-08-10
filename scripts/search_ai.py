@@ -270,6 +270,11 @@ def _aggregate_samples(samples: list[ProbeResult]) -> ProbeResult:
     )
     fact_risks = _union_strings([s.fact_risks for s in samples])
     status = _majority([s.status for s in samples]) or "error"
+    if status != "ok":
+        # 整体失败/未配置：cited/mine_cited 统一无效（表格显示未知，趋势不参与），
+        # 避免与部分有效样本的命中结果口径不一致
+        cited = None
+        mine_cited = None
     # 上下文必须与最终判定一致：cited=True 取命中样本，False 取未命中样本，
     # 避免「否 (40%)」却展示命中内容；无匹配上下文时留空，不回退到相反判定的样本
     hit_context = next(
@@ -868,7 +873,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE probes ADD COLUMN sample_idx INTEGER NOT NULL DEFAULT 0")
         if "run_id" not in cols:
             conn.execute("ALTER TABLE probes ADD COLUMN run_id TEXT")
-        # run_id ???????????? _migrate ?????
+        # run_id 索引依赖补列完成：旧库在 _migrate 之后才可建
         conn.execute("CREATE INDEX IF NOT EXISTS idx_probes_run_id ON probes(run_id)")
 
 
@@ -1024,6 +1029,7 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
             invalid = len(group) - agg["n"]
             n, hits = agg["n"], agg["hits"]
             prob, ci_low, ci_high = agg["prob"], agg["ci_low"], agg["ci_high"]
+            cited = agg["cited"]
 
             # 取首个「解析后非空」的 mine_ids：空 JSON 字符串 "[]" 不得提前停止
             mine_ids = next(
@@ -1042,6 +1048,12 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
             mine_cited = _aggregate_binary([
                 r["mine_cited"] for r in group if r["mine_cited"] is not None
             ])["cited"]
+            status = _majority([r["status"] for r in group]) or "error"
+            if status != "ok":
+                # 整体失败/未配置：cited/mine_cited 置 None，
+                # 变化点检测跳过（现有 None 逻辑）、趋势显示「未知」，与表格口径一致
+                cited = None
+                mine_cited = None
             points.append({
                 "run_at": run_at,
                 "n": n,
@@ -1050,8 +1062,8 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
                 "prob": prob,
                 "ci_low": ci_low,
                 "ci_high": ci_high,
-                "cited": agg["cited"],
-                "status": _majority([r["status"] for r in group]) or "error",
+                "cited": cited,
+                "status": status,
                 "sentiment": _majority([r["sentiment"] for r in group]),
                 "mine_cited": mine_cited,
                 "mine_checked": bool(mine_ids),

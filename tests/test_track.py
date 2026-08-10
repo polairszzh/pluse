@@ -339,7 +339,10 @@ class TestB1Sampling:
         assert agg.prob == 1.0
         assert agg.sample_count == 1
         assert agg.meta["sample_invalid"] == 2
-        assert agg.cited is True
+        assert agg.status == "error"
+        # 整体失败：cited 统一无效（表格显示未知），即使个别样本命中
+        assert agg.cited is None
+        assert agg.mine_cited is None
 
     def test_aggregate_samples_tie_votes_not_cited(self):
         # 偶数采样平局（1/2 命中）按严格多数应为「否」，与 build_trend 一致
@@ -450,6 +453,7 @@ class TestB1Sampling:
         assert agg.status == "error"
         assert agg.error == "network down"
         assert agg.degraded is True
+        assert agg.cited is None
 
     def test_aggregate_samples_error_not_leaked_from_minority(self):
         # 多数派 status=ok 时，少数失败样本的错误不得混入聚合结果
@@ -491,7 +495,38 @@ class TestB1Sampling:
         p = build_trend("品牌A", db_path=db)["series"]["deepseek"][0]
         assert p["n"] == 1 and p["hits"] == 1 and p["prob"] == 1.0
         assert p["invalid"] == 2
-        assert p["cited"] is True
+        # 多数 status=error：聚合点 cited/mine_cited 置 None（趋势显示未知、变化点跳过）
+        assert p["status"] == "error"
+        assert p["cited"] is None
+
+    def test_build_trend_error_point_not_in_changes(self, tmp_path):
+        # 多数失败的 run 不参与变化点：趋势序列只含有效的 ok 点
+        db = tmp_path / "monitor.db"
+        store_results([
+            ProbeResult(
+                "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+                sample_idx=0,
+            ),
+        ], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        store_results([
+            ProbeResult(
+                "品牌A", "deepseek", "error", None, None, "boom", "api", True,
+                error="x", sample_idx=0,
+            ),
+            ProbeResult(
+                "品牌A", "deepseek", "error", None, None, "boom", "api", True,
+                error="x", sample_idx=1,
+            ),
+            ProbeResult(
+                "品牌A", "deepseek", "ok", False, "neutral", "c", "api", False,
+                sample_idx=2,
+            ),
+        ], db_path=db, run_at="2026-08-02T10:00:00+08:00")
+        trend = build_trend("品牌A", db_path=db)
+        points = trend["series"]["deepseek"]
+        assert points[0]["cited"] is True  # ok 点
+        assert points[1]["cited"] is None  # error 点不参与
+        assert trend["changes"] == []      # 无有效变化点
 
     def test_build_trend_aggregates_samples(self, tmp_path):
         db = tmp_path / "monitor.db"
