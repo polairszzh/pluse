@@ -206,6 +206,8 @@ class TestB3Quality:
         # 数量级/对象单位解耦后，未枚举的新组合（百亿次/千万人）也能完整提取
         assert any("100亿次" in r for r in risks)
         assert any("5000万人" in r for r in risks)
+        # 人次 必须作为完整单位提取，不得截成「1.8万人」
+        assert any(r.startswith("1.8万人次（") for r in risks)
         # 不得出现被截断的「1.8万（…）」标签
         assert not any(r.startswith("1.8万（") for r in risks)
 
@@ -324,6 +326,52 @@ class TestB1Sampling:
         assert agg.competitor_matched is True
         assert "版本 2.3.1" in agg.fact_risks
 
+    def test_aggregate_samples_excludes_invalid(self):
+        # cited=None 的失败样本不计入概率分母
+        s1 = ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)
+        s2 = ProbeResult(
+            "品牌A", "deepseek", "error", None, None, "boom", "api", True, error="x"
+        )
+        s3 = ProbeResult(
+            "品牌A", "deepseek", "error", None, None, "boom", "api", True, error="x"
+        )
+        agg = search_ai._aggregate_samples([s1, s2, s3])
+        assert agg.prob == 1.0
+        assert agg.sample_count == 1
+        assert agg.meta["sample_invalid"] == 2
+        assert agg.cited is True
+
+    def test_aggregate_samples_all_invalid_prob_none(self):
+        samples = [
+            ProbeResult(
+                "品牌A", "deepseek", "error", None, None, "boom", "api", True, error="x"
+            )
+            for _ in range(3)
+        ]
+        agg = search_ai._aggregate_samples(samples)
+        assert agg.cited is None
+        assert agg.prob is None
+        assert agg.sample_count == 0
+
+    def test_build_trend_excludes_invalid_samples(self, tmp_path):
+        db = tmp_path / "monitor.db"
+        ok = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            sample_idx=0,
+        )
+        bad = ProbeResult(
+            "品牌A", "deepseek", "error", None, None, "boom", "api", True,
+            error="x", sample_idx=1,
+        )
+        store_results(
+            [ok, bad, bad],
+            db_path=db, run_at="2026-08-01T10:00:00+08:00",
+        )
+        p = build_trend("品牌A", db_path=db)["series"]["deepseek"][0]
+        assert p["n"] == 1 and p["hits"] == 1 and p["prob"] == 1.0
+        assert p["invalid"] == 2
+        assert p["cited"] is True
+
     def test_build_trend_aggregates_samples(self, tmp_path):
         db = tmp_path / "monitor.db"
 
@@ -390,6 +438,17 @@ class TestB1Sampling:
         r.meta = {"sample_hits": 4}
         md = render_markdown("品牌A", [r], {"series": {}, "changes": []}, [])
         assert "是 (80%, 4/5)" in md
+
+    def test_render_markdown_unknown_when_all_samples_invalid(self):
+        # 全部样本无效（失败/未配置）时显示「未知」，不得显示「否 (0%, 0/5)」
+        r = ProbeResult(
+            "品牌A", "deepseek", "error", None, None, "boom", "api", True,
+            prob=None, sample_count=0, error="x",
+        )
+        r.meta = {"sample_invalid": 5}
+        md = render_markdown("品牌A", [r], {"series": {}, "changes": []}, [])
+        assert "未知" in md
+        assert "(0%, 0/" not in md
 
     def test_empty_inputs(self):
         assert _detect_mine("", ["a"]) == []

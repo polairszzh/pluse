@@ -131,7 +131,7 @@ _FACT_UNIT_RE = re.compile(
     r"(\d+(?:\.\d+)?)\s*"
     # 数量级（万亿/亿/万）与对象单位（元/积分/用户/次…）解耦：
     # 任意组合自动成立（100亿次、5000万人、3亿次…），无需枚举全部组合
-    r"((?:万亿|亿|万)?(?:元|积分|用户|粉丝|下载|安装|人|次|GB|MB|TB|%)|万亿|亿|万)"
+    r"((?:万亿|亿|万)?(?:元|积分|用户|粉丝|人次|人|次|下载|安装|GB|MB|TB|%)|万亿|亿|万)"
 )
 
 
@@ -200,23 +200,30 @@ def _wilson_interval(hits: int, n: int, z: float = 1.96) -> tuple[float, float]:
 def _aggregate_samples(samples: list[ProbeResult]) -> ProbeResult:
     """把同一 run 的 N 个采样样本聚合为带概率/置信区间的单条结果
 
-    cited / mine_cited / sentiment / cited_type 取多数派；
+    cited / mine_cited / sentiment / cited_type 取多数派（仅有效样本）；
     competitor_matched / fact_risks 保守取任一命中 / 合并（风险信号不因多数而漏报）；
-    prob / ci_low / ci_high / sample_count 基于被提及命中数。
+    prob / ci_low / ci_high / sample_count 基于有效样本（cited 非 None）命中数；
+    cited=None 的失败/未配置样本不计入分母，全部无效时概率为 None（显示未知）。
     """
     if not samples:
         raise ValueError("aggregate requires at least one sample")
-    n = len(samples)
-    hits = sum(1 for s in samples if s.cited is True)
-    prob = hits / n
-    ci_low, ci_high = _wilson_interval(hits, n)
+    valid = [s for s in samples if s.cited is not None]
+    invalid = len(samples) - len(valid)
+    n = len(valid)
+    hits = sum(1 for s in valid if s.cited)
+    if n:
+        prob = hits / n
+        ci_low, ci_high = _wilson_interval(hits, n)
+    else:
+        prob = None
+        ci_low, ci_high = None, None
 
     def majority(values: list) -> object | None:
         cnt = Counter(v for v in values if v is not None)
         return cnt.most_common(1)[0][0] if cnt else None
 
     base = samples[0]
-    cited = hits * 2 >= n  # 多数派命中才算被提及（概率单独展示）
+    cited = hits * 2 >= n if n else None  # 多数派命中才算被提及（概率单独展示）
     mine_cited = majority([s.mine_cited for s in samples])
     sentiment = majority([s.sentiment for s in samples])
     cited_type = majority([s.cited_type for s in samples])
@@ -235,6 +242,7 @@ def _aggregate_samples(samples: list[ProbeResult]) -> ProbeResult:
     meta["sample_answers"] = answers[:5]
     meta["sample_count"] = n
     meta["sample_hits"] = hits
+    meta["sample_invalid"] = invalid
     return ProbeResult(
         query=base.query,
         platform=base.platform,
@@ -896,11 +904,17 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
         points: list[dict] = []
         for run_at in sorted(by_run):
             group = by_run[run_at]
-            n = len(group)
-            # DB 读出 cited 为 INTEGER(0/1)，直接按真值计数
-            hits = sum(1 for r in group if r["cited"])
-            prob = hits / n
-            ci_low, ci_high = _wilson_interval(hits, n)
+            # cited 为 NULL 的失败/未配置样本不计入概率分母
+            valid = [r for r in group if r["cited"] is not None]
+            invalid = len(group) - len(valid)
+            n = len(valid)
+            hits = sum(1 for r in valid if r["cited"])
+            if n:
+                prob = hits / n
+                ci_low, ci_high = _wilson_interval(hits, n)
+            else:
+                prob = None
+                ci_low, ci_high = None, None
 
             def majority(values: list) -> object | None:
                 cnt = Counter(v for v in values if v is not None)
@@ -918,12 +932,13 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
             competitor_matched = (
                 True if any(comp_vals) else (False if comp_vals else None)
             )
-            cited_raw = majority([r["cited"] for r in group])
+            cited_raw = majority([r["cited"] for r in valid])
             mine_cited_raw = majority([r["mine_cited"] for r in group])
             points.append({
                 "run_at": run_at,
                 "n": n,
                 "hits": hits,
+                "invalid": invalid,
                 "prob": prob,
                 "ci_low": ci_low,
                 "ci_high": ci_high,
