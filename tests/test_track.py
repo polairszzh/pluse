@@ -191,14 +191,23 @@ class TestB3Quality:
     def test_extract_fact_risks_compound_units(self):
         # 复合数量单位不得被截断：1.8万亿 不能提取成 1.8万
         risks = search_ai._extract_fact_risks(
-            "WorkBuddy 估值 1.8万亿，年营收 5000万元，补贴 3亿元，累计 1000万用户，接待 1.8万人次",
+            "WorkBuddy 估值 1.8万亿，年营收 5000万元，补贴 3亿元，累计 1000万用户，"
+            "接待 1.8万人次，日活 1.8亿用户，调用 3亿次，服务 100亿次请求，覆盖 5000万人",
             "WorkBuddy",
+            limit=10,
         )
         assert any("1.8万亿" in r for r in risks)
         assert any("5000万元" in r for r in risks)
         assert any("3亿元" in r for r in risks)
         assert any("1000万用户" in r for r in risks)
         assert any("1.8万人次" in r for r in risks)
+        assert any("1.8亿用户" in r for r in risks)
+        assert any("3亿次" in r for r in risks)
+        # 数量级/对象单位解耦后，未枚举的新组合（百亿次/千万人）也能完整提取
+        assert any("100亿次" in r for r in risks)
+        assert any("5000万人" in r for r in risks)
+        # 人次 必须作为完整单位提取，不得截成「1.8万人」
+        assert any(r.startswith("1.8万人次（") for r in risks)
         # 不得出现被截断的「1.8万（…）」标签
         assert not any(r.startswith("1.8万（") for r in risks)
 
@@ -269,6 +278,601 @@ class TestB3Quality:
             "AI搜索优化", "kimi", competitor_ids=["https://nope.example/x"]
         )
         assert miss.competitor_matched is False
+
+
+class TestB1Sampling:
+    """B1 多采样概率闭环：Wilson 区间、样本聚合、概率趋势与展示"""
+
+    def test_wilson_interval(self):
+        lo, hi = search_ai._wilson_interval(4, 5)
+        assert lo <= 0.8 <= hi
+        assert 0.0 <= lo <= hi <= 1.0
+        assert search_ai._wilson_interval(0, 5)[0] == 0.0
+        assert search_ai._wilson_interval(5, 5)[1] == 1.0
+        assert search_ai._wilson_interval(3, 0) == (0.0, 0.0)
+
+    def test_aggregate_samples_majority_and_prob(self):
+        s1 = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c1", "api", False,
+            mine_cited=True, mine_ids=["https://a.com/1"], cited_type="earned",
+        )
+        s2 = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "negative", "c2", "api", False,
+            mine_cited=True, mine_ids=["https://a.com/1"], cited_type="earned",
+        )
+        s3 = ProbeResult(
+            "品牌A", "deepseek", "ok", False, None, "c3", "api", False,
+            mine_cited=False, mine_ids=["https://a.com/1"],
+        )
+        agg = search_ai._aggregate_samples([s1, s2, s3])
+        assert agg.cited is True  # 2/3 多数
+        assert agg.prob == 2 / 3
+        assert agg.sample_count == 3
+        assert agg.sentiment == "positive"  # 多数派
+        assert agg.mine_cited is True
+        assert agg.ci_low <= agg.prob <= agg.ci_high
+
+    def test_aggregate_samples_risk_conservative(self):
+        # competitor/fact_risks 保守：任一样本命中即保留，不因多数而漏报
+        s1 = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            competitor_matched=False,
+        )
+        s2 = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            competitor_matched=True, fact_risks=["版本 2.3.1"],
+        )
+        agg = search_ai._aggregate_samples([s1, s2])
+        assert agg.competitor_matched is True
+        assert "版本 2.3.1" in agg.fact_risks
+
+    def test_aggregate_samples_excludes_invalid(self):
+        # cited=None 的失败样本不计入概率分母
+        s1 = ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)
+        s2 = ProbeResult(
+            "品牌A", "deepseek", "error", None, None, "boom", "api", True, error="x"
+        )
+        s3 = ProbeResult(
+            "品牌A", "deepseek", "error", None, None, "boom", "api", True, error="x"
+        )
+        agg = search_ai._aggregate_samples([s1, s2, s3])
+        assert agg.prob == 1.0
+        assert agg.sample_count == 1
+        assert agg.meta["sample_invalid"] == 2
+        assert agg.status == "error"
+        # 整体失败：cited 统一无效（表格显示未知），即使个别样本命中
+        assert agg.cited is None
+        assert agg.mine_cited is None
+
+    def test_aggregate_samples_tie_votes_not_cited(self):
+        # 偶数采样平局（1/2 命中）按严格多数应为「否」，与 build_trend 一致
+        s1 = ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)
+        s2 = ProbeResult("品牌A", "deepseek", "ok", False, "neutral", "c", "api", False)
+        agg = search_ai._aggregate_samples([s1, s2])
+        assert agg.prob == 0.5
+        assert agg.cited is False
+
+    def test_aggregate_samples_context_matches_final_verdict(self):
+        # 最终判定为「否」时，上下文不得取自命中样本（避免「否 (40%)」却展示命中内容）
+        hit = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "命中内容", "api", False
+        )
+        hit2 = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "命中内容2", "api", False
+        )
+        miss1 = ProbeResult(
+            "品牌A", "deepseek", "ok", False, "neutral", "未命中A", "api", False
+        )
+        miss2 = ProbeResult(
+            "品牌A", "deepseek", "ok", False, "neutral", "未命中B", "api", False
+        )
+        miss3 = ProbeResult(
+            "品牌A", "deepseek", "ok", False, "neutral", "未命中C", "api", False
+        )
+        # 2/5 命中 → 多数为否，上下文应来自未命中样本
+        agg = search_ai._aggregate_samples([hit, hit2, miss1, miss2, miss3])
+        assert agg.cited is False
+        assert agg.prob == 0.4
+        assert agg.context == "未命中A"
+
+    def test_aggregate_samples_context_fallback_not_mismatched(self):
+        # 判定为否且未命中样本 context 全空时，不得回退到命中样本的 context
+        hit = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "命中内容", "api", False
+        )
+        miss = ProbeResult(
+            "品牌A", "deepseek", "ok", False, "neutral", "", "api", False
+        )
+        agg = search_ai._aggregate_samples([hit, miss, miss, miss, miss])
+        assert agg.cited is False
+        assert agg.context == ""
+
+    def test_aggregate_samples_keeps_all_answers(self):
+        # sample_answers 不截断：--samples > 5 时全部样本原文可复核
+        samples = [
+            ProbeResult(
+                "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+                meta={"answer": f"原始回答 {i}"},
+            )
+            for i in range(7)
+        ]
+        agg = search_ai._aggregate_samples(samples)
+        assert len(agg.meta["sample_answers"]) == 7
+        assert all(
+            isinstance(a, dict)
+            and "answer" in a
+            and "cited" in a
+            and "sample_idx" in a
+            for a in agg.meta["sample_answers"]
+        )
+
+    def test_aggregate_samples_mine_cited_tie_not_true(self):
+        # mine_cited 与 cited 统一严格多数：1/2 平局为否
+        s1 = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=True, mine_ids=["https://a.com/1"],
+        )
+        s2 = ProbeResult(
+            "品牌A", "deepseek", "ok", False, "neutral", "c", "api", False,
+            mine_cited=False, mine_ids=["https://a.com/1"],
+        )
+        agg = search_ai._aggregate_samples([s1, s2])
+        assert agg.mine_cited is False
+
+    def test_aggregate_samples_degraded_strict_majority(self):
+        # degraded 与 cited 统一严格多数：1/2 平局为否
+        s1 = ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", True)
+        s2 = ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)
+        agg = search_ai._aggregate_samples([s1, s2])
+        assert agg.degraded is False
+        agg2 = search_ai._aggregate_samples([s1, s1, s2])
+        assert agg2.degraded is True
+
+    def test_aggregate_samples_competitor_none_stays_none(self):
+        # 未传 --competitor（全 None）时聚合结果应为 None（未知），与 build_trend 一致
+        samples = [
+            ProbeResult(
+                "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+                competitor_matched=None,
+            )
+            for _ in range(3)
+        ]
+        agg = search_ai._aggregate_samples(samples)
+        assert agg.competitor_matched is None
+
+    def test_aggregate_samples_error_detail_from_majority(self):
+        # 多数样本失败但首个正常：status=error 且保留错误详情
+        ok = ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)
+        bad1 = ProbeResult(
+            "品牌A", "deepseek", "error", None, None, "boom", "api", True, error="network down"
+        )
+        bad2 = ProbeResult(
+            "品牌A", "deepseek", "error", None, None, "boom", "api", True, error="network down"
+        )
+        agg = search_ai._aggregate_samples([ok, bad1, bad2])
+        assert agg.status == "error"
+        assert agg.error == "network down"
+        assert agg.degraded is True
+        assert agg.cited is None
+
+    def test_aggregate_samples_error_not_leaked_from_minority(self):
+        # 多数派 status=ok 时，少数失败样本的错误不得混入聚合结果
+        ok = ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)
+        ok2 = ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)
+        bad = ProbeResult(
+            "品牌A", "deepseek", "error", None, None, "boom", "api", True, error="network"
+        )
+        agg = search_ai._aggregate_samples([ok, ok2, bad])
+        assert agg.status == "ok"
+        assert agg.error is None
+
+    def test_aggregate_samples_error_clears_context(self):
+        # 整体失败时上下文清空：不展示部分样本的命中/未命中上下文
+        hit = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "命中内容", "api", False
+        )
+        bad = ProbeResult(
+            "品牌A", "deepseek", "error", None, None, "boom", "api", True, error="x"
+        )
+        agg = search_ai._aggregate_samples([hit, bad, bad])
+        assert agg.status == "error"
+        assert agg.cited is None
+        assert agg.context == ""
+
+    def test_aggregate_samples_confidence_from_majority(self):
+        # 状态混合时 confidence 取多数派，不从首个失败样本继承
+        ok = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            confidence="confirmed",
+        )
+        ok2 = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            confidence="confirmed",
+        )
+        bad = ProbeResult(
+            "品牌A", "deepseek", "error", None, None, "boom", "api", True,
+            error="x", confidence=None,
+        )
+        agg = search_ai._aggregate_samples([bad, ok, ok2])
+        assert agg.status == "ok"
+        assert agg.confidence == "confirmed"
+
+    def test_aggregate_samples_all_invalid_prob_none(self):
+        samples = [
+            ProbeResult(
+                "品牌A", "deepseek", "error", None, None, "boom", "api", True, error="x"
+            )
+            for _ in range(3)
+        ]
+        agg = search_ai._aggregate_samples(samples)
+        assert agg.cited is None
+        assert agg.prob is None
+        assert agg.sample_count == 0
+
+    def test_build_trend_excludes_invalid_samples(self, tmp_path):
+        db = tmp_path / "monitor.db"
+        ok = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            sample_idx=0,
+        )
+        bad = ProbeResult(
+            "品牌A", "deepseek", "error", None, None, "boom", "api", True,
+            error="x", sample_idx=1,
+        )
+        store_results(
+            [ok, bad, bad],
+            db_path=db, run_at="2026-08-01T10:00:00+08:00",
+        )
+        p = build_trend("品牌A", db_path=db)["series"]["deepseek"][0]
+        assert p["n"] == 1 and p["hits"] == 1 and p["prob"] == 1.0
+        assert p["invalid"] == 2
+        # 多数 status=error：聚合点 cited/mine_cited 置 None（趋势显示未知、变化点跳过）
+        assert p["status"] == "error"
+        assert p["cited"] is None
+
+    def test_build_trend_error_point_not_in_changes(self, tmp_path):
+        # 多数失败的 run 不参与变化点：趋势序列只含有效的 ok 点
+        db = tmp_path / "monitor.db"
+        store_results([
+            ProbeResult(
+                "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+                sample_idx=0,
+            ),
+        ], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        store_results([
+            ProbeResult(
+                "品牌A", "deepseek", "error", None, None, "boom", "api", True,
+                error="x", sample_idx=0,
+            ),
+            ProbeResult(
+                "品牌A", "deepseek", "error", None, None, "boom", "api", True,
+                error="x", sample_idx=1,
+            ),
+            ProbeResult(
+                "品牌A", "deepseek", "ok", False, "neutral", "c", "api", False,
+                sample_idx=2,
+            ),
+        ], db_path=db, run_at="2026-08-02T10:00:00+08:00")
+        trend = build_trend("品牌A", db_path=db)
+        points = trend["series"]["deepseek"]
+        assert points[0]["cited"] is True  # ok 点
+        assert points[1]["cited"] is None  # error 点不参与
+        assert trend["changes"] == []      # 无有效变化点
+
+    def test_build_trend_aggregates_samples(self, tmp_path):
+        db = tmp_path / "monitor.db"
+
+        def mk(cited, sample_idx):
+            return ProbeResult(
+                "品牌A", "deepseek", "ok", cited, "positive", "c", "api", False,
+                sample_idx=sample_idx,
+            )
+
+        store_results(
+            [mk(True, 0), mk(True, 1), mk(False, 2)],
+            db_path=db, run_at="2026-08-01T10:00:00+08:00",
+        )
+        store_results(
+            [mk(False, 0), mk(True, 1), mk(False, 2)],
+            db_path=db, run_at="2026-08-02T10:00:00+08:00",
+        )
+        trend = build_trend("品牌A", db_path=db)
+        points = trend["series"]["deepseek"]
+        assert len(points) == 2
+        p1, p2 = points[0], points[1]
+        assert p1["n"] == 3 and p1["hits"] == 2 and p1["prob"] == 2 / 3
+        assert p2["n"] == 3 and p2["hits"] == 1 and p2["prob"] == 1 / 3
+        assert p1["cited"] is True and p2["cited"] is False  # 多数派
+        assert trend["changes"] == [{
+            "platform": "deepseek",
+            "from": True,
+            "to": False,
+            "run_at": "2026-08-02T10:00:00+08:00",
+        }]
+        delta = build_delta("品牌A", db_path=db, trend=trend)
+        assert delta["platforms"]["deepseek"]["cited_change"] == "lost"
+
+    def test_build_trend_tie_votes_not_cited(self, tmp_path):
+        # 2 样本 1 命中：严格多数为否，与 _aggregate_samples 一致（不依赖插入顺序）
+        db = tmp_path / "monitor.db"
+        store_results([
+            ProbeResult("品牌A", "deepseek", "ok", False, "neutral", "c", "api", False, sample_idx=0),
+            ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False, sample_idx=1),
+        ], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        p = build_trend("品牌A", db_path=db)["series"]["deepseek"][0]
+        assert p["hits"] == 1 and p["n"] == 2
+        assert p["cited"] is False
+
+    def test_build_trend_separates_same_run_at_by_run_id(self, tmp_path):
+        # 两次独立运行（两次 store 调用）即使 run_at 相同也按 run_id 分开
+        db = tmp_path / "monitor.db"
+        store_results([
+            ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False),
+        ], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        store_results([
+            ProbeResult("品牌A", "deepseek", "ok", False, "neutral", "c", "api", False),
+        ], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        points = build_trend("品牌A", db_path=db)["series"]["deepseek"]
+        assert len(points) == 2
+        assert {p["hits"] for p in points} == {0, 1}
+
+    def test_build_trend_same_run_at_ordered_by_insertion(self, tmp_path):
+        # 同 run_at 的两次独立运行按插入顺序排序，而非随机 run_id
+        db = tmp_path / "monitor.db"
+        store_results([
+            ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False),
+        ], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        store_results([
+            ProbeResult("品牌A", "deepseek", "ok", False, "neutral", "c", "api", False),
+        ], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        points = build_trend("品牌A", db_path=db)["series"]["deepseek"]
+        assert [p["hits"] for p in points] == [1, 0]
+
+    def test_build_trend_orders_by_run_at_not_insertion(self, tmp_path):
+        # 补录历史（run_at 与插入顺序不一致）时趋势按 run_at 排序，不按插入顺序
+        db = tmp_path / "monitor.db"
+        store_results([
+            ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False),
+        ], db_path=db, run_at="2026-08-02T10:00:00+08:00")
+        store_results([
+            ProbeResult("品牌A", "deepseek", "ok", False, "neutral", "c", "api", False),
+        ], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        points = build_trend("品牌A", db_path=db)["series"]["deepseek"]
+        assert [p["run_at"] for p in points] == [
+            "2026-08-01T10:00:00+08:00",
+            "2026-08-02T10:00:00+08:00",
+        ]
+        assert [p["hits"] for p in points] == [0, 1]
+
+    def test_build_trend_changes_stay_within_truncated_series(self, monkeypatch):
+        # 截断到最近 1000 次运行后，变化点不得引用序列范围外的 run_at
+        rows = []
+        for i in range(1005):
+            rows.append({
+                "id": i + 1,
+                "platform": "deepseek",
+                "run_at": f"run-{i:04d}",
+                "cited": 1 if i % 2 == 0 else 0,
+                "status": "ok",
+                "sentiment": "positive",
+                "mine_cited": None,
+                "mine_ids": None,
+                "cited_type": None,
+                "owned_ids": None,
+                "competitor_matched": None,
+                "competitor_ids": None,
+                "fact_risks": None,
+                "sample_idx": 0,
+                "run_id": f"r{i}",
+            })
+        monkeypatch.setattr(
+            search_ai, "_recent_run_rows", lambda *a, **kw: rows
+        )
+        trend = search_ai.build_trend("品牌A", db_path=Path("unused.db"))
+        shown = {p["run_at"] for p in trend["series"]["deepseek"]}
+        assert len(shown) == 1000
+        assert all(ch["run_at"] in shown for ch in trend["changes"])
+
+    def test_recent_run_rows_loads_complete_runs(self, tmp_path):
+        # 按 run 完整加载：多采样组不被行数限流切半
+        db = tmp_path / "monitor.db"
+        for _ in range(8):
+            store_results(
+                [
+                    ProbeResult(
+                        "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+                        sample_idx=i,
+                    )
+                    for i in range(5)
+                ],
+                db_path=db,
+                run_at="2026-08-01T10:00:00+08:00",
+            )
+        rows = search_ai._recent_run_rows("品牌A", db_path=db, max_runs=5)
+        run_ids = {r["run_id"] for r in rows}
+        assert len(run_ids) == 5
+        # 每个 run 的 5 个样本完整加载
+        assert all(
+            sum(1 for r in rows if r["run_id"] == rid) == 5 for rid in run_ids
+        )
+
+    def test_build_trend_skips_empty_mine_ids_rows(self, tmp_path):
+        # 同 run 内空 mine_ids 行（"[]"）在前时，不得提前停止而忽略后续真实值
+        db = tmp_path / "monitor.db"
+        store_results([
+            ProbeResult(
+                "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+                mine_ids=[], sample_idx=0,
+            ),
+            ProbeResult(
+                "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+                mine_ids=["https://a.com/1"], sample_idx=1,
+            ),
+        ], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        p = build_trend("品牌A", db_path=db)["series"]["deepseek"][0]
+        assert p["mine_ids"] == ["https://a.com/1"]
+
+    def test_render_markdown_trend_probability_format(self):
+        # 趋势点概率格式与表格/CLI 一致：是 (80%, 4/5)
+        trend = {
+            "series": {
+                "deepseek": [
+                    {"run_at": "t1", "n": 5, "hits": 4, "prob": 0.8,
+                     "ci_low": 0.38, "ci_high": 0.96, "cited": True,
+                     "status": "ok", "sentiment": "positive",
+                     "mine_cited": None, "mine_checked": False, "mine_ids": [],
+                     "cited_type": None, "owned_ids": [],
+                     "competitor_matched": None, "competitor_ids": [], "fact_risks": []},
+                    {"run_at": "t2", "n": 5, "hits": 2, "prob": 0.4,
+                     "ci_low": 0.12, "ci_high": 0.77, "cited": False,
+                     "status": "ok", "sentiment": "neutral",
+                     "mine_cited": None, "mine_checked": False, "mine_ids": [],
+                     "cited_type": None, "owned_ids": [],
+                     "competitor_matched": None, "competitor_ids": [], "fact_risks": []},
+                ],
+            },
+            "changes": [],
+            "total_runs": 2,
+        }
+        results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]
+        md = render_markdown("品牌A", results, trend, [])
+        assert "是 (80%, 4/5) → 否 (40%, 2/5)" in md
+
+    def test_render_markdown_trend_invalid_note(self):
+        # 趋势点附注无效样本：有效 1 次 + 2 次无效时显示「（2 次无效）」
+        trend = {
+            "series": {
+                "deepseek": [
+                    {"run_at": "t0", "n": 1, "hits": 1, "prob": 1.0, "invalid": 0,
+                     "ci_low": None, "ci_high": None, "cited": True,
+                     "status": "ok", "sentiment": "positive",
+                     "mine_cited": None, "mine_checked": False, "mine_ids": [],
+                     "cited_type": None, "owned_ids": [],
+                     "competitor_matched": None, "competitor_ids": [], "fact_risks": []},
+                    {"run_at": "t1", "n": 1, "hits": 1, "prob": 1.0, "invalid": 2,
+                     "ci_low": None, "ci_high": None, "cited": True,
+                     "status": "ok", "sentiment": "positive",
+                     "mine_cited": None, "mine_checked": False, "mine_ids": [],
+                     "cited_type": None, "owned_ids": [],
+                     "competitor_matched": None, "competitor_ids": [], "fact_risks": []},
+                ],
+            },
+            "changes": [],
+            "total_runs": 1,
+        }
+        results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]
+        md = render_markdown("品牌A", results, trend, [])
+        assert "（2 次无效）" in md
+
+    def test_render_markdown_trend_error_point_shows_unknown(self):
+        # status=error 且有效样本 >1 时，趋势显示「未知」，不得渲染成「否 (100%, 2/2)」
+        trend = {
+            "series": {
+                "deepseek": [
+                    {"run_at": "t0", "n": 1, "hits": 1, "prob": 1.0, "invalid": 0,
+                     "ci_low": None, "ci_high": None, "cited": True,
+                     "status": "ok", "sentiment": "positive",
+                     "mine_cited": None, "mine_checked": False, "mine_ids": [],
+                     "cited_type": None, "owned_ids": [],
+                     "competitor_matched": None, "competitor_ids": [], "fact_risks": []},
+                    {"run_at": "t1", "n": 2, "hits": 2, "prob": 1.0, "invalid": 3,
+                     "ci_low": 0.34, "ci_high": 1.0, "cited": None,
+                     "status": "error", "sentiment": None,
+                     "mine_cited": None, "mine_checked": False, "mine_ids": [],
+                     "cited_type": None, "owned_ids": [],
+                     "competitor_matched": None, "competitor_ids": [], "fact_risks": []},
+                ],
+            },
+            "changes": [],
+            "total_runs": 2,
+        }
+        results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]
+        md = render_markdown("品牌A", results, trend, [])
+        assert "未知（3 次无效）" in md
+        assert "否 (100%" not in md
+
+    def test_main_samples_loop_and_prob_display(self, tmp_path, monkeypatch, capsys):
+        calls = {"n": 0}
+
+        def fake_probe(query, mine_ids=None, owned_ids=None, competitor_ids=None):
+            calls["n"] += 1
+            return ProbeResult(
+                query, "deepseek", "ok", calls["n"] != 3,
+                "positive", "c", "api", False,
+            )
+
+        monkeypatch.setitem(search_ai.PLATFORMS["deepseek"], "probe", fake_probe)
+        db = tmp_path / "monitor.db"
+        out = tmp_path / "snap"
+        code = main([
+            "--query", "codex", "--platforms", "deepseek", "--samples", "5",
+            "--db", str(db), "--output", str(out),
+        ])
+        assert code == 0
+        assert calls["n"] == 5
+        captured = capsys.readouterr().out
+        assert "被提及 是 (80%, 4/5" in captured
+        history = load_history("codex", db_path=db)
+        assert len(history) == 5
+        assert {r["sample_idx"] for r in history} == {0, 1, 2, 3, 4}
+
+    def test_main_prints_unknown_when_cited_none(self, tmp_path, monkeypatch, capsys):
+        # 防御：status=ok 但 cited=None（异常数据）时 CLI 显示「未知」而非「否」
+        def fake_probe(query, mine_ids=None, owned_ids=None, competitor_ids=None):
+            return ProbeResult(
+                query, "deepseek", "ok", None, None, "c", "api", False
+            )
+
+        monkeypatch.setitem(search_ai.PLATFORMS["deepseek"], "probe", fake_probe)
+        db = tmp_path / "monitor.db"
+        out = tmp_path / "snap"
+        assert main([
+            "--query", "codex", "--platforms", "deepseek", "--samples", "3",
+            "--db", str(db), "--output", str(out),
+        ]) == 0
+        captured = capsys.readouterr().out
+        assert "被提及 未知" in captured
+
+    def test_render_markdown_probability(self):
+        r = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            prob=0.8, ci_low=0.38, ci_high=0.96, sample_count=5,
+        )
+        r.meta = {"sample_hits": 4}
+        md = render_markdown("品牌A", [r], {"series": {}, "changes": []}, [])
+        assert "是 (80%, 4/5，CI 38%-96%)" in md
+
+    def test_render_markdown_probability_with_invalid_note(self):
+        # 存在无效样本时附注无效数，避免「4/5」被误读为总采样 5 次
+        r = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            prob=1.0, ci_low=0.6, ci_high=1.0, sample_count=4,
+        )
+        r.meta = {"sample_hits": 4, "sample_invalid": 1}
+        md = render_markdown("品牌A", [r], {"series": {}, "changes": []}, [])
+        assert "是 (100%, 4/4，1 次无效，CI 60%-100%)" in md
+
+    def test_render_markdown_error_status_shows_unknown_cited(self):
+        # 多数失败 + 少数成功：聚合 status=error 时被提及显示「未知」，不得显示「是」
+        r = ProbeResult(
+            "品牌A", "deepseek", "error", True, None, "boom", "api", True,
+            prob=1.0, sample_count=1, error="x",
+        )
+        r.meta = {"sample_hits": 1, "sample_invalid": 2}
+        md = render_markdown("品牌A", [r], {"series": {}, "changes": []}, [])
+        assert "未知" in md
+        assert "| 失败 | — | 是" not in md
+
+    def test_render_markdown_unknown_when_all_samples_invalid(self):
+        # 全部样本无效（失败/未配置）时显示「未知」，不得显示「否 (0%, 0/5)」
+        r = ProbeResult(
+            "品牌A", "deepseek", "error", None, None, "boom", "api", True,
+            prob=None, sample_count=0, error="x",
+        )
+        r.meta = {"sample_invalid": 5}
+        md = render_markdown("品牌A", [r], {"series": {}, "changes": []}, [])
+        assert "未知" in md
+        assert "(0%, 0/" not in md
 
     def test_empty_inputs(self):
         assert _detect_mine("", ["a"]) == []
@@ -639,7 +1243,7 @@ class TestDB:
             "id", "query", "platform", "run_at", "status", "cited", "sentiment",
             "context", "source", "degraded", "error", "meta", "mine_cited",
             "mine_ids", "confidence", "cited_type", "owned_ids",
-            "competitor_matched", "competitor_ids", "fact_risks",
+            "competitor_matched", "competitor_ids", "fact_risks", "sample_idx", "run_id",
         ]
         assert not any(chr(39) in c for c in cols)
 
@@ -1148,10 +1752,13 @@ class TestRecommendations:
         results = [ProbeResult(
             "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
             mine_cited=False, mine_ids=["https://a.com/1", "我的昵称"],
+            competitor_ids=["https://comp.example.com"],
         )]
         recs = build_recommendations("品牌A", results, delta=delta)
         rec = next(r for r in recs if r.dimension == "竞品夺走")
         assert "--mine https://a.com/1 --mine '我的昵称'" in rec.falsifiability_check
+        assert "--competitor https://comp.example.com" in rec.falsifiability_check
+        assert "--competitor <竞品标识>" not in rec.falsifiability_check
 
     def test_fact_risks_p1(self):
         results = [ProbeResult(
@@ -1284,6 +1891,7 @@ class TestReport:
         assert "## 风险提示" in md
         assert "竞品夺走" in md
         assert "推断" in md
+        assert "前后竞品标识不一致" in md
         assert "版本 2.3.1" in md
         assert "是（原创）" in md
 
@@ -1498,12 +2106,14 @@ class TestCLI:
             "--query", "codex", "--platforms", "deepseek",
             "--mine", "https://a.com/1",
             "--competitor", "https://comp.example.com",
+            "--samples", "1",
             "--db", str(db), "--output", str(out),
         ]) == 0
         assert main([
             "--query", "codex", "--platforms", "deepseek",
             "--mine", "https://a.com/1",
             "--competitor", "https://comp.example.com",
+            "--samples", "1",
             "--db", str(db), "--output", str(out),
         ]) == 0
         captured = capsys.readouterr().out
@@ -1561,11 +2171,13 @@ class TestCLI:
         out = tmp_path / "snap"
         assert main([
             "--query", "codex", "--platforms", "deepseek",
-            "--mine", "https://a.com/1", "--db", str(db), "--output", str(out),
+            "--mine", "https://a.com/1", "--samples", "1",
+            "--db", str(db), "--output", str(out),
         ]) == 0
         assert main([
             "--query", "codex", "--platforms", "deepseek",
-            "--mine", "https://a.com/1", "--db", str(db), "--output", str(out),
+            "--mine", "https://a.com/1", "--samples", "1",
+            "--db", str(db), "--output", str(out),
         ]) == 0
         captured = capsys.readouterr().out
         # 仅 mine 变化时不得出现「： · 」的多余分隔符

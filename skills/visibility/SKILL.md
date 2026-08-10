@@ -44,7 +44,7 @@ Notes:
 Monitor brand mentions across AI platforms. Input: a brand name or keyword. Output: a tracking report showing whether the brand is cited on DeepSeek, Kimi, Doubao, and Yuanbao, with sentiment and context for each, plus a trend comparison against previous snapshots.
 
 Workflow:
-1. Run `python scripts/search_ai.py --query <topic>` (optionally `--platforms deepseek,kimi` to limit)
+1. Run `python scripts/search_ai.py --query <topic>` (optionally `--platforms deepseek,kimi` to limit; `--samples 5` default samples each platform N times and reports mention probability + Wilson 95% CI, `--samples 1` for single-shot)
 2. To check whether **your content** is cited (not just the topic mentioned), add `--mine <URL或标题或作者名>` (repeatable, one identifier per flag): `python scripts/search_ai.py --query "codex 如何安装" --mine "https://zhuanlan.zhihu.com/p/xxx" --mine "我的昵称"`
 3. (B3 引用质量，可选) `--mine-owned <标识>` 标记转载/自有渠道内容（仅命中 owned 且未命中原创标识时记为「转载」，否则按原创记）；`--competitor <标识>` 传入竞品标识，用于 lostprompt（竞品夺走）分析
 4. Results are stored in `data/monitor.db` (SQLite) automatically
@@ -58,6 +58,7 @@ Workflow:
   - Every platform result carries a confidence label: DeepSeek = `Confirmed` (real API probe), Kimi/Doubao/Yuanbao = `Likely` (search inference). Shown in CLI summary, snapshot report/JSON and dashboard.
 - `--mine` matching is substring-based: URL matching works best in search inference, title/author name matching is more common in AI answers. A negative result is honest (not cited yet), not a guarantee.
 - B3 引用质量：`--mine` 命中且非 `--mine-owned` 记为 earned（原创被引）；仅命中 `--mine-owned` 记为 owned（转载/自有渠道被引）。「风险提示」里的未核实断言来自 AI 回答的数字/版本提取，只做提示不做事实判定，需人工复核。
+- B1 多采样（Phase 4）：默认每平台采样 5 次，被提及 = 多数样本命中，概率 = 命中数/样本数，置信区间为 Wilson 95%；单次采样（--samples 1）时退化为是/否判定。原始样本回答存 JSON meta.sample_answers 供复核。
 
 ### `/pulse adapt <topic>`
 

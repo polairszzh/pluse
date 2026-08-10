@@ -118,6 +118,7 @@
 - **设计**：每问句每平台采样 N 次（默认 5），取「被提及/被引用」均值 = 被引用概率，附置信区间与各次样本原文。人工或宿主 agent 采集后喂回，形成度量闭环。
 - **做法**：`track --samples 5`；DB 增加 sample 表或 runs 编号；趋势图切换为概率曲线。
 - **优先级**：P1。依赖：B2 置信度标签先落地（采样数据更可信）。
+  **实现**（2026-08-10，PR #13）：`track --samples N`（默认 5，1 为单次）；probes 表加 sample_idx 列（同一 run_at 的 N 行样本）；`_aggregate_samples` 多数派聚合 + Wilson 95% 置信区间；build_trend 按 run_at 聚合出概率序列（n/hits/prob/ci），变化点基于多数派判定；CLI/报告显示「是 (80%, 4/5)」；风险信号（竞品/未核实断言）保守合并任一命中；样本原文存 meta.sample_answers。
 
 ### B2. 置信度标签（Agentic-SEO-Skill）★ 此前建议第 3 条
 - **设计**：每个平台结果标注 `Confirmed`（DeepSeek 真实 API）/ `Likely`（Bing 推断）/ `Hypothesis`（启发式匹配）。报告和仪表板都显示标签，避免把推断当事实。

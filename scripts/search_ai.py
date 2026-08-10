@@ -18,11 +18,14 @@ from __future__ import annotations
 import argparse
 import html as html_module
 import json
+import math
 import os
 import re
 import shlex
 import sqlite3
 import sys
+import uuid
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -127,7 +130,9 @@ _FACT_VERSION_RE = re.compile(
 )
 _FACT_UNIT_RE = re.compile(
     r"(\d+(?:\.\d+)?)\s*"
-    r"(万亿元|亿元|万亿|万用户|万人次|万人|万元|万次|亿|万|元|积分|用户|粉丝|下载|安装|人|次|GB|MB|TB|%)"
+    # 数量级（万亿/亿/万）与对象单位（元/积分/用户/次…）解耦：
+    # 任意组合自动成立（100亿次、5000万人、3亿次…），无需枚举全部组合
+    r"((?:万亿|亿|万)?(?:元|积分|用户|粉丝|人次|人|次|下载|安装|GB|MB|TB|%)|万亿|亿|万)"
 )
 
 
@@ -182,6 +187,150 @@ def _extract_fact_risks(answer: str, query: str, limit: int = 5) -> list[str]:
     return risks
 
 
+def _wilson_interval(hits: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """二项分布 Wilson score 区间（小样本也稳定），返回 (low, high)"""
+    if n <= 0 or hits < 0 or hits > n:
+        return (0.0, 0.0)
+    p = hits / n
+    denom = 1 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    margin = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
+    return (max(0.0, center - margin), min(1.0, center + margin))
+
+
+def _majority(values: list) -> object | None:
+    """非 None 值的多数派（平局按首次出现顺序），全 None 返回 None"""
+    cnt = Counter(v for v in values if v is not None)
+    return cnt.most_common(1)[0][0] if cnt else None
+
+
+def _aggregate_bool_tristate(values: list) -> bool | None:
+    """布尔三态聚合：任一 True→True；有 False 无 True→False；全 None→None"""
+    vals = [v for v in values if v is not None]
+    if not vals:
+        return None
+    return bool(any(vals))
+
+
+def _union_strings(groups: list[list[str]]) -> list[str]:
+    """合并去重字符串列表（风险信号保守并集）"""
+    return list(dict.fromkeys(x for group in groups for x in group))
+
+
+def _aggregate_binary(valid_values: list) -> dict:
+    """二元值（cited/mine_cited）聚合：n/hits/prob/ci + 严格多数判定
+
+    _aggregate_samples 与 build_trend 共用，保证口径一致：
+    概率 = 命中/有效样本；cited = 命中数 × 2 > 有效样本数（平局为否）；
+    全部无效时 prob/cited 为 None（未知）。
+    """
+    n = len(valid_values)
+    hits = sum(1 for v in valid_values if v)
+    if n:
+        prob = hits / n
+        ci_low, ci_high = _wilson_interval(hits, n)
+    else:
+        prob, ci_low, ci_high = None, None, None
+    return {
+        "n": n,
+        "hits": hits,
+        "prob": prob,
+        "ci_low": ci_low,
+        "ci_high": ci_high,
+        "cited": hits * 2 > n if n else None,
+    }
+
+
+def _aggregate_samples(samples: list[ProbeResult]) -> ProbeResult:
+    """把同一 run 的 N 个采样样本聚合为带概率/置信区间的单条结果
+
+    cited / mine_cited / sentiment / cited_type 取多数派（仅有效样本）；
+    competitor_matched / fact_risks 保守取任一命中 / 合并（风险信号不因多数而漏报）；
+    prob / ci_low / ci_high / sample_count 基于有效样本（cited 非 None）命中数；
+    cited=None 的失败/未配置样本不计入分母，全部无效时概率为 None（显示未知）。
+    """
+    if not samples:
+        raise ValueError("aggregate requires at least one sample")
+    agg = _aggregate_binary([
+        s.cited for s in samples if s.cited is not None
+    ])
+    invalid = len(samples) - agg["n"]
+    n, hits = agg["n"], agg["hits"]
+    prob, ci_low, ci_high = agg["prob"], agg["ci_low"], agg["ci_high"]
+    base = samples[0]
+    cited = agg["cited"]
+    # mine_cited 与 cited 统一严格多数（平局为否），避免偶样本平局时口径矛盾
+    mine_cited = _aggregate_binary([
+        s.mine_cited for s in samples if s.mine_cited is not None
+    ])["cited"]
+    sentiment = _majority([s.sentiment for s in samples])
+    cited_type = _majority([s.cited_type for s in samples])
+    competitor_matched = _aggregate_bool_tristate(
+        [s.competitor_matched for s in samples]
+    )
+    fact_risks = _union_strings([s.fact_risks for s in samples])
+    status = _majority([s.status for s in samples]) or "error"
+    # 元信息取多数派：samples[0] 可能是少数失败样本，confidence/source 不能从它继承
+    confidence = _majority([s.confidence for s in samples])
+    source = _majority([s.source for s in samples]) or base.source
+    if status != "ok":
+        # 整体失败/未配置：cited/mine_cited 统一无效（表格显示未知，趋势不参与），
+        # 避免与部分有效样本的命中结果口径不一致；上下文同时清空，
+        # 不展示部分样本的命中/未命中上下文（与「未知」状态矛盾）
+        cited = None
+        mine_cited = None
+        hit_context = ""
+    else:
+        # 上下文必须与最终判定一致：cited=True 取命中样本，False 取未命中样本，
+        # 避免「否 (40%)」却展示命中内容；无匹配上下文时留空，不回退到相反判定的样本
+        hit_context = next(
+            (
+                s.context
+                for s in samples
+                if s.cited is not None and bool(s.cited) == bool(cited) and s.context
+            ),
+            "",
+        )
+    # 样本原文关联命中状态，便于复核定位具体哪次采样命中
+    answers = [
+        {"answer": s.meta.get("answer"), "cited": s.cited, "sample_idx": s.sample_idx}
+        for s in samples
+        if isinstance(s.meta.get("answer"), str) and s.meta["answer"]
+    ]
+    meta = dict(base.meta)
+    meta["sample_answers"] = answers
+    meta["sample_count"] = n
+    meta["sample_hits"] = hits
+    meta["sample_invalid"] = invalid
+    return ProbeResult(
+        query=base.query,
+        platform=base.platform,
+        status=status,
+        cited=cited,
+        sentiment=sentiment,
+        context=hit_context,
+        source=source,
+        degraded=_aggregate_binary([s.degraded for s in samples])["cited"],
+        error=next(
+            (s.error for s in samples if s.status == status and s.error),
+            None,
+        ),
+        meta=meta,
+        mine_cited=mine_cited,
+        mine_ids=base.mine_ids,
+        confidence=confidence,
+        cited_type=cited_type,
+        owned_ids=base.owned_ids,
+        competitor_matched=competitor_matched,
+        competitor_ids=base.competitor_ids,
+        fact_risks=fact_risks,
+        prob=prob,
+        ci_low=ci_low,
+        ci_high=ci_high,
+        sample_count=n,
+    )
+
+
 _URL_TOKEN_RE = re.compile(r"https?://[^\s<>\"'，。；：！？（）【】「」『』《》]+", re.IGNORECASE)
 _URL_TRAIL = ".,;:!?)]}"
 
@@ -231,6 +380,17 @@ def _non_empty_query(value: str) -> str:
     return value
 
 
+def _positive_int(value: str) -> int:
+    """argparse 校验：正整数（--samples 等）"""
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("必须是正整数")
+    if n < 1:
+        raise argparse.ArgumentTypeError("必须 >= 1")
+    return n
+
+
 def re_slug(text: str, max_len: int = 40) -> str:
     """查询词 -> 文件名 slug（保留中文）"""
     slug = re.sub(r"[^\w]+", "-", text or "untitled").strip("-")
@@ -264,6 +424,11 @@ class ProbeResult:
     competitor_matched: bool | None = None  # 本次探测是否检测到竞品内容出现
     competitor_ids: list[str] = field(default_factory=list)  # 本次检查的竞品标识
     fact_risks: list[str] = field(default_factory=list)  # 回答中关于品牌的未核实数字断言
+    sample_idx: int = 0             # 多采样编号（同一 run_at 内 0..N-1）
+    prob: float | None = None       # 聚合后：被提及概率（命中数 / 样本数）
+    ci_low: float | None = None     # 聚合后：Wilson 置信区间下界
+    ci_high: float | None = None    # 聚合后：Wilson 置信区间上界
+    sample_count: int = 1           # 聚合后：样本数
 
 
 # --------------------------------------------------------------------------
@@ -673,7 +838,9 @@ CREATE TABLE IF NOT EXISTS probes (
       owned_ids TEXT,
       competitor_matched INTEGER,
       competitor_ids TEXT,
-      fact_risks TEXT
+      fact_risks TEXT,
+      sample_idx INTEGER NOT NULL DEFAULT 0,
+      run_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_probes_query_platform_run
     ON probes(query, platform, run_at);
@@ -708,6 +875,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE probes ADD COLUMN competitor_ids TEXT")
         if "fact_risks" not in cols:
             conn.execute("ALTER TABLE probes ADD COLUMN fact_risks TEXT")
+        if "sample_idx" not in cols:
+            conn.execute("ALTER TABLE probes ADD COLUMN sample_idx INTEGER NOT NULL DEFAULT 0")
+        if "run_id" not in cols:
+            conn.execute("ALTER TABLE probes ADD COLUMN run_id TEXT")
+        # run_id 索引依赖补列完成：旧库在 _migrate 之后才可建
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_probes_run_id ON probes(run_id)")
 
 
 def store_results(
@@ -718,6 +891,8 @@ def store_results(
     """写入一次探测快照，返回本次 run_at"""
     # 微秒精度：避免同一秒内重跑两次时 run_at 相同，趋势/概览把两次运行合并
     run_at = run_at or datetime.now().astimezone().isoformat(timespec="microseconds")
+    # run_id：同一次 store 调用内的所有样本共享；硬区分同 run_at 的不同独立运行
+    run_id = uuid.uuid4().hex[:12]
     conn = connect(db_path)
     try:
         with conn:
@@ -731,8 +906,9 @@ def store_results(
                 conn.execute(
                     "INSERT INTO probes(query, platform, run_at, status, cited, sentiment,"
                     " context, source, degraded, error, meta, mine_cited, mine_ids, confidence,"
-                    " cited_type, owned_ids, competitor_matched, competitor_ids, fact_risks)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " cited_type, owned_ids, competitor_matched, competitor_ids, fact_risks,"
+                    " sample_idx, run_id)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         r.query, r.platform, run_at, r.status, cited, r.sentiment,
                         r.context, r.source, 1 if r.degraded else 0, r.error,
@@ -745,6 +921,8 @@ def store_results(
                         competitor_matched,
                         json.dumps(r.competitor_ids or [], ensure_ascii=False),
                         json.dumps(r.fact_risks or [], ensure_ascii=False),
+                        r.sample_idx,
+                        run_id,
                     ),
                 )
     finally:
@@ -778,9 +956,55 @@ def load_history(
     return rows
 
 
+def _recent_run_rows(
+    query: str,
+    db_path: Path = DEFAULT_DB,
+    max_runs: int = 1000,
+) -> list[dict]:
+    """按 run 完整加载最近 max_runs 次运行的全部行
+
+    多采样后同一 run 有 N 行：按行数限流会把样本组截断成不完整组，
+    导致概率/多数派偏差。这里先按 run_id 取最近 max_runs 个 run，
+    再加载这些 run 的全部行（组完整）；旧数据（run_id 为空）按行取
+    最近 max_runs 行（一行一 run，单采样时代语义）。
+    """
+    conn = connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows: list[dict] = []
+        cur = conn.execute(
+            "SELECT run_id FROM probes WHERE query=? AND run_id IS NOT NULL "
+            "GROUP BY run_id ORDER BY MAX(id) DESC LIMIT ?",
+            (query, max_runs),
+        )
+        run_ids = [r["run_id"] for r in cur.fetchall()]
+        if run_ids:
+            # 分批 IN 查询：避免超出 SQLite 绑定变量上限（旧版默认 999）
+            for start in range(0, len(run_ids), 500):
+                chunk = run_ids[start : start + 500]
+                placeholders = ",".join("?" * len(chunk))
+                cur = conn.execute(
+                    f"SELECT * FROM probes WHERE query=? AND run_id IN ({placeholders}) "
+                    "ORDER BY run_at, id",
+                    [query, *chunk],
+                )
+                rows.extend(dict(r) for r in cur.fetchall())
+        # 旧数据（无 run_id）：单采样时代，一行一 run，按行取最近 max_runs 行
+        cur = conn.execute(
+            "SELECT * FROM probes WHERE query=? AND run_id IS NULL "
+            "ORDER BY run_at DESC, id DESC LIMIT ?",
+            (query, max_runs),
+        )
+        rows.extend(dict(r) for r in cur.fetchall())
+        return rows
+    finally:
+        conn.close()
+
+
 def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
-    """按平台聚合历史快照，生成时间序列并找出引用状态的变化点"""
-    rows = load_history(query, db_path=db_path, limit=1000)
+    """按平台/run_at 聚合历史快照，生成带概率的时间序列并找出引用状态的变化点"""
+    # 按 run 完整加载最近 1000 次运行（多采样组不截断），避免样本组被行数限流切半
+    rows = _recent_run_rows(query, db_path=db_path, max_runs=1000)
     by_platform: dict[str, list[dict]] = {}
     for row in rows:
         by_platform.setdefault(row["platform"], []).append(row)
@@ -789,28 +1013,100 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
     changes: list[dict] = []
     for platform, items in by_platform.items():
         ordered = sorted(items, key=lambda r: r["run_at"])
-        series[platform] = [
-            {
-                "run_at": r["run_at"],
-                "cited": bool(r["cited"]) if r["cited"] is not None else None,
-                "status": r["status"],
-                "sentiment": r["sentiment"],
-                "mine_cited": bool(r["mine_cited"]) if r["mine_cited"] is not None else None,
-                "mine_checked": bool(_parse_mine_ids(r["mine_ids"])),
-                "mine_ids": _parse_mine_ids(r["mine_ids"]),
-                "cited_type": r["cited_type"],
-                "owned_ids": _parse_mine_ids(r["owned_ids"]),
-                "competitor_matched": (
-                    bool(r["competitor_matched"])
-                    if r["competitor_matched"] is not None else None
+        # 多采样：同一 run_at 的 N 行聚合成一个带概率的点
+        # 多采样：同一 run 的 N 行按 run_id 聚合成一个带概率的点；
+        # run_id 硬区分同一时间戳的不同独立运行；旧数据（run_id 为空）回退按 run_at 合并
+        by_run_id: dict[str, list[dict]] = {}
+        for r in ordered:
+            rid = r["run_id"] or f"legacy:{r['run_at']}"
+            by_run_id.setdefault(rid, []).append(r)
+        # 批次顺序：先按 run_at（补录历史时 run_at 与插入顺序不一致），
+        # 同 run_at 再按最小行 id（插入顺序）
+        batches = sorted(
+            by_run_id.items(),
+            key=lambda item: (
+                item[1][0]["run_at"],
+                min(row["id"] for row in item[1]),
+            ),
+        )
+        points: list[dict] = []
+        for _rid, group in batches:
+            run_at = group[0]["run_at"]
+            # cited 为 NULL 的失败/未配置样本不计入概率分母
+            agg = _aggregate_binary([
+                r["cited"] for r in group if r["cited"] is not None
+            ])
+            invalid = len(group) - agg["n"]
+            n, hits = agg["n"], agg["hits"]
+            prob, ci_low, ci_high = agg["prob"], agg["ci_low"], agg["ci_high"]
+            cited = agg["cited"]
+
+            # 取首个「解析后非空」的 mine_ids：空 JSON 字符串 "[]" 不得提前停止
+            mine_ids = next(
+                (
+                    parsed
+                    for r in group
+                    if (parsed := _parse_mine_ids(r["mine_ids"]))
                 ),
-                "competitor_ids": _parse_mine_ids(r["competitor_ids"]),
-                "fact_risks": _parse_mine_ids(r["fact_risks"]),
-            }
-            for r in ordered
-        ]
+                [],
+            )
+            competitor_matched = _aggregate_bool_tristate([
+                bool(r["competitor_matched"])
+                for r in group
+                if r["competitor_matched"] is not None
+            ])
+            mine_cited = _aggregate_binary([
+                r["mine_cited"] for r in group if r["mine_cited"] is not None
+            ])["cited"]
+            status = _majority([r["status"] for r in group]) or "error"
+            if status != "ok":
+                # 整体失败/未配置：cited/mine_cited 置 None，
+                # 变化点检测跳过（现有 None 逻辑）、趋势显示「未知」，与表格口径一致
+                cited = None
+                mine_cited = None
+            points.append({
+                "run_at": run_at,
+                "n": n,
+                "hits": hits,
+                "invalid": invalid,
+                "prob": prob,
+                "ci_low": ci_low,
+                "ci_high": ci_high,
+                "cited": cited,
+                "status": status,
+                "sentiment": _majority([r["sentiment"] for r in group]),
+                "mine_cited": mine_cited,
+                "mine_checked": bool(mine_ids),
+                "mine_ids": mine_ids,
+                "cited_type": _majority([r["cited_type"] for r in group]),
+                "owned_ids": next(
+                    (
+                        parsed
+                        for r in group
+                        if (parsed := _parse_mine_ids(r["owned_ids"]))
+                    ),
+                    [],
+                ),
+                "competitor_matched": competitor_matched,
+                "competitor_ids": next(
+                    (
+                        parsed
+                        for r in group
+                        if (parsed := _parse_mine_ids(r["competitor_ids"]))
+                    ),
+                    [],
+                ),
+                "fact_risks": _union_strings([
+                    _parse_mine_ids(r["fact_risks"]) for r in group
+                ]),
+            })
+        # 按 run 截断：每平台保留最近 1000 次运行（与单采样时代 limit=1000 行的
+        # 可回溯范围一致，多采样后按 run 计数而不是按行计数）；
+        # 变化点检测也基于截断后的序列，避免引用展示范围外的 run_at
+        points = points[-1000:]
+        series[platform] = points
         prev: bool | None = None
-        for item in ordered:
+        for item in points:
             cur_val = bool(item["cited"]) if item["cited"] is not None else None
             if cur_val is None:
                 # 无效探测（未配置密钥/失败）不参与变化点，也不重置基线，
@@ -1011,6 +1307,13 @@ def build_recommendations(
             (" ".join(f"--mine {_shell_quote(m)}" for m in r.mine_ids) for r in results if r.mine_ids),
             "--mine <你的内容URL>",
         )
+        comp_args = next(
+            (
+                " ".join(f"--competitor {_shell_quote(c)}" for c in r.competitor_ids)
+                for r in results if r.competitor_ids
+            ),
+            "--competitor <竞品标识>",
+        )
         recs.append(Recommendation(
             priority="P1",
             dimension="竞品夺走",
@@ -1019,7 +1322,7 @@ def build_recommendations(
                    "确属夺走则围绕差异化优势补充独家数据/实测/案例，并在标题与首段强化品牌锚定",
             expected_impact="确认后把 AI 引用从竞品拉回你的内容",
             falsifiability_check=f"重跑 /pulse track --query {_shell_quote(query)} "
-                                 f"{mine_args} --competitor <竞品标识>，"
+                                 f"{mine_args} {comp_args}，"
                                  "对应平台「竞品夺走」风险消失、我的内容变为「是」",
         ))
     if inferred_replaced:
@@ -1027,6 +1330,13 @@ def build_recommendations(
         mine_args = next(
             (" ".join(f"--mine {_shell_quote(m)}" for m in r.mine_ids) for r in results if r.mine_ids),
             "--mine <你的内容URL>",
+        )
+        comp_args = next(
+            (
+                " ".join(f"--competitor {_shell_quote(c)}" for c in r.competitor_ids)
+                for r in results if r.competitor_ids
+            ),
+            "--competitor <竞品标识>",
         )
         recs.append(Recommendation(
             priority="P1",
@@ -1036,7 +1346,7 @@ def build_recommendations(
                    "确属夺走则补充差异化内容强化品牌锚定",
             expected_impact="确认是否为真实竞品夺走，避免误判后浪费优化动作",
             falsifiability_check=f"重跑 /pulse track --query {_shell_quote(query)} "
-                                 f"{mine_args} --competitor <竞品标识>，"
+                                 f"{mine_args} {comp_args}，"
                                  "连续两次检查后「竞品夺走」转为已确认或消失",
         ))
     risk_results = [
@@ -1129,7 +1439,23 @@ def render_markdown(
         lines.append("| 平台 | 状态 | 置信度 | 被提及 | 情感 | 上下文 / 说明 |")
         lines.append("|---|---|---|---|---|---|")
     for r in results:
-        cited_txt = {True: "是", False: "否", None: "未知"}.get(r.cited, "未知")
+        if r.status != "ok":
+            # 整体失败/未配置：不展示部分样本的命中结果，避免「失败 + 被提及 是」矛盾
+            cited_txt = "未知"
+        elif r.sample_count > 1 and r.prob is not None:
+            hits = r.meta.get("sample_hits", 0)
+            invalid = r.meta.get("sample_invalid", 0)
+            invalid_note = f"，{invalid} 次无效" if invalid else ""
+            ci_note = (
+                f"，CI {r.ci_low:.0%}-{r.ci_high:.0%}"
+                if r.ci_low is not None and r.ci_high is not None else ""
+            )
+            cited_txt = (
+                f"{'是' if r.cited else '否'} "
+                f"({r.prob:.0%}, {hits}/{r.sample_count}{invalid_note}{ci_note})"
+            )
+        else:
+            cited_txt = {True: "是", False: "否", None: "未知"}.get(r.cited, "未知")
         mine_txt = {True: "是", False: "否", None: "—"}.get(r.mine_cited, "—")
         if r.mine_cited is True:
             if r.cited_type == "earned":
@@ -1197,10 +1523,20 @@ def render_markdown(
             if len(points) < 2:
                 lines.append(f"- **{label}**：{len(points)} 次快照，重跑一次后生成趋势。")
                 continue
-            states = " → ".join(
-                "是" if p["cited"] else "否" if p["cited"] is False else "未知"
-                for p in points
-            )
+            def point_txt(p: dict) -> str:
+                invalid_note = f"（{p['invalid']} 次无效）" if p.get("invalid") else ""
+                if p.get("status") != "ok":
+                    # 整体失败/未配置：显示未知，不按部分有效样本的概率渲染是/否
+                    return "未知" + invalid_note
+                if p.get("n", 1) > 1 and p.get("prob") is not None:
+                    return (
+                        f"{'是' if p['cited'] else '否'} "
+                        f"({p['prob']:.0%}, {p['hits']}/{p['n']}){invalid_note}"
+                    )
+                base = "是" if p["cited"] else "否" if p["cited"] is False else "未知"
+                return base + invalid_note
+
+            states = " → ".join(point_txt(p) for p in points)
             line = f"- **{label}**（{len(points)} 次）：{states}"
             # 只要历史里有任何一次检查过 mine，就按 mine_ids 分组展示：
             # 不同次用不同标识时不会显示成假回归；未检查的运行显式标次数
@@ -1244,7 +1580,7 @@ def render_markdown(
             suffix = (
                 ""
                 if item.get("competitor_replaced_confirmed")
-                else "（推断：上次未检查竞品，待人工确认）"
+                else "（推断：上次未检查竞品或前后竞品标识不一致，待人工确认）"
             )
             risk_lines.append(
                 f"- ⚠ **{label}**：上次被引用，本次被竞品替换{suffix}"
@@ -1283,6 +1619,8 @@ def render_markdown(
     lines.append("## 数据说明")
     lines.append("")
     lines.append("- DeepSeek：真实 API 探测，被提及 = 回答正文出现品牌名（精确匹配），原始回答可在 JSON 快照的 meta.answer 复核。")
+    lines.append("- 默认每平台采样 5 次（--samples 可调，1 为单次判定）：被提及 = 多数样本命中，概率 = 命中数/样本数，"
+                 "置信区间为 Wilson 95% 区间；单次采样时显示是/否。")
     lines.append("- Kimi / 豆包 / 元宝：无公开 API，使用 Bing 搜索结果推断检索库中的存在信号，**不等同于该平台真实引用**。")
     lines.append("- Kimi / 豆包 / 元宝 各自用 Bing 对同一查询词做搜索推断（结果通常相同），是检索库存在信号，不代表各平台各自的真实引用。")
     lines.append("- 传 --mine <你的内容标识>（URL/标题/作者名，可重复传多次，一次一个）时，额外判断 AI 回答/Bing 结果里是否出现你的内容；"
@@ -1388,6 +1726,12 @@ def build_parser() -> argparse.ArgumentParser:
              "传了会检测 AI 回答/搜索结果里是否出现竞品，用于 lostprompt（竞品夺走）分析",
     )
     parser.add_argument(
+        "--samples",
+        type=_positive_int,
+        default=5,
+        help="每平台采样次数（默认 5）：多次探测计算被提及概率与置信区间；1 为单次判定",
+    )
+    parser.add_argument(
         "--platforms",
         type=_parse_platforms,
         help="逗号分隔的平台列表，默认全部（deepseek,kimi,doubao,yuanbao）",
@@ -1413,18 +1757,26 @@ def main(argv: list[str] | None = None) -> int:
     mine_ids = list(dict.fromkeys(earned_ids + owned_ids))
     db_path = Path(args.db) if args.db else DEFAULT_DB
     out_dir = Path(args.output) if args.output else None
+    samples = args.samples
 
     try:
+        raw_samples: list[ProbeResult] = []
+        for sample_idx in range(samples):
+            for p in platforms:
+                r = PLATFORMS[p]["probe"](
+                    args.query,
+                    mine_ids=mine_ids,
+                    owned_ids=owned_ids,
+                    competitor_ids=competitor_ids,
+                )
+                r.sample_idx = sample_idx
+                raw_samples.append(r)
+        store_results(raw_samples, db_path=db_path)
+        # 多采样聚合：每平台多数派判定 + 被提及概率/置信区间
         results = [
-            PLATFORMS[p]["probe"](
-                args.query,
-                mine_ids=mine_ids,
-                owned_ids=owned_ids,
-                competitor_ids=competitor_ids,
-            )
+            _aggregate_samples([r for r in raw_samples if r.platform == p])
             for p in platforms
         ]
-        store_results(results, db_path=db_path)
         trend = build_trend(args.query, db_path=db_path)
         delta = build_delta(args.query, db_path=db_path, trend=trend, platforms=platforms)
         recs = build_recommendations(args.query, results, delta=delta)
@@ -1456,7 +1808,20 @@ def main(argv: list[str] | None = None) -> int:
                     mine_txt += "（未知）"
             mine = f" · 我的内容 {mine_txt}"
         if r.status == "ok":
-            cited = "是" if r.cited else "否"
+            if r.sample_count > 1 and r.prob is not None:
+                hits = r.meta.get("sample_hits", 0)
+                invalid = r.meta.get("sample_invalid", 0)
+                invalid_note = f"，{invalid} 次无效" if invalid else ""
+                ci_note = (
+                    f"，CI {r.ci_low:.0%}-{r.ci_high:.0%}"
+                    if r.ci_low is not None and r.ci_high is not None else ""
+                )
+                cited = (
+                    f"{'是' if r.cited else '否'} "
+                    f"({r.prob:.0%}, {hits}/{r.sample_count}{invalid_note}{ci_note})"
+                )
+            else:
+                cited = {True: "是", False: "否", None: "未知"}.get(r.cited, "未知")
             extra = f" · 情感 {SENTIMENT_LABEL.get(r.sentiment or '', '—')}" if r.sentiment else ""
             conf = f" · 置信度 {CONFIDENCE_LABEL.get(r.confidence or '', '—')}"
             print(f"  {label}：{STATUS_LABEL[r.status]} · 被提及 {cited}{extra}{conf}{mine}")
