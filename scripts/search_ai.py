@@ -217,6 +217,30 @@ def _union_strings(groups: list[list[str]]) -> list[str]:
     return list(dict.fromkeys(x for group in groups for x in group))
 
 
+def _aggregate_binary(valid_values: list) -> dict:
+    """二元值（cited/mine_cited）聚合：n/hits/prob/ci + 严格多数判定
+
+    _aggregate_samples 与 build_trend 共用，保证口径一致：
+    概率 = 命中/有效样本；cited = 命中数 × 2 > 有效样本数（平局为否）；
+    全部无效时 prob/cited 为 None（未知）。
+    """
+    n = len(valid_values)
+    hits = sum(1 for v in valid_values if v)
+    if n:
+        prob = hits / n
+        ci_low, ci_high = _wilson_interval(hits, n)
+    else:
+        prob, ci_low, ci_high = None, None, None
+    return {
+        "n": n,
+        "hits": hits,
+        "prob": prob,
+        "ci_low": ci_low,
+        "ci_high": ci_high,
+        "cited": hits * 2 > n if n else None,
+    }
+
+
 def _aggregate_samples(samples: list[ProbeResult]) -> ProbeResult:
     """把同一 run 的 N 个采样样本聚合为带概率/置信区间的单条结果
 
@@ -227,23 +251,18 @@ def _aggregate_samples(samples: list[ProbeResult]) -> ProbeResult:
     """
     if not samples:
         raise ValueError("aggregate requires at least one sample")
-    valid = [s for s in samples if s.cited is not None]
-    invalid = len(samples) - len(valid)
-    n = len(valid)
-    hits = sum(1 for s in valid if s.cited)
-    if n:
-        prob = hits / n
-        ci_low, ci_high = _wilson_interval(hits, n)
-    else:
-        prob = None
-        ci_low, ci_high = None, None
-
+    agg = _aggregate_binary([
+        s.cited for s in samples if s.cited is not None
+    ])
+    invalid = len(samples) - agg["n"]
+    n, hits = agg["n"], agg["hits"]
+    prob, ci_low, ci_high = agg["prob"], agg["ci_low"], agg["ci_high"]
     base = samples[0]
-    cited = hits * 2 > n if n else None  # 严格多数（>1/2）才算被提及；偶数平局为否
+    cited = agg["cited"]
     # mine_cited 与 cited 统一严格多数（平局为否），避免偶样本平局时口径矛盾
-    mine_valid = [s.mine_cited for s in samples if s.mine_cited is not None]
-    mine_hits = sum(1 for v in mine_valid if v)
-    mine_cited = mine_hits * 2 > len(mine_valid) if mine_valid else None
+    mine_cited = _aggregate_binary([
+        s.mine_cited for s in samples if s.mine_cited is not None
+    ])["cited"]
     sentiment = _majority([s.sentiment for s in samples])
     cited_type = _majority([s.cited_type for s in samples])
     competitor_matched = _aggregate_bool_tristate(
@@ -924,11 +943,52 @@ def load_history(
     return rows
 
 
+def _recent_run_rows(
+    query: str,
+    db_path: Path = DEFAULT_DB,
+    max_runs: int = 1000,
+) -> list[dict]:
+    """按 run 完整加载最近 max_runs 次运行的全部行
+
+    多采样后同一 run 有 N 行：按行数限流会把样本组截断成不完整组，
+    导致概率/多数派偏差。这里先按 run_id 取最近 max_runs 个 run，
+    再加载这些 run 的全部行（组完整）；旧数据（run_id 为空）按行取
+    最近 max_runs 行（一行一 run，单采样时代语义）。
+    """
+    conn = connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows: list[dict] = []
+        cur = conn.execute(
+            "SELECT run_id FROM probes WHERE query=? AND run_id IS NOT NULL "
+            "GROUP BY run_id ORDER BY MAX(id) DESC LIMIT ?",
+            (query, max_runs),
+        )
+        run_ids = [r["run_id"] for r in cur.fetchall()]
+        if run_ids:
+            placeholders = ",".join("?" * len(run_ids))
+            cur = conn.execute(
+                f"SELECT * FROM probes WHERE query=? AND run_id IN ({placeholders}) "
+                "ORDER BY run_at, id",
+                [query, *run_ids],
+            )
+            rows.extend(dict(r) for r in cur.fetchall())
+        # 旧数据（无 run_id）：单采样时代，一行一 run，按行取最近 max_runs 行
+        cur = conn.execute(
+            "SELECT * FROM probes WHERE query=? AND run_id IS NULL "
+            "ORDER BY run_at DESC, id DESC LIMIT ?",
+            (query, max_runs),
+        )
+        rows.extend(dict(r) for r in cur.fetchall())
+        return rows
+    finally:
+        conn.close()
+
+
 def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
     """按平台/run_at 聚合历史快照，生成带概率的时间序列并找出引用状态的变化点"""
-    # 多采样后每 run 产生 N 行：按行限流会压缩可回溯运行次数，
-    # 取 10000 行（samples=5 时约 2000 次运行）再在聚合后按 run 截断
-    rows = load_history(query, db_path=db_path, limit=10000)
+    # 按 run 完整加载最近 1000 次运行（多采样组不截断），避免样本组被行数限流切半
+    rows = _recent_run_rows(query, db_path=db_path, max_runs=1000)
     by_platform: dict[str, list[dict]] = {}
     for row in rows:
         by_platform.setdefault(row["platform"], []).append(row)
@@ -953,16 +1013,12 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
         for _rid, group in batches:
             run_at = group[0]["run_at"]
             # cited 为 NULL 的失败/未配置样本不计入概率分母
-            valid = [r for r in group if r["cited"] is not None]
-            invalid = len(group) - len(valid)
-            n = len(valid)
-            hits = sum(1 for r in valid if r["cited"])
-            if n:
-                prob = hits / n
-                ci_low, ci_high = _wilson_interval(hits, n)
-            else:
-                prob = None
-                ci_low, ci_high = None, None
+            agg = _aggregate_binary([
+                r["cited"] for r in group if r["cited"] is not None
+            ])
+            invalid = len(group) - agg["n"]
+            n, hits = agg["n"], agg["hits"]
+            prob, ci_low, ci_high = agg["prob"], agg["ci_low"], agg["ci_high"]
 
             mine_ids = next(
                 (_parse_mine_ids(r["mine_ids"]) for r in group if r["mine_ids"]),
@@ -973,13 +1029,9 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
                 for r in group
                 if r["competitor_matched"] is not None
             ])
-            mine_vals = [
+            mine_cited = _aggregate_binary([
                 r["mine_cited"] for r in group if r["mine_cited"] is not None
-            ]
-            mine_hits = sum(1 for v in mine_vals if v)
-            mine_cited = (
-                mine_hits * 2 > len(mine_vals) if mine_vals else None
-            )
+            ])["cited"]
             points.append({
                 "run_at": run_at,
                 "n": n,
@@ -988,7 +1040,7 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
                 "prob": prob,
                 "ci_low": ci_low,
                 "ci_high": ci_high,
-                "cited": hits * 2 > n if n else None,
+                "cited": agg["cited"],
                 "status": _majority([r["status"] for r in group]) or "error",
                 "sentiment": _majority([r["sentiment"] for r in group]),
                 "mine_cited": mine_cited,

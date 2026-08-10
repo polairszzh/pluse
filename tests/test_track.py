@@ -572,12 +572,35 @@ class TestB1Sampling:
                 "run_id": f"r{i}",
             })
         monkeypatch.setattr(
-            search_ai, "load_history", lambda *a, **kw: rows
+            search_ai, "_recent_run_rows", lambda *a, **kw: rows
         )
         trend = search_ai.build_trend("品牌A", db_path=Path("unused.db"))
         shown = {p["run_at"] for p in trend["series"]["deepseek"]}
         assert len(shown) == 1000
         assert all(ch["run_at"] in shown for ch in trend["changes"])
+
+    def test_recent_run_rows_loads_complete_runs(self, tmp_path):
+        # 按 run 完整加载：多采样组不被行数限流切半
+        db = tmp_path / "monitor.db"
+        for _ in range(8):
+            store_results(
+                [
+                    ProbeResult(
+                        "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+                        sample_idx=i,
+                    )
+                    for i in range(5)
+                ],
+                db_path=db,
+                run_at="2026-08-01T10:00:00+08:00",
+            )
+        rows = search_ai._recent_run_rows("品牌A", db_path=db, max_runs=5)
+        run_ids = {r["run_id"] for r in rows}
+        assert len(run_ids) == 5
+        # 每个 run 的 5 个样本完整加载
+        assert all(
+            sum(1 for r in rows if r["run_id"] == rid) == 5 for rid in run_ids
+        )
 
     def test_render_markdown_trend_probability_format(self):
         # 趋势点概率格式与表格/CLI 一致：是 (80%, 4/5)
