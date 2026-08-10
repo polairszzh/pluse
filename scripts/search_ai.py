@@ -985,9 +985,9 @@ def build_recommendations(
     ]
     if confirmed_replaced:
         names = "、".join(PLATFORMS.get(p, {}).get("label", p) for p, _ in confirmed_replaced)
-        mine_arg = next(
-            (r.mine_ids[0] for r in results if r.mine_ids),
-            "<你的内容URL>",
+        mine_args = next(
+            (" ".join(f"--mine {_shell_quote(m)}" for m in r.mine_ids) for r in results if r.mine_ids),
+            "--mine <你的内容URL>",
         )
         recs.append(Recommendation(
             priority="P0",
@@ -997,14 +997,14 @@ def build_recommendations(
                    "让 AI 能明确区分你与竞品",
             expected_impact="把 AI 引用从竞品拉回你的内容",
             falsifiability_check=f"重跑 /pulse track --query {_shell_quote(query)} "
-                                 f"--mine {_shell_quote(mine_arg)} --competitor <竞品标识>，"
+                                 f"{mine_args} --competitor <竞品标识>，"
                                  "对应平台「竞品夺走」风险消失、我的内容变为「是」",
         ))
     if inferred_replaced:
         names = "、".join(PLATFORMS.get(p, {}).get("label", p) for p, _ in inferred_replaced)
-        mine_arg = next(
-            (r.mine_ids[0] for r in results if r.mine_ids),
-            "<你的内容URL>",
+        mine_args = next(
+            (" ".join(f"--mine {_shell_quote(m)}" for m in r.mine_ids) for r in results if r.mine_ids),
+            "--mine <你的内容URL>",
         )
         recs.append(Recommendation(
             priority="P1",
@@ -1014,7 +1014,7 @@ def build_recommendations(
                    "确属夺走则补充差异化内容强化品牌锚定",
             expected_impact="确认是否为真实竞品夺走，避免误判后浪费优化动作",
             falsifiability_check=f"重跑 /pulse track --query {_shell_quote(query)} "
-                                 f"--mine {_shell_quote(mine_arg)} --competitor <竞品标识>，"
+                                 f"{mine_args} --competitor <竞品标识>，"
                                  "连续两次检查后「竞品夺走」转为已确认或消失",
         ))
     risk_results = [
@@ -1381,6 +1381,13 @@ def main(argv: list[str] | None = None) -> int:
     earned_ids = list(dict.fromkeys(m.strip() for m in args.mine if m.strip()))
     owned_ids = list(dict.fromkeys(m.strip() for m in args.mine_owned if m.strip()))
     competitor_ids = list(dict.fromkeys(m.strip() for m in args.competitor if m.strip()))
+    overlap = [m for m in owned_ids if m in earned_ids]
+    if overlap:
+        print(
+            f"  [提示] 以下标识同时传入 --mine 与 --mine-owned，按原创（earned）处理：{'、'.join(overlap)}",
+            file=sys.stderr,
+        )
+        owned_ids = [m for m in owned_ids if m not in earned_ids]
     mine_ids = list(dict.fromkeys(earned_ids + owned_ids))
     db_path = Path(args.db) if args.db else DEFAULT_DB
     out_dir = Path(args.output) if args.output else None

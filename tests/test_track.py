@@ -1119,6 +1119,24 @@ class TestRecommendations:
         rec = next(r for r in recs if r.dimension == "竞品夺走")
         assert "--mine '我的昵称'" in rec.falsifiability_check
 
+    def test_competitor_replaced_falsifiability_joins_all_mine_ids(self):
+        # 多个 --mine 标识时复跑命令须全部拼接，不能只取第一个
+        delta = {
+            "platforms": {
+                "deepseek": {
+                    "competitor_replaced": True,
+                    "competitor_replaced_confirmed": True,
+                },
+            }
+        }
+        results = [ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=False, mine_ids=["https://a.com/1", "我的昵称"],
+        )]
+        recs = build_recommendations("品牌A", results, delta=delta)
+        rec = next(r for r in recs if r.dimension == "竞品夺走")
+        assert "--mine https://a.com/1 --mine '我的昵称'" in rec.falsifiability_check
+
     def test_fact_risks_p1(self):
         results = [ProbeResult(
             "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
@@ -1422,6 +1440,27 @@ class TestCLI:
         assert captured["mine_ids"] == ["https://a.com/1", "https://a.com/2"]
         assert captured["owned_ids"] == ["https://a.com/2"]
         assert captured["competitor_ids"] == ["https://comp.example.com"]
+
+    def test_main_owned_earned_overlap_prefers_earned(self, tmp_path, monkeypatch, capsys):
+        # 同一标识同时传 --mine 与 --mine-owned：按原创处理并从 owned 移除，stderr 提示
+        captured = {}
+
+        def fake_probe(query, mine_ids=None, owned_ids=None, competitor_ids=None):
+            captured["owned_ids"] = owned_ids
+            return ProbeResult(query, "deepseek", "ok", True, "positive", "c", "api", False)
+
+        monkeypatch.setitem(search_ai.PLATFORMS["deepseek"], "probe", fake_probe)
+        db = tmp_path / "monitor.db"
+        out = tmp_path / "snap"
+        code = main([
+            "--query", "codex", "--platforms", "deepseek",
+            "--mine", "https://a.com/1",
+            "--mine-owned", "https://a.com/1",
+            "--db", str(db), "--output", str(out),
+        ])
+        assert code == 0
+        assert captured["owned_ids"] == []
+        assert "按原创（earned）处理" in capsys.readouterr().err
 
     def test_main_prints_competitor_replaced(self, tmp_path, monkeypatch, capsys):
         calls = {"n": 0}
