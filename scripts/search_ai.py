@@ -299,7 +299,7 @@ def _aggregate_samples(samples: list[ProbeResult]) -> ProbeResult:
         sentiment=sentiment,
         context=hit_context,
         source=base.source,
-        degraded=bool(_majority([s.degraded for s in samples])),
+        degraded=_aggregate_binary([s.degraded for s in samples])["cited"],
         error=next(
             (s.error for s in samples if s.status == status and s.error),
             None,
@@ -1417,7 +1417,10 @@ def render_markdown(
         lines.append("| 平台 | 状态 | 置信度 | 被提及 | 情感 | 上下文 / 说明 |")
         lines.append("|---|---|---|---|---|---|")
     for r in results:
-        if r.sample_count > 1 and r.prob is not None:
+        if r.status != "ok":
+            # 整体失败/未配置：不展示部分样本的命中结果，避免「失败 + 被提及 是」矛盾
+            cited_txt = "未知"
+        elif r.sample_count > 1 and r.prob is not None:
             hits = r.meta.get("sample_hits", 0)
             invalid = r.meta.get("sample_invalid", 0)
             invalid_note = f"，{invalid} 次无效" if invalid else ""
@@ -1495,9 +1498,14 @@ def render_markdown(
                 lines.append(f"- **{label}**：{len(points)} 次快照，重跑一次后生成趋势。")
                 continue
             def point_txt(p: dict) -> str:
+                invalid_note = f"（{p['invalid']} 次无效）" if p.get("invalid") else ""
                 if p.get("n", 1) > 1 and p.get("prob") is not None:
-                    return f"{'是' if p['cited'] else '否'} ({p['prob']:.0%}, {p['hits']}/{p['n']})"
-                return "是" if p["cited"] else "否" if p["cited"] is False else "未知"
+                    return (
+                        f"{'是' if p['cited'] else '否'} "
+                        f"({p['prob']:.0%}, {p['hits']}/{p['n']}){invalid_note}"
+                    )
+                base = "是" if p["cited"] else "否" if p["cited"] is False else "未知"
+                return base + invalid_note
 
             states = " → ".join(point_txt(p) for p in points)
             line = f"- **{label}**（{len(points)} 次）：{states}"

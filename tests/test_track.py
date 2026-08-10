@@ -416,6 +416,15 @@ class TestB1Sampling:
         agg = search_ai._aggregate_samples([s1, s2])
         assert agg.mine_cited is False
 
+    def test_aggregate_samples_degraded_strict_majority(self):
+        # degraded 与 cited 统一严格多数：1/2 平局为否
+        s1 = ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", True)
+        s2 = ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)
+        agg = search_ai._aggregate_samples([s1, s2])
+        assert agg.degraded is False
+        agg2 = search_ai._aggregate_samples([s1, s1, s2])
+        assert agg2.degraded is True
+
     def test_aggregate_samples_competitor_none_stays_none(self):
         # 未传 --competitor（全 None）时聚合结果应为 None（未知），与 build_trend 一致
         samples = [
@@ -647,6 +656,32 @@ class TestB1Sampling:
         md = render_markdown("品牌A", results, trend, [])
         assert "是 (80%, 4/5) → 否 (40%, 2/5)" in md
 
+    def test_render_markdown_trend_invalid_note(self):
+        # 趋势点附注无效样本：有效 1 次 + 2 次无效时显示「（2 次无效）」
+        trend = {
+            "series": {
+                "deepseek": [
+                    {"run_at": "t0", "n": 1, "hits": 1, "prob": 1.0, "invalid": 0,
+                     "ci_low": None, "ci_high": None, "cited": True,
+                     "status": "ok", "sentiment": "positive",
+                     "mine_cited": None, "mine_checked": False, "mine_ids": [],
+                     "cited_type": None, "owned_ids": [],
+                     "competitor_matched": None, "competitor_ids": [], "fact_risks": []},
+                    {"run_at": "t1", "n": 1, "hits": 1, "prob": 1.0, "invalid": 2,
+                     "ci_low": None, "ci_high": None, "cited": True,
+                     "status": "ok", "sentiment": "positive",
+                     "mine_cited": None, "mine_checked": False, "mine_ids": [],
+                     "cited_type": None, "owned_ids": [],
+                     "competitor_matched": None, "competitor_ids": [], "fact_risks": []},
+                ],
+            },
+            "changes": [],
+            "total_runs": 1,
+        }
+        results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]
+        md = render_markdown("品牌A", results, trend, [])
+        assert "（2 次无效）" in md
+
     def test_main_samples_loop_and_prob_display(self, tmp_path, monkeypatch, capsys):
         calls = {"n": 0}
 
@@ -690,6 +725,17 @@ class TestB1Sampling:
         r.meta = {"sample_hits": 4, "sample_invalid": 1}
         md = render_markdown("品牌A", [r], {"series": {}, "changes": []}, [])
         assert "是 (100%, 4/4，1 次无效)" in md
+
+    def test_render_markdown_error_status_shows_unknown_cited(self):
+        # 多数失败 + 少数成功：聚合 status=error 时被提及显示「未知」，不得显示「是」
+        r = ProbeResult(
+            "品牌A", "deepseek", "error", True, None, "boom", "api", True,
+            prob=1.0, sample_count=1, error="x",
+        )
+        r.meta = {"sample_hits": 1, "sample_invalid": 2}
+        md = render_markdown("品牌A", [r], {"series": {}, "changes": []}, [])
+        assert "未知" in md
+        assert "| 失败 | — | 是" not in md
 
     def test_render_markdown_unknown_when_all_samples_invalid(self):
         # 全部样本无效（失败/未配置）时显示「未知」，不得显示「否 (0%, 0/5)」
