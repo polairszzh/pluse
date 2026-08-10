@@ -127,7 +127,7 @@ _FACT_VERSION_RE = re.compile(
 )
 _FACT_UNIT_RE = re.compile(
     r"(\d+(?:\.\d+)?)\s*"
-    r"(万亿元|亿元|万亿|万用户|万人次|万人|万元|万次|亿|万|元|积分|用户|粉丝|下载|安装|人|次|GB|MB|TB|%)"
+    r"(万亿元|亿元|万亿|万用户|万人次|万人|万元|万次|亿用户|亿人次|亿人|亿次|亿|万|元|积分|用户|粉丝|下载|安装|人|次|GB|MB|TB|%)"
 )
 
 
@@ -1011,6 +1011,13 @@ def build_recommendations(
             (" ".join(f"--mine {_shell_quote(m)}" for m in r.mine_ids) for r in results if r.mine_ids),
             "--mine <你的内容URL>",
         )
+        comp_args = next(
+            (
+                " ".join(f"--competitor {_shell_quote(c)}" for c in r.competitor_ids)
+                for r in results if r.competitor_ids
+            ),
+            "--competitor <竞品标识>",
+        )
         recs.append(Recommendation(
             priority="P1",
             dimension="竞品夺走",
@@ -1019,7 +1026,7 @@ def build_recommendations(
                    "确属夺走则围绕差异化优势补充独家数据/实测/案例，并在标题与首段强化品牌锚定",
             expected_impact="确认后把 AI 引用从竞品拉回你的内容",
             falsifiability_check=f"重跑 /pulse track --query {_shell_quote(query)} "
-                                 f"{mine_args} --competitor <竞品标识>，"
+                                 f"{mine_args} {comp_args}，"
                                  "对应平台「竞品夺走」风险消失、我的内容变为「是」",
         ))
     if inferred_replaced:
@@ -1027,6 +1034,13 @@ def build_recommendations(
         mine_args = next(
             (" ".join(f"--mine {_shell_quote(m)}" for m in r.mine_ids) for r in results if r.mine_ids),
             "--mine <你的内容URL>",
+        )
+        comp_args = next(
+            (
+                " ".join(f"--competitor {_shell_quote(c)}" for c in r.competitor_ids)
+                for r in results if r.competitor_ids
+            ),
+            "--competitor <竞品标识>",
         )
         recs.append(Recommendation(
             priority="P1",
@@ -1036,7 +1050,7 @@ def build_recommendations(
                    "确属夺走则补充差异化内容强化品牌锚定",
             expected_impact="确认是否为真实竞品夺走，避免误判后浪费优化动作",
             falsifiability_check=f"重跑 /pulse track --query {_shell_quote(query)} "
-                                 f"{mine_args} --competitor <竞品标识>，"
+                                 f"{mine_args} {comp_args}，"
                                  "连续两次检查后「竞品夺走」转为已确认或消失",
         ))
     risk_results = [
@@ -1244,7 +1258,7 @@ def render_markdown(
             suffix = (
                 ""
                 if item.get("competitor_replaced_confirmed")
-                else "（推断：上次未检查竞品，待人工确认）"
+                else "（推断：上次未检查竞品或前后竞品标识不一致，待人工确认）"
             )
             risk_lines.append(
                 f"- ⚠ **{label}**：上次被引用，本次被竞品替换{suffix}"

@@ -191,14 +191,18 @@ class TestB3Quality:
     def test_extract_fact_risks_compound_units(self):
         # 复合数量单位不得被截断：1.8万亿 不能提取成 1.8万
         risks = search_ai._extract_fact_risks(
-            "WorkBuddy 估值 1.8万亿，年营收 5000万元，补贴 3亿元，累计 1000万用户，接待 1.8万人次",
+            "WorkBuddy 估值 1.8万亿，年营收 5000万元，补贴 3亿元，累计 1000万用户，"
+            "接待 1.8万人次，日活 1.8亿用户，调用 3亿次",
             "WorkBuddy",
+            limit=10,
         )
         assert any("1.8万亿" in r for r in risks)
         assert any("5000万元" in r for r in risks)
         assert any("3亿元" in r for r in risks)
         assert any("1000万用户" in r for r in risks)
         assert any("1.8万人次" in r for r in risks)
+        assert any("1.8亿用户" in r for r in risks)
+        assert any("3亿次" in r for r in risks)
         # 不得出现被截断的「1.8万（…）」标签
         assert not any(r.startswith("1.8万（") for r in risks)
 
@@ -1148,10 +1152,13 @@ class TestRecommendations:
         results = [ProbeResult(
             "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
             mine_cited=False, mine_ids=["https://a.com/1", "我的昵称"],
+            competitor_ids=["https://comp.example.com"],
         )]
         recs = build_recommendations("品牌A", results, delta=delta)
         rec = next(r for r in recs if r.dimension == "竞品夺走")
         assert "--mine https://a.com/1 --mine '我的昵称'" in rec.falsifiability_check
+        assert "--competitor https://comp.example.com" in rec.falsifiability_check
+        assert "--competitor <竞品标识>" not in rec.falsifiability_check
 
     def test_fact_risks_p1(self):
         results = [ProbeResult(
@@ -1284,6 +1291,7 @@ class TestReport:
         assert "## 风险提示" in md
         assert "竞品夺走" in md
         assert "推断" in md
+        assert "前后竞品标识不一致" in md
         assert "版本 2.3.1" in md
         assert "是（原创）" in md
 
