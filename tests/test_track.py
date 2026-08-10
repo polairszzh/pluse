@@ -895,6 +895,18 @@ class TestB5IndexCheck:
         assert len(items) == 1
         assert items[0]["title"] == "文章标题"
 
+    def test_parse_baidu_nested_tags_in_snippet(self):
+        # 摘要内嵌 span/a：整段可见文本拼接，URL 不被截断
+        html = """
+        <div class="result c-container">
+          <h3 class="t"><a href="http://www.baidu.com/link?url=x">文章标题</a></h3>
+          <span class="b">摘要 <a href="http://x">链接</a> 内容 https://zhuanlan.zhihu.com/p/123</span>
+        </div>
+        """
+        items = search_ai._parse_baidu(html)
+        assert len(items) == 1
+        assert "zhuanlan.zhihu.com/p/123" in items[0]["snippet"]
+
     def test_check_index_bing_indexed(self, monkeypatch):
         def fake_get(base, params=None, headers=None, timeout=None):
             if "bing.com" in base:

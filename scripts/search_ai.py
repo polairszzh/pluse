@@ -693,14 +693,12 @@ def _parse_baidu(html_text: str, limit: int = 10) -> list[dict]:
         title = html_module.unescape(re.sub(r"<[^>]+>", "", link.group(2))).strip()
         if not title:
             continue
-        # 摘要取 h3 之后最近的非空文本块（嵌套 div 内也取得到）
-        snippet = ""
+        # 摘要取 h3 之后整段可见文本（去标签后拼接）：嵌套 span/a 不截断，
+        # 保证「疑似收录」判定能覆盖摘要中的 URL
         after = block[link.end() :]
-        for m in re.finditer(r"<[^>]+>([^<>]+)</[^>]+>", after):
-            text = html_module.unescape(m.group(1)).strip()
-            if text:
-                snippet = text
-                break
+        snippet = " ".join(
+            html_module.unescape(re.sub(r"<[^>]+>", " ", after)).split()
+        )
         results.append({"title": title, "url": url, "snippet": snippet})
         if len(results) >= limit:
             break
@@ -1950,6 +1948,7 @@ def main(argv: list[str] | None = None) -> int:
     mine_ids = list(dict.fromkeys(earned_ids + owned_ids))
     db_path = Path(args.db) if args.db else DEFAULT_DB
     out_dir = Path(args.output) if args.output else None
+    # --samples 用 SUPPRESS 默认：未传时 args.samples 属性不存在，须 getattr 兜底
     samples = getattr(args, "samples", None) or 5
 
     try:
