@@ -349,6 +349,29 @@ class TestB1Sampling:
         assert agg.prob == 0.5
         assert agg.cited is False
 
+    def test_aggregate_samples_context_matches_final_verdict(self):
+        # 最终判定为「否」时，上下文不得取自命中样本（避免「否 (40%)」却展示命中内容）
+        hit = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "命中内容", "api", False
+        )
+        hit2 = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "命中内容2", "api", False
+        )
+        miss1 = ProbeResult(
+            "品牌A", "deepseek", "ok", False, "neutral", "未命中A", "api", False
+        )
+        miss2 = ProbeResult(
+            "品牌A", "deepseek", "ok", False, "neutral", "未命中B", "api", False
+        )
+        miss3 = ProbeResult(
+            "品牌A", "deepseek", "ok", False, "neutral", "未命中C", "api", False
+        )
+        # 2/5 命中 → 多数为否，上下文应来自未命中样本
+        agg = search_ai._aggregate_samples([hit, hit2, miss1, miss2, miss3])
+        assert agg.cited is False
+        assert agg.prob == 0.4
+        assert agg.context == "未命中A"
+
     def test_aggregate_samples_keeps_all_answers(self):
         # sample_answers 不截断：--samples > 5 时全部样本原文可复核
         samples = [
@@ -485,6 +508,18 @@ class TestB1Sampling:
         points = build_trend("品牌A", db_path=db)["series"]["deepseek"]
         assert len(points) == 2
         assert {p["hits"] for p in points} == {0, 1}
+
+    def test_build_trend_same_run_at_ordered_by_insertion(self, tmp_path):
+        # 同 run_at 的两次独立运行按插入顺序排序，而非随机 run_id
+        db = tmp_path / "monitor.db"
+        store_results([
+            ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False),
+        ], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        store_results([
+            ProbeResult("品牌A", "deepseek", "ok", False, "neutral", "c", "api", False),
+        ], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        points = build_trend("品牌A", db_path=db)["series"]["deepseek"]
+        assert [p["hits"] for p in points] == [1, 0]
 
     def test_render_markdown_trend_probability_format(self):
         # 趋势点概率格式与表格/CLI 一致：是 (80%, 4/5)

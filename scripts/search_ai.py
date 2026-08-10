@@ -248,8 +248,14 @@ def _aggregate_samples(samples: list[ProbeResult]) -> ProbeResult:
     )
     fact_risks = _union_strings([s.fact_risks for s in samples])
     status = _majority([s.status for s in samples]) or "error"
+    # 上下文必须与最终判定一致：cited=True 取命中样本，False 取未命中样本，
+    # 避免「否 (40%)」却展示命中内容
     hit_context = next(
-        (s.context for s in samples if s.cited is True and s.context),
+        (
+            s.context
+            for s in samples
+            if s.cited is not None and bool(s.cited) == bool(cited) and s.context
+        ),
         base.context,
     )
     answers = [
@@ -928,15 +934,20 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
     for platform, items in by_platform.items():
         ordered = sorted(items, key=lambda r: r["run_at"])
         # 多采样：同一 run_at 的 N 行聚合成一个带概率的点
-        by_run: dict[tuple, list[dict]] = {}
+        # 多采样：同一 run 的 N 行按 run_id 聚合成一个带概率的点；
+        # run_id 硬区分同一时间戳的不同独立运行，旧数据（run_id 为空）回退按 run_at 合并
+        by_run_id: dict[str, list[dict]] = {}
         for r in ordered:
-            # (run_at, run_id) 分组：run_id 硬区分同一时间戳的不同独立运行
-            key = (r["run_at"], r["run_id"] or r["run_at"])
-            by_run.setdefault(key, []).append(r)
+            rid = r["run_id"] or f"legacy:{r['run_at']}"
+            by_run_id.setdefault(rid, []).append(r)
+        # 批次顺序按最小行 id（插入顺序），避免同 run_at 的独立运行按随机 run_id 排序
+        batches = sorted(
+            by_run_id.items(),
+            key=lambda item: min(row["id"] for row in item[1]),
+        )
         points: list[dict] = []
-        for key in sorted(by_run):
-            run_at, _run_id = key
-            group = by_run[key]
+        for _rid, group in batches:
+            run_at = group[0]["run_at"]
             # cited 为 NULL 的失败/未配置样本不计入概率分母
             valid = [r for r in group if r["cited"] is not None]
             invalid = len(group) - len(valid)
@@ -985,8 +996,9 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
                     _parse_mine_ids(r["fact_risks"]) for r in group
                 ]),
             })
-        # 按 run 截断：每平台保留最近 200 次运行（与原语义一致）
-        series[platform] = points[-200:]
+        # 按 run 截断：每平台保留最近 1000 次运行（与单采样时代 limit=1000 行的
+        # 可回溯范围一致，多采样后按 run 计数而不是按行计数）
+        series[platform] = points[-1000:]
         prev: bool | None = None
         for item in points:
             cur_val = bool(item["cited"]) if item["cited"] is not None else None
