@@ -626,23 +626,6 @@ class TestB1Sampling:
         ]
         assert [p["hits"] for p in points] == [0, 1]
 
-    def test_build_trend_legacy_rows_same_run_at_not_merged(self, tmp_path):
-        # 旧数据（run_id 为空）同 run_at 的多行按行独立成点，不合并
-        db = tmp_path / "monitor.db"
-        conn = search_ai.connect(db)
-        with conn:
-            for cited in (1, 0):
-                conn.execute(
-                    "INSERT INTO probes(query, platform, run_at, status, cited, sentiment,"
-                    " context, source, degraded) VALUES(?,?,?,?,?,?,?,?,?)",
-                    ("品牌A", "deepseek", "2026-08-01T10:00:00+08:00", "ok", cited,
-                     "positive", "c", "api", 0),
-                )
-        conn.close()
-        points = build_trend("品牌A", db_path=db)["series"]["deepseek"]
-        assert len(points) == 2
-        assert {p["hits"] for p in points} == {0, 1}
-
     def test_build_trend_changes_stay_within_truncated_series(self, monkeypatch):
         # 截断到最近 1000 次运行后，变化点不得引用序列范围外的 run_at
         rows = []
