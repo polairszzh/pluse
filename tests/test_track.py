@@ -610,6 +610,39 @@ class TestB1Sampling:
         points = build_trend("品牌A", db_path=db)["series"]["deepseek"]
         assert [p["hits"] for p in points] == [1, 0]
 
+    def test_build_trend_orders_by_run_at_not_insertion(self, tmp_path):
+        # 补录历史（run_at 与插入顺序不一致）时趋势按 run_at 排序，不按插入顺序
+        db = tmp_path / "monitor.db"
+        store_results([
+            ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False),
+        ], db_path=db, run_at="2026-08-02T10:00:00+08:00")
+        store_results([
+            ProbeResult("品牌A", "deepseek", "ok", False, "neutral", "c", "api", False),
+        ], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        points = build_trend("品牌A", db_path=db)["series"]["deepseek"]
+        assert [p["run_at"] for p in points] == [
+            "2026-08-01T10:00:00+08:00",
+            "2026-08-02T10:00:00+08:00",
+        ]
+        assert [p["hits"] for p in points] == [0, 1]
+
+    def test_build_trend_legacy_rows_same_run_at_not_merged(self, tmp_path):
+        # 旧数据（run_id 为空）同 run_at 的多行按行独立成点，不合并
+        db = tmp_path / "monitor.db"
+        conn = search_ai.connect(db)
+        with conn:
+            for cited in (1, 0):
+                conn.execute(
+                    "INSERT INTO probes(query, platform, run_at, status, cited, sentiment,"
+                    " context, source, degraded) VALUES(?,?,?,?,?,?,?,?,?)",
+                    ("品牌A", "deepseek", "2026-08-01T10:00:00+08:00", "ok", cited,
+                     "positive", "c", "api", 0),
+                )
+        conn.close()
+        points = build_trend("品牌A", db_path=db)["series"]["deepseek"]
+        assert len(points) == 2
+        assert {p["hits"] for p in points} == {0, 1}
+
     def test_build_trend_changes_stay_within_truncated_series(self, monkeypatch):
         # 截断到最近 1000 次运行后，变化点不得引用序列范围外的 run_at
         rows = []

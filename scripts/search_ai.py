@@ -1012,15 +1012,20 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
         ordered = sorted(items, key=lambda r: r["run_at"])
         # 多采样：同一 run_at 的 N 行聚合成一个带概率的点
         # 多采样：同一 run 的 N 行按 run_id 聚合成一个带概率的点；
-        # run_id 硬区分同一时间戳的不同独立运行，旧数据（run_id 为空）回退按 run_at 合并
+        # run_id 硬区分同一时间戳的不同独立运行；旧数据（run_id 为空）按行分组，
+        # 每行一个点（单采样时代语义），同 run_at 的手动补录行不合并
         by_run_id: dict[str, list[dict]] = {}
         for r in ordered:
-            rid = r["run_id"] or f"legacy:{r['run_at']}"
+            rid = r["run_id"] or f"legacy:{r['id']}"
             by_run_id.setdefault(rid, []).append(r)
-        # 批次顺序按最小行 id（插入顺序），避免同 run_at 的独立运行按随机 run_id 排序
+        # 批次顺序：先按 run_at（补录历史时 run_at 与插入顺序不一致），
+        # 同 run_at 再按最小行 id（插入顺序）
         batches = sorted(
             by_run_id.items(),
-            key=lambda item: min(row["id"] for row in item[1]),
+            key=lambda item: (
+                item[1][0]["run_at"],
+                min(row["id"] for row in item[1]),
+            ),
         )
         points: list[dict] = []
         for _rid, group in batches:
