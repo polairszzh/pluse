@@ -272,19 +272,22 @@ def _aggregate_samples(samples: list[ProbeResult]) -> ProbeResult:
     status = _majority([s.status for s in samples]) or "error"
     if status != "ok":
         # 整体失败/未配置：cited/mine_cited 统一无效（表格显示未知，趋势不参与），
-        # 避免与部分有效样本的命中结果口径不一致
+        # 避免与部分有效样本的命中结果口径不一致；上下文同时清空，
+        # 不展示部分样本的命中/未命中上下文（与「未知」状态矛盾）
         cited = None
         mine_cited = None
-    # 上下文必须与最终判定一致：cited=True 取命中样本，False 取未命中样本，
-    # 避免「否 (40%)」却展示命中内容；无匹配上下文时留空，不回退到相反判定的样本
-    hit_context = next(
-        (
-            s.context
-            for s in samples
-            if s.cited is not None and bool(s.cited) == bool(cited) and s.context
-        ),
-        "",
-    )
+        hit_context = ""
+    else:
+        # 上下文必须与最终判定一致：cited=True 取命中样本，False 取未命中样本，
+        # 避免「否 (40%)」却展示命中内容；无匹配上下文时留空，不回退到相反判定的样本
+        hit_context = next(
+            (
+                s.context
+                for s in samples
+                if s.cited is not None and bool(s.cited) == bool(cited) and s.context
+            ),
+            "",
+        )
     # 样本原文关联命中状态，便于复核定位具体哪次采样命中
     answers = [
         {"answer": s.meta.get("answer"), "cited": s.cited, "sample_idx": s.sample_idx}
@@ -1511,6 +1514,9 @@ def render_markdown(
                 continue
             def point_txt(p: dict) -> str:
                 invalid_note = f"（{p['invalid']} 次无效）" if p.get("invalid") else ""
+                if p.get("status") != "ok":
+                    # 整体失败/未配置：显示未知，不按部分有效样本的概率渲染是/否
+                    return "未知" + invalid_note
                 if p.get("n", 1) > 1 and p.get("prob") is not None:
                     return (
                         f"{'是' if p['cited'] else '否'} "

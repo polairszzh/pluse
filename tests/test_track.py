@@ -466,6 +466,19 @@ class TestB1Sampling:
         assert agg.status == "ok"
         assert agg.error is None
 
+    def test_aggregate_samples_error_clears_context(self):
+        # 整体失败时上下文清空：不展示部分样本的命中/未命中上下文
+        hit = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "命中内容", "api", False
+        )
+        bad = ProbeResult(
+            "品牌A", "deepseek", "error", None, None, "boom", "api", True, error="x"
+        )
+        agg = search_ai._aggregate_samples([hit, bad, bad])
+        assert agg.status == "error"
+        assert agg.cited is None
+        assert agg.context == ""
+
     def test_aggregate_samples_all_invalid_prob_none(self):
         samples = [
             ProbeResult(
@@ -716,6 +729,33 @@ class TestB1Sampling:
         results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]
         md = render_markdown("品牌A", results, trend, [])
         assert "（2 次无效）" in md
+
+    def test_render_markdown_trend_error_point_shows_unknown(self):
+        # status=error 且有效样本 >1 时，趋势显示「未知」，不得渲染成「否 (100%, 2/2)」
+        trend = {
+            "series": {
+                "deepseek": [
+                    {"run_at": "t0", "n": 1, "hits": 1, "prob": 1.0, "invalid": 0,
+                     "ci_low": None, "ci_high": None, "cited": True,
+                     "status": "ok", "sentiment": "positive",
+                     "mine_cited": None, "mine_checked": False, "mine_ids": [],
+                     "cited_type": None, "owned_ids": [],
+                     "competitor_matched": None, "competitor_ids": [], "fact_risks": []},
+                    {"run_at": "t1", "n": 2, "hits": 2, "prob": 1.0, "invalid": 3,
+                     "ci_low": 0.34, "ci_high": 1.0, "cited": None,
+                     "status": "error", "sentiment": None,
+                     "mine_cited": None, "mine_checked": False, "mine_ids": [],
+                     "cited_type": None, "owned_ids": [],
+                     "competitor_matched": None, "competitor_ids": [], "fact_risks": []},
+                ],
+            },
+            "changes": [],
+            "total_runs": 2,
+        }
+        results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]
+        md = render_markdown("品牌A", results, trend, [])
+        assert "未知（3 次无效）" in md
+        assert "否 (100%" not in md
 
     def test_main_samples_loop_and_prob_display(self, tmp_path, monkeypatch, capsys):
         calls = {"n": 0}
