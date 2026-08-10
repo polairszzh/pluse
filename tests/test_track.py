@@ -387,6 +387,17 @@ class TestB1Sampling:
         assert agg.error == "network down"
         assert agg.degraded is True
 
+    def test_aggregate_samples_error_not_leaked_from_minority(self):
+        # 多数派 status=ok 时，少数失败样本的错误不得混入聚合结果
+        ok = ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)
+        ok2 = ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)
+        bad = ProbeResult(
+            "品牌A", "deepseek", "error", None, None, "boom", "api", True, error="network"
+        )
+        agg = search_ai._aggregate_samples([ok, ok2, bad])
+        assert agg.status == "ok"
+        assert agg.error is None
+
     def test_aggregate_samples_all_invalid_prob_none(self):
         samples = [
             ProbeResult(

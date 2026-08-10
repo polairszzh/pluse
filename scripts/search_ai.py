@@ -197,6 +197,25 @@ def _wilson_interval(hits: int, n: int, z: float = 1.96) -> tuple[float, float]:
     return (max(0.0, center - margin), min(1.0, center + margin))
 
 
+def _majority(values: list) -> object | None:
+    """非 None 值的多数派（平局按首次出现顺序），全 None 返回 None"""
+    cnt = Counter(v for v in values if v is not None)
+    return cnt.most_common(1)[0][0] if cnt else None
+
+
+def _aggregate_bool_tristate(values: list) -> bool | None:
+    """布尔三态聚合：任一 True→True；有 False 无 True→False；全 None→None"""
+    vals = [v for v in values if v is not None]
+    if not vals:
+        return None
+    return bool(any(vals))
+
+
+def _union_strings(groups: list[list[str]]) -> list[str]:
+    """合并去重字符串列表（风险信号保守并集）"""
+    return list(dict.fromkeys(x for group in groups for x in group))
+
+
 def _aggregate_samples(samples: list[ProbeResult]) -> ProbeResult:
     """把同一 run 的 N 个采样样本聚合为带概率/置信区间的单条结果
 
@@ -218,22 +237,16 @@ def _aggregate_samples(samples: list[ProbeResult]) -> ProbeResult:
         prob = None
         ci_low, ci_high = None, None
 
-    def majority(values: list) -> object | None:
-        cnt = Counter(v for v in values if v is not None)
-        return cnt.most_common(1)[0][0] if cnt else None
-
     base = samples[0]
     cited = hits * 2 > n if n else None  # 严格多数（>1/2）才算被提及；偶数平局为否
-    mine_cited = majority([s.mine_cited for s in samples])
-    sentiment = majority([s.sentiment for s in samples])
-    cited_type = majority([s.cited_type for s in samples])
-    comp_vals = [
-        s.competitor_matched for s in samples if s.competitor_matched is not None
-    ]
-    competitor_matched = (
-        True if any(comp_vals) else (False if comp_vals else None)
+    mine_cited = _majority([s.mine_cited for s in samples])
+    sentiment = _majority([s.sentiment for s in samples])
+    cited_type = _majority([s.cited_type for s in samples])
+    competitor_matched = _aggregate_bool_tristate(
+        [s.competitor_matched for s in samples]
     )
-    fact_risks = list(dict.fromkeys(r for s in samples for r in s.fact_risks))
+    fact_risks = _union_strings([s.fact_risks for s in samples])
+    status = _majority([s.status for s in samples]) or "error"
     hit_context = next(
         (s.context for s in samples if s.cited is True and s.context),
         base.context,
@@ -251,13 +264,16 @@ def _aggregate_samples(samples: list[ProbeResult]) -> ProbeResult:
     return ProbeResult(
         query=base.query,
         platform=base.platform,
-        status=majority([s.status for s in samples]) or base.status,
+        status=status,
         cited=cited,
         sentiment=sentiment,
         context=hit_context,
         source=base.source,
-        degraded=bool(majority([s.degraded for s in samples])),
-        error=next((s.error for s in samples if s.error), None),
+        degraded=bool(_majority([s.degraded for s in samples])),
+        error=next(
+            (s.error for s in samples if s.status == status and s.error),
+            None,
+        ),
         meta=meta,
         mine_cited=mine_cited,
         mine_ids=base.mine_ids,
@@ -921,23 +937,16 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
                 prob = None
                 ci_low, ci_high = None, None
 
-            def majority(values: list) -> object | None:
-                cnt = Counter(v for v in values if v is not None)
-                return cnt.most_common(1)[0][0] if cnt else None
-
             mine_ids = next(
                 (_parse_mine_ids(r["mine_ids"]) for r in group if r["mine_ids"]),
                 [],
             )
-            comp_vals = [
+            competitor_matched = _aggregate_bool_tristate([
                 bool(r["competitor_matched"])
                 for r in group
                 if r["competitor_matched"] is not None
-            ]
-            competitor_matched = (
-                True if any(comp_vals) else (False if comp_vals else None)
-            )
-            mine_cited_raw = majority([r["mine_cited"] for r in group])
+            ])
+            mine_cited_raw = _majority([r["mine_cited"] for r in group])
             points.append({
                 "run_at": run_at,
                 "n": n,
@@ -947,12 +956,12 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
                 "ci_low": ci_low,
                 "ci_high": ci_high,
                 "cited": hits * 2 > n if n else None,
-                "status": majority([r["status"] for r in group]) or "error",
-                "sentiment": majority([r["sentiment"] for r in group]),
+                "status": _majority([r["status"] for r in group]) or "error",
+                "sentiment": _majority([r["sentiment"] for r in group]),
                 "mine_cited": bool(mine_cited_raw) if mine_cited_raw is not None else None,
                 "mine_checked": bool(mine_ids),
                 "mine_ids": mine_ids,
-                "cited_type": majority([r["cited_type"] for r in group]),
+                "cited_type": _majority([r["cited_type"] for r in group]),
                 "owned_ids": _parse_mine_ids(next(
                     (r["owned_ids"] for r in group if r["owned_ids"]), None
                 )),
@@ -960,11 +969,9 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
                 "competitor_ids": _parse_mine_ids(next(
                     (r["competitor_ids"] for r in group if r["competitor_ids"]), None
                 )),
-                "fact_risks": list(dict.fromkeys(
-                    risk
-                    for r in group
-                    for risk in _parse_mine_ids(r["fact_risks"])
-                )),
+                "fact_risks": _union_strings([
+                    _parse_mine_ids(r["fact_risks"]) for r in group
+                ]),
             })
         series[platform] = points
         prev: bool | None = None
