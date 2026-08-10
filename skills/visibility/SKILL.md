@@ -46,16 +46,18 @@ Monitor brand mentions across AI platforms. Input: a brand name or keyword. Outp
 Workflow:
 1. Run `python scripts/search_ai.py --query <topic>` (optionally `--platforms deepseek,kimi` to limit)
 2. To check whether **your content** is cited (not just the topic mentioned), add `--mine <URL或标题或作者名>` (repeatable, one identifier per flag): `python scripts/search_ai.py --query "codex 如何安装" --mine "https://zhuanlan.zhihu.com/p/xxx" --mine "我的昵称"`
-3. Results are stored in `data/monitor.db` (SQLite) automatically
-4. Read the generated report from `data/snapshots/track-*.md` (JSON snapshot sits next to it); the 本次快照 table gains a 我的内容 column when `--mine` is passed
-5. Compare the 趋势对比 section against previous snapshots to show trends
-6. Present the per-platform summary + changes + P0 recommendations + report path
+3. (B3 引用质量，可选) `--mine-owned <标识>` 标记转载/自有渠道内容（命中记为「转载」而非「原创」）；`--competitor <标识>` 传入竞品标识，用于 lostprompt（竞品夺走）分析
+4. Results are stored in `data/monitor.db` (SQLite) automatically
+5. Read the generated report from `data/snapshots/track-*.md` (JSON snapshot sits next to it); the 本次快照 table gains a 我的内容 column when `--mine` is passed (是（原创）/是（转载）), and a 风险提示 section appears when B3 risks are detected (竞品夺走 / 未核实断言)
+6. Compare the 趋势对比 section against previous snapshots to show trends
+7. Present the per-platform summary + changes + P0 recommendations + report path
 
   Data honesty (Phase 2):
   - DeepSeek is a real API probe (answer body contains the brand name, exact match; raw answer in `meta.answer` for review). No key configured → status is `no_key`, never faked.
   - Kimi / Doubao / Yuanbao have no public API; Pulse uses Bing search results as an **inference signal** of retrieval-library presence, NOT a real citation. Keep this limitation in the report.
   - Every platform result carries a confidence label: DeepSeek = `Confirmed` (real API probe), Kimi/Doubao/Yuanbao = `Likely` (search inference). Shown in CLI summary, snapshot report/JSON and dashboard.
 - `--mine` matching is substring-based: URL matching works best in search inference, title/author name matching is more common in AI answers. A negative result is honest (not cited yet), not a guarantee.
+- B3 引用质量：`--mine` 命中且非 `--mine-owned` 记为 earned（原创被引）；仅命中 `--mine-owned` 记为 owned（转载/自有渠道被引）。「风险提示」里的未核实断言来自 AI 回答的数字/版本提取，只做提示不做事实判定，需人工复核。
 
 ### `/pulse adapt <topic>`
 

@@ -109,6 +109,39 @@ def _detect_mine(text: str, mine_ids: list[str]) -> list[str]:
     return list(dict.fromkeys(matched))
 
 
+def _classify_cited_type(matched: list[str], owned_ids: list[str]) -> str | None:
+    """mine 命中时区分引用类型：earned（原创被引）/ owned（转载或自有渠道被引）
+
+    只要命中任一非 owned 标识，按更高价值口径记为 earned。
+    """
+    if not matched:
+        return None
+    owned = set(owned_ids or [])
+    if any(m not in owned for m in matched):
+        return "earned"
+    return "owned"
+
+
+_FACT_VERSION_RE = re.compile(r"(?:版本|version)\s*(\d+(?:\.\d+)+)", re.IGNORECASE)
+_FACT_UNIT_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(元|万|亿|积分|用户|粉丝|下载|安装|人|次|年|月|天|小时|分钟|GB|MB|TB|%)"
+)
+
+
+def _extract_fact_risks(answer: str, limit: int = 5) -> list[str]:
+    """从 AI 回答中提取未核实的数字断言（版本号、价格、数量等），供人工复核
+
+    只做「风险提示」不做事实判定：回答里出现这类断言即列入清单，
+    报告标注「未经核实」，由发布前人工核查。
+    """
+    risks: list[str] = []
+    for m in _FACT_VERSION_RE.finditer(str(answer or "")):
+        risks.append(f"版本 {m.group(1)}")
+    for m in _FACT_UNIT_RE.finditer(str(answer or "")):
+        risks.append(f"{m.group(1)}{m.group(2)}")
+    return list(dict.fromkeys(risks))[:limit]
+
+
 _URL_TOKEN_RE = re.compile(r"https?://[^\s<>\"'，。；：！？（）【】「」『』《》]+", re.IGNORECASE)
 _URL_TRAIL = ".,;:!?)]}"
 
@@ -186,6 +219,10 @@ class ProbeResult:
     mine_cited: bool | None = None      # 我的内容标识是否出现在探测结果中
     mine_ids: list[str] = field(default_factory=list)  # 本次检查的我的内容标识
     confidence: str | None = None      # confirmed(真实API) | likely(搜索推断) | hypothesis(启发式)
+    cited_type: str | None = None       # mine 命中时的引用类型：earned(原创被引) | owned(转载/自有渠道被引)
+    owned_ids: list[str] = field(default_factory=list)  # 本次检查的转载/自有渠道标识
+    competitor_matched: bool | None = None  # 本次探测是否检测到竞品内容出现
+    fact_risks: list[str] = field(default_factory=list)  # 回答中关于品牌的未核实数字断言
 
 
 # --------------------------------------------------------------------------
@@ -271,9 +308,13 @@ def probe_deepseek(
     timeout: int = 60,
     session: requests.Session | None = None,
     mine_ids: list[str] | None = None,
+    owned_ids: list[str] | None = None,
+    competitor_ids: list[str] | None = None,
 ) -> ProbeResult:
-    """调用 DeepSeek API 探测话题是否被提及、我的内容标识是否出现在回答中"""
+    """调用 DeepSeek API 探测话题是否被提及、我的内容（原创/转载）与竞品是否出现在回答中"""
     mine_ids = mine_ids or []
+    owned_ids = owned_ids or []
+    competitor_ids = competitor_ids or []
     key = _load_key()
     if key is None:
         return ProbeResult(
@@ -282,6 +323,7 @@ def probe_deepseek(
             source="api", degraded=False,
             meta={"note": "在 .env 中配置 DEEPSEEK_API_KEY 后重跑可拿到真实引用判断"},
             mine_ids=mine_ids,
+            owned_ids=owned_ids,
         )
     payload = {
         "model": DEEPSEEK_MODEL,
@@ -302,6 +344,7 @@ def probe_deepseek(
                 error=f"unexpected_json_type:{type(data).__name__}",
                 meta={"note": "响应应为 JSON 对象（含 choices 数组），保留原始类型便于排查"},
                 mine_ids=mine_ids,
+                owned_ids=owned_ids,
             )
         choices = data.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
@@ -312,6 +355,7 @@ def probe_deepseek(
                 error="unexpected_choices_shape",
                 meta={"note": "choices 应为非空列表且首个元素为对象，保留原始响应便于排查"},
                 mine_ids=mine_ids,
+                owned_ids=owned_ids,
             )
         message = choices[0].get("message")
         if not isinstance(message, dict):
@@ -322,6 +366,7 @@ def probe_deepseek(
                 error="unexpected_message_shape",
                 meta={"note": "message 应为对象（含 content），保留原始响应便于排查"},
                 mine_ids=mine_ids,
+                owned_ids=owned_ids,
             )
         content = message.get("content")
         if content is not None and not isinstance(content, str):
@@ -332,6 +377,7 @@ def probe_deepseek(
                 error="unexpected_content_type",
                 meta={"note": "content 应为字符串或空，保留原始响应便于排查"},
                 mine_ids=mine_ids,
+                owned_ids=owned_ids,
             )
         answer = content or ""
     except requests.exceptions.RequestException as exc:
@@ -340,6 +386,7 @@ def probe_deepseek(
             sentiment=None, context="DeepSeek API 调用失败", source="api", degraded=True,
             error=str(exc), meta={"note": "网络或服务异常，未写入有效探测"},
             mine_ids=mine_ids,
+            owned_ids=owned_ids,
         )
     except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
         return ProbeResult(
@@ -347,9 +394,12 @@ def probe_deepseek(
             sentiment=None, context="DeepSeek 响应解析失败", source="api", degraded=True,
             error=str(exc), meta={"note": "响应结构与预期不符，保留原始响应便于排查"},
             mine_ids=mine_ids,
+            owned_ids=owned_ids,
         )
     cited = query.lower() in answer.lower()
     mine_matched = _detect_mine(answer, mine_ids)
+    competitor_matched = bool(_detect_mine(answer, competitor_ids)) if competitor_ids else None
+    fact_risks = _extract_fact_risks(answer) if cited else []
     return ProbeResult(
         query=query, platform="deepseek", status="ok", cited=cited,
         sentiment=classify_sentiment(answer), context=_truncate(answer, 300),
@@ -361,9 +411,16 @@ def probe_deepseek(
             "note": "被提及 = 回答正文出现品牌名（精确匹配），原始回答见 answer 字段供人工复核",
             "mine_checked": mine_ids,
             "mine_matched": mine_matched,
+            "owned_ids": owned_ids,
+            "competitor_matched": competitor_matched,
+            "fact_risks": fact_risks,
         },
         mine_cited=bool(mine_matched) if mine_ids else None,
         mine_ids=mine_ids,
+        cited_type=_classify_cited_type(mine_matched, owned_ids),
+        owned_ids=owned_ids,
+        competitor_matched=competitor_matched,
+        fact_risks=fact_risks,
     )
 
 
@@ -405,9 +462,13 @@ def probe_search_inference(
     timeout: int = 30,
     session: requests.Session | None = None,
     mine_ids: list[str] | None = None,
+    owned_ids: list[str] | None = None,
+    competitor_ids: list[str] | None = None,
 ) -> ProbeResult:
-    """用 Bing 搜索结果推断平台检索库中的话题存在信号，并检查我的内容是否在其中"""
+    """用 Bing 搜索结果推断平台检索库中的话题存在信号，并检查我的内容/竞品是否在其中"""
     mine_ids = mine_ids or []
+    owned_ids = owned_ids or []
+    competitor_ids = competitor_ids or []
     http = session or requests
     try:
         resp = http.get(
@@ -425,6 +486,7 @@ def probe_search_inference(
             degraded=True, error=str(exc),
             meta={"note": "网络或反爬拦截，未写入有效推断"},
             mine_ids=mine_ids,
+            owned_ids=owned_ids,
         )
 
     results = _parse_bing(html_text)
@@ -435,6 +497,7 @@ def probe_search_inference(
             source="search_inference", degraded=True,
             error="no_results_parsed", meta={"html_len": len(html_text)},
             mine_ids=mine_ids,
+            owned_ids=owned_ids,
         )
 
     # cited 只看标题+摘要：URL 常含关键词（如 github.com/openai/codex），拼入会误判「被提及」
@@ -461,6 +524,21 @@ def probe_search_inference(
         matched for blob in text_blobs for matched in _detect_mine(blob, text_mine_ids)
     ))
     mine_matched = list(dict.fromkeys(url_matched + text_matched))
+    competitor_matched = None
+    if competitor_ids:
+        url_comp = [m for m in competitor_ids if m.lower().startswith(("http://", "https://"))]
+        text_comp = [m for m in competitor_ids if m not in url_comp]
+        comp_matched = list(dict.fromkeys(
+            matched
+            for item in results
+            for matched in _detect_mine(
+                f"{item['title']} {item.get('url', '')} {item['snippet']}", url_comp
+            )
+        ))
+        comp_matched += list(dict.fromkeys(
+            matched for blob in text_blobs for matched in _detect_mine(blob, text_comp)
+        ))
+        competitor_matched = bool(comp_matched)
     return ProbeResult(
         query=query, platform=platform, status="ok", cited=cited,
         sentiment=None, context=context, source="search_inference", degraded=True,
@@ -470,31 +548,44 @@ def probe_search_inference(
             "note": "搜索引擎存在信号，不等同于该平台真实引用；品牌名出现在标题/摘要即视为存在信号",
             "mine_checked": mine_ids,
             "mine_matched": mine_matched,
+            "owned_ids": owned_ids,
+            "competitor_matched": competitor_matched,
         },
         mine_cited=bool(mine_matched) if mine_ids else None,
         mine_ids=mine_ids,
+        cited_type=_classify_cited_type(mine_matched, owned_ids),
+        owned_ids=owned_ids,
+        competitor_matched=competitor_matched,
     )
 
 
 PLATFORMS = {
     "deepseek": {
         "label": "DeepSeek",
-        "probe": lambda q, mine_ids=None: probe_deepseek(q, mine_ids=mine_ids),
+        "probe": lambda q, mine_ids=None, owned_ids=None, competitor_ids=None: probe_deepseek(
+            q, mine_ids=mine_ids, owned_ids=owned_ids, competitor_ids=competitor_ids
+        ),
         "note": "真实 API 探测（OpenAI 兼容接口）",
     },
     "kimi": {
         "label": "Kimi（月之暗面）",
-        "probe": lambda q, mine_ids=None: probe_search_inference(q, "kimi", mine_ids=mine_ids),
+        "probe": lambda q, mine_ids=None, owned_ids=None, competitor_ids=None: probe_search_inference(
+            q, "kimi", mine_ids=mine_ids, owned_ids=owned_ids, competitor_ids=competitor_ids
+        ),
         "note": "无公开 API，使用搜索引擎存在信号推断",
     },
     "doubao": {
         "label": "豆包（字节跳动）",
-        "probe": lambda q, mine_ids=None: probe_search_inference(q, "doubao", mine_ids=mine_ids),
+        "probe": lambda q, mine_ids=None, owned_ids=None, competitor_ids=None: probe_search_inference(
+            q, "doubao", mine_ids=mine_ids, owned_ids=owned_ids, competitor_ids=competitor_ids
+        ),
         "note": "无公开 API，使用搜索引擎存在信号推断",
     },
     "yuanbao": {
         "label": "元宝（腾讯）",
-        "probe": lambda q, mine_ids=None: probe_search_inference(q, "yuanbao", mine_ids=mine_ids),
+        "probe": lambda q, mine_ids=None, owned_ids=None, competitor_ids=None: probe_search_inference(
+            q, "yuanbao", mine_ids=mine_ids, owned_ids=owned_ids, competitor_ids=competitor_ids
+        ),
         "note": "无公开 API，使用搜索引擎存在信号推断",
     },
 }
@@ -521,7 +612,11 @@ CREATE TABLE IF NOT EXISTS probes (
       meta TEXT,
       mine_cited INTEGER,
       mine_ids TEXT,
-      confidence TEXT
+    '      confidence TEXT,'
+    '      cited_type TEXT,'
+    '      owned_ids TEXT,'
+    '      competitor_matched INTEGER,'
+    '      fact_risks TEXT'
 );
 CREATE INDEX IF NOT EXISTS idx_probes_query_platform_run
     ON probes(query, platform, run_at);
@@ -537,7 +632,7 @@ def connect(db_path: Path = DEFAULT_DB) -> sqlite3.Connection:
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    """旧库补列：mine_cited / mine_ids / confidence（ALTER TABLE ADD COLUMN）"""
+    """旧库补列：mine_cited / mine_ids / confidence / B3 引用质量字段（ALTER TABLE ADD COLUMN）"""
     cols = {row[1] for row in conn.execute("PRAGMA table_info(probes)").fetchall()}
     with conn:
         if "mine_cited" not in cols:
@@ -546,6 +641,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE probes ADD COLUMN mine_ids TEXT")
         if "confidence" not in cols:
             conn.execute("ALTER TABLE probes ADD COLUMN confidence TEXT")
+        if "cited_type" not in cols:
+            conn.execute("ALTER TABLE probes ADD COLUMN cited_type TEXT")
+        if "owned_ids" not in cols:
+            conn.execute("ALTER TABLE probes ADD COLUMN owned_ids TEXT")
+        if "competitor_matched" not in cols:
+            conn.execute("ALTER TABLE probes ADD COLUMN competitor_matched INTEGER")
+        if "fact_risks" not in cols:
+            conn.execute("ALTER TABLE probes ADD COLUMN fact_risks TEXT")
 
 
 def store_results(
@@ -562,10 +665,15 @@ def store_results(
             for r in rows:
                 cited = 1 if r.cited is True else (0 if r.cited is False else None)
                 mine_cited = 1 if r.mine_cited is True else (0 if r.mine_cited is False else None)
+                competitor_matched = (
+                    1 if r.competitor_matched is True
+                    else (0 if r.competitor_matched is False else None)
+                )
                 conn.execute(
                     "INSERT INTO probes(query, platform, run_at, status, cited, sentiment,"
-                    " context, source, degraded, error, meta, mine_cited, mine_ids, confidence)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " context, source, degraded, error, meta, mine_cited, mine_ids, confidence,"
+                    " cited_type, owned_ids, competitor_matched, fact_risks)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         r.query, r.platform, run_at, r.status, cited, r.sentiment,
                         r.context, r.source, 1 if r.degraded else 0, r.error,
@@ -573,6 +681,10 @@ def store_results(
                         mine_cited,
                         json.dumps(r.mine_ids or [], ensure_ascii=False),
                         r.confidence,
+                        r.cited_type,
+                        json.dumps(r.owned_ids or [], ensure_ascii=False),
+                        competitor_matched,
+                        json.dumps(r.fact_risks or [], ensure_ascii=False),
                     ),
                 )
     finally:
@@ -626,6 +738,13 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
                 "mine_cited": bool(r["mine_cited"]) if r["mine_cited"] is not None else None,
                 "mine_checked": bool(_parse_mine_ids(r["mine_ids"])),
                 "mine_ids": _parse_mine_ids(r["mine_ids"]),
+                "cited_type": r["cited_type"],
+                "owned_ids": _parse_mine_ids(r["owned_ids"]),
+                "competitor_matched": (
+                    bool(r["competitor_matched"])
+                    if r["competitor_matched"] is not None else None
+                ),
+                "fact_risks": _parse_mine_ids(r["fact_risks"]),
             }
             for r in ordered
         ]
@@ -700,16 +819,32 @@ def build_delta(
                 item["mine_change"] = "gained"
             elif not last["mine_cited"] and prev["mine_cited"]:
                 item["mine_change"] = "lost"
+        # lostprompt：上次被引用、本次未被引用但话题仍被提及、本次检出竞品内容出现
+        if (
+            last["mine_checked"] and prev["mine_checked"]
+            and prev["mine_cited"] is True
+            and last["mine_cited"] is False
+            and last["cited"] is True
+            and last["competitor_matched"] is True
+        ):
+            item["competitor_replaced"] = True
+            item["competitor_replaced_at"] = last["run_at"]
         # 两个有效快照均无可对比数据（cited/sentiment/mine 全缺）时不写入空壳条目，
         # 避免 has_history=False 时渲染出全「—」的对比行
-        if any(k in item for k in ("cited_change", "sentiment_flip", "mine_change")):
+        if any(
+            k in item
+            for k in ("cited_change", "sentiment_flip", "mine_change", "competitor_replaced")
+        ):
             delta_platforms[platform] = item
     # has_history 仅表示存在真实对比（引用/情感/我的内容任一变化或一致判定），
     # 不含「本次无有效数据」的 note 条目，避免 JSON 消费方误读
     compared = [
         item
         for item in delta_platforms.values()
-        if any(k in item for k in ("cited_change", "sentiment_flip", "mine_change"))
+        if any(
+            k in item
+            for k in ("cited_change", "sentiment_flip", "mine_change", "competitor_replaced")
+        )
     ]
     return {"query": query, "platforms": delta_platforms, "has_history": bool(compared)}
 
@@ -722,6 +857,7 @@ def build_delta(
 def build_recommendations(
     query: str,
     results: list[ProbeResult],
+    delta: dict | None = None,
 ) -> list[Recommendation]:
     """根据探测结果生成带验证方式的 P0/P1/P2 行动清单"""
     recs: list[Recommendation] = []
@@ -778,6 +914,44 @@ def build_recommendations(
                                      f"--mine {_shell_quote(mine_example)}，"
                                      "搜索推断平台我的内容至少一个变为「是」",
             ))
+
+    # B3 引用质量：lostprompt（竞品夺走）与 factcheck（未核实断言）
+    delta = delta or {"platforms": {}}
+    replaced = [
+        (platform, item)
+        for platform, item in delta["platforms"].items()
+        if item.get("competitor_replaced")
+    ]
+    if replaced:
+        names = "、".join(PLATFORMS.get(p, {}).get("label", p) for p, _ in replaced)
+        recs.append(Recommendation(
+            priority="P0",
+            dimension="竞品夺走",
+            action=f"在 {names} 上，你的内容上次被引用、本次被竞品替换："
+                   "围绕差异化优势补充独家数据/实测/案例，并在标题与首段强化品牌锚定，"
+                   "让 AI 能明确区分你与竞品",
+            expected_impact="把 AI 引用从竞品拉回你的内容",
+            falsifiability_check=f"重跑 /pulse track --query {_shell_quote(query)} "
+                                 "--mine <你的内容URL> --competitor <竞品标识>，"
+                                 "对应平台「竞品夺走」风险消失、我的内容变为「是」",
+        ))
+    risk_results = [
+        r for r in results
+        if r.status == "ok" and r.fact_risks
+    ]
+    if risk_results:
+        risks = "、".join(
+            f"{PLATFORMS[r.platform]['label']}：{'、'.join(r.fact_risks[:3])}"
+            for r in risk_results[:3]
+        )
+        recs.append(Recommendation(
+            priority="P1",
+            dimension="信息风险",
+            action=f"AI 回答中出现未核实断言（{risks}）：人工复核数字/版本真实性，"
+                   "若与事实不符，准备纠偏内容或联系平台反馈",
+            expected_impact="防止错误信息随 AI 回答扩散",
+            falsifiability_check="重跑 /pulse track 后回答中的断言经人工核实一致，或已确认平台修正",
+        ))
 
     failed = [r for r in results if r.status == "error"]
     if failed:
@@ -853,6 +1027,8 @@ def render_markdown(
     for r in results:
         cited_txt = {True: "是", False: "否", None: "未知"}.get(r.cited, "未知")
         mine_txt = {True: "是", False: "否", None: "—"}.get(r.mine_cited, "—")
+        if r.mine_cited is True:
+            mine_txt += "（原创）" if r.cited_type == "earned" else "（转载）"
         sentiment = SENTIMENT_LABEL.get(r.sentiment or "", "—")
         conf = CONFIDENCE_LABEL.get(r.confidence or "", "—")
         if r.error:
@@ -876,7 +1052,10 @@ def render_markdown(
             (platform, item)
             for platform, item in delta["platforms"].items()
             if item.get("note")
-            or any(k in item for k in ("cited_change", "sentiment_flip", "mine_change"))
+            or any(
+                k in item
+                for k in ("cited_change", "sentiment_flip", "mine_change", "competitor_replaced")
+            )
         ]
         if rows:
             lines.append("## 与上次对比")
@@ -893,6 +1072,8 @@ def render_markdown(
                 cited = cited_label.get(item.get("cited_change"), "—")
                 flip = item.get("sentiment_flip", "—")
                 mine = mine_label.get(item.get("mine_change"), "—")
+                if item.get("competitor_replaced"):
+                    mine = "丢失被引用（竞品夺走）"
                 lines.append(f"| {label} | {cited} | {flip} | {mine} |")
             lines.append("")
 
@@ -946,6 +1127,28 @@ def render_markdown(
                 )
     lines.append("")
 
+    # B3 风险提示：lostprompt（竞品夺走）与未核实断言（factcheck）
+    risk_lines: list[str] = []
+    for platform, item in (delta or {"platforms": {}})["platforms"].items():
+        if item.get("competitor_replaced"):
+            label = PLATFORMS.get(platform, {}).get("label", platform)
+            risk_lines.append(
+                f"- ⚠ **{label}**：上次被引用，本次被竞品替换"
+                f"（{item.get('competitor_replaced_at', '')}），建议补充差异化内容强化品牌锚定"
+            )
+    for r in results:
+        if r.fact_risks:
+            label = PLATFORMS[r.platform]["label"]
+            risk_lines.append(
+                f"- ⚠ **{label}** 回答中出现未核实断言：{'、'.join(r.fact_risks)}，"
+                "建议人工复核后准备纠偏内容"
+            )
+    if risk_lines:
+        lines.append("## 风险提示")
+        lines.append("")
+        lines.extend(risk_lines)
+        lines.append("")
+
     lines.append("## 行动清单（每条都带验证方式）")
     lines.append("")
     if not recommendations:
@@ -970,6 +1173,11 @@ def render_markdown(
     lines.append("- Kimi / 豆包 / 元宝 各自用 Bing 对同一查询词做搜索推断（结果通常相同），是检索库存在信号，不代表各平台各自的真实引用。")
     lines.append("- 传 --mine <你的内容标识>（URL/标题/作者名，可重复传多次，一次一个）时，额外判断 AI 回答/Bing 结果里是否出现你的内容；"
                  "URL 在搜索推断里更有效，标题/作者名在 AI 回答里更常见。")
+    lines.append("- --mine-owned 传转载/自有渠道标识，命中时引用类型记为「转载（owned）」；"
+                 "--mine 默认视为原创内容，命中记为「原创（earned）」。")
+    lines.append("- --competitor 传竞品标识，用于 lostprompt（竞品夺走）分析："
+                 "上次被引用、本次被竞品替换且话题仍被提及时会标出风险。")
+    lines.append("- 「风险提示」中的未核实断言来自 AI 回答原文的数字/版本提取，只做风险提示不做事实判定，需人工复核。")
     lines.append("- URL 标识匹配规则：域名大小写不敏感、路径大小写敏感（URL 路径区分大小写）；标题/作者名不区分大小写。")
     lines.append("- 行动清单里的重跑命令为 POSIX shell 风格；PowerShell 可直接使用，但标识含英文单引号时"
                  "（shlex 会转义为 '\\''），需在 PowerShell 手动调整或改用 bash。")
@@ -1052,6 +1260,20 @@ def build_parser() -> argparse.ArgumentParser:
              "传了才会额外判断 AI 回答/搜索结果里是否出现你的内容",
     )
     parser.add_argument(
+        "--mine-owned",
+        action="append",
+        default=[],
+        help="转载/自有渠道内容标识（区别于 --mine 原创内容），可重复传；"
+             "命中时引用类型记为「转载（owned）」而非「原创（earned）」",
+    )
+    parser.add_argument(
+        "--competitor",
+        action="append",
+        default=[],
+        help="竞品内容标识（URL/标题/作者名），可重复传；"
+             "传了会检测 AI 回答/搜索结果里是否出现竞品，用于 lostprompt（竞品夺走）分析",
+    )
+    parser.add_argument(
         "--platforms",
         type=_parse_platforms,
         help="逗号分隔的平台列表，默认全部（deepseek,kimi,doubao,yuanbao）",
@@ -1064,16 +1286,27 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     platforms = args.platforms or list(PLATFORMS)
-    mine_ids = list(dict.fromkeys(m.strip() for m in args.mine if m.strip()))
+    earned_ids = list(dict.fromkeys(m.strip() for m in args.mine if m.strip()))
+    owned_ids = list(dict.fromkeys(m.strip() for m in args.mine_owned if m.strip()))
+    competitor_ids = list(dict.fromkeys(m.strip() for m in args.competitor if m.strip()))
+    mine_ids = list(dict.fromkeys(earned_ids + owned_ids))
     db_path = Path(args.db) if args.db else DEFAULT_DB
     out_dir = Path(args.output) if args.output else None
 
     try:
-        results = [PLATFORMS[p]["probe"](args.query, mine_ids=mine_ids) for p in platforms]
+        results = [
+            PLATFORMS[p]["probe"](
+                args.query,
+                mine_ids=mine_ids,
+                owned_ids=owned_ids,
+                competitor_ids=competitor_ids,
+            )
+            for p in platforms
+        ]
         store_results(results, db_path=db_path)
         trend = build_trend(args.query, db_path=db_path)
         delta = build_delta(args.query, db_path=db_path, trend=trend, platforms=platforms)
-        recs = build_recommendations(args.query, results)
+        recs = build_recommendations(args.query, results, delta=delta)
         paths = save_report(args.query, results, trend, recs, out_dir, delta)
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)
@@ -1092,7 +1325,10 @@ def main(argv: list[str] | None = None) -> int:
         label = PLATFORMS[r.platform]["label"]
         mine = ""
         if r.mine_ids:
-            mine = " · 我的内容 " + {True: "是", False: "否", None: "—"}.get(r.mine_cited, "—")
+            mine_txt = {True: "是", False: "否", None: "—"}.get(r.mine_cited, "—")
+            if r.mine_cited is True:
+                mine_txt += "（原创）" if r.cited_type == "earned" else "（转载）"
+            mine = f" · 我的内容 {mine_txt}"
         if r.status == "ok":
             cited = "是" if r.cited else "否"
             extra = f" · 情感 {SENTIMENT_LABEL.get(r.sentiment or '', '—')}" if r.sentiment else ""
@@ -1100,6 +1336,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {label}：{STATUS_LABEL[r.status]} · 被提及 {cited}{extra}{conf}{mine}")
         else:
             print(f"  {label}：{STATUS_LABEL.get(r.status, r.status)} · {_md_cell(r.context)}{mine}")
+        if r.fact_risks:
+            print(f"  ⚠ {label} 回答出现未核实断言：{'、'.join(r.fact_risks)}（建议人工复核）")
     print(f"趋势对比：{trend['total_runs']} 次快照 · {len(trend['changes'])} 处引用状态变化")
     if delta["platforms"]:
         cited_label = {"added": "新增被提及", "lost": "丢失被提及", "same": "无变化"}
@@ -1107,6 +1345,9 @@ def main(argv: list[str] | None = None) -> int:
             label = PLATFORMS.get(platform, {}).get("label", platform)
             if item.get("note"):
                 print(f"  {label}：{item['note']}")
+                continue
+            if item.get("competitor_replaced"):
+                print(f"  ⚠ 竞品夺走 · {label}：上次被引用，本次被竞品替换（{item['competitor_replaced_at']}）")
                 continue
             cited = cited_label.get(item.get("cited_change"))
             flip = item.get("sentiment_flip")
