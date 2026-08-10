@@ -864,6 +864,13 @@ class TestB5IndexCheck:
             "site:zhuanlan.zhihu.com/p/123"
         )
 
+    def test_baidu_target_url_restores_jump_link(self):
+        jump = "http://www.baidu.com/link?url=https%3A%2F%2Fzhuanlan.zhihu.com%2Fp%2F123&wd=site%3A"
+        assert search_ai._baidu_target_url(jump) == (
+            "https://zhuanlan.zhihu.com/p/123"
+        )
+        assert search_ai._baidu_target_url("https://other.com/x") == "https://other.com/x"
+
     def test_parse_baidu(self):
         items = search_ai._parse_baidu(BAIDU_HTML)
         assert len(items) == 1
@@ -927,6 +934,24 @@ class TestB5IndexCheck:
         result = search_ai.check_index("https://zhuanlan.zhihu.com/p/123")
         # 百度跳转链接场景：摘要含 URL → 疑似收录
         assert result["sources"]["baidu"]["status"] == "likely_indexed"
+
+    def test_check_index_baidu_jump_link_restored(self, monkeypatch):
+        # 百度跳转链接：还原真实 URL 后精确命中 → 已收录（不再误判未收录）
+        html = """
+        <div class="result c-container">
+          <h3 class="t"><a href="http://www.baidu.com/link?url=https%3A%2F%2Fzhuanlan.zhihu.com%2Fp%2F123">文章标题</a></h3>
+          <span>摘要内容</span>
+        </div>
+        """
+
+        def fake_get(base, params=None, headers=None, timeout=None):
+            if "baidu.com" in base:
+                return FakeResponse(text=html)
+            return FakeResponse(text="<html>没有找到</html>")
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        result = search_ai.check_index("https://zhuanlan.zhihu.com/p/123")
+        assert result["sources"]["baidu"]["status"] == "indexed"
 
     def test_check_index_not_indexed(self, monkeypatch):
         def fake_get(base, params=None, headers=None, timeout=None):

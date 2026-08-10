@@ -29,7 +29,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import requests
 from audit import Recommendation
@@ -720,6 +720,18 @@ def _site_query(url: str) -> str:
     return f"site:{host}{path}"
 
 
+def _baidu_target_url(item_url: str) -> str:
+    """从百度跳转链接（www.baidu.com/link?url=...）还原真实目标 URL"""
+    try:
+        parts = urlsplit(item_url)
+    except ValueError:
+        return item_url
+    if "baidu.com" not in (parts.netloc or ""):
+        return item_url
+    target = parse_qs(parts.query).get("url", [""])[0]
+    return unquote(target) if target else item_url
+
+
 _NO_RESULT_MARKERS = (
     "没有找到",
     "抱歉，没有找到",
@@ -757,9 +769,9 @@ def check_index(
 ) -> dict:
     """检查单篇内容在主流检索源（Bing/百度）的收录状态
 
-    对每个源发 site: 查询：命中该 URL（精确匹配）→ 已收录；
+    对每个源发 site: 查询：命中该 URL（精确匹配，百度跳转链接还原后比较）→ 已收录；
     查询成功但无命中 → 未收录；请求/解析失败 → 探测失败。
-    标题匹配作为疑似收录的辅助信号（重定向/参数变体时 URL 可能不完全一致）。
+    摘要文本含 URL 作为疑似收录的辅助信号（重定向/参数变体时 URL 可能不完全一致）。
     """
     http = session or requests
     headers = {
@@ -792,7 +804,9 @@ def check_index(
             }
             continue
         url_hit = any(
-            _url_present(url, item.get("url", "")) for item in items
+            _url_present(url, item.get("url", ""))
+            or _url_present(url, _baidu_target_url(item.get("url", "")))
+            for item in items
         )
         # 疑似收录：摘要文本里出现该 URL（百度跳转链接/参数变体场景）
         snippet_hit = any(
