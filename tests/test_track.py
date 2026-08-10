@@ -473,6 +473,45 @@ class TestB1Sampling:
         assert p["hits"] == 1 and p["n"] == 2
         assert p["cited"] is False
 
+    def test_build_trend_separates_same_run_at_by_run_id(self, tmp_path):
+        # 两次独立运行（两次 store 调用）即使 run_at 相同也按 run_id 分开
+        db = tmp_path / "monitor.db"
+        store_results([
+            ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False),
+        ], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        store_results([
+            ProbeResult("品牌A", "deepseek", "ok", False, "neutral", "c", "api", False),
+        ], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        points = build_trend("品牌A", db_path=db)["series"]["deepseek"]
+        assert len(points) == 2
+        assert {p["hits"] for p in points} == {0, 1}
+
+    def test_render_markdown_trend_probability_format(self):
+        # 趋势点概率格式与表格/CLI 一致：是 (80%, 4/5)
+        trend = {
+            "series": {
+                "deepseek": [
+                    {"run_at": "t1", "n": 5, "hits": 4, "prob": 0.8,
+                     "ci_low": 0.38, "ci_high": 0.96, "cited": True,
+                     "status": "ok", "sentiment": "positive",
+                     "mine_cited": None, "mine_checked": False, "mine_ids": [],
+                     "cited_type": None, "owned_ids": [],
+                     "competitor_matched": None, "competitor_ids": [], "fact_risks": []},
+                    {"run_at": "t2", "n": 5, "hits": 2, "prob": 0.4,
+                     "ci_low": 0.12, "ci_high": 0.77, "cited": False,
+                     "status": "ok", "sentiment": "neutral",
+                     "mine_cited": None, "mine_checked": False, "mine_ids": [],
+                     "cited_type": None, "owned_ids": [],
+                     "competitor_matched": None, "competitor_ids": [], "fact_risks": []},
+                ],
+            },
+            "changes": [],
+            "total_runs": 2,
+        }
+        results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]
+        md = render_markdown("品牌A", results, trend, [])
+        assert "是 (80%, 4/5) → 否 (40%, 2/5)" in md
+
     def test_main_samples_loop_and_prob_display(self, tmp_path, monkeypatch, capsys):
         calls = {"n": 0}
 
@@ -887,7 +926,7 @@ class TestDB:
             "id", "query", "platform", "run_at", "status", "cited", "sentiment",
             "context", "source", "degraded", "error", "meta", "mine_cited",
             "mine_ids", "confidence", "cited_type", "owned_ids",
-            "competitor_matched", "competitor_ids", "fact_risks", "sample_idx",
+            "competitor_matched", "competitor_ids", "fact_risks", "sample_idx", "run_id",
         ]
         assert not any(chr(39) in c for c in cols)
 

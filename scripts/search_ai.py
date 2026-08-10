@@ -24,6 +24,7 @@ import re
 import shlex
 import sqlite3
 import sys
+import uuid
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -798,7 +799,8 @@ CREATE TABLE IF NOT EXISTS probes (
       competitor_matched INTEGER,
       competitor_ids TEXT,
       fact_risks TEXT,
-      sample_idx INTEGER NOT NULL DEFAULT 0
+      sample_idx INTEGER NOT NULL DEFAULT 0,
+      run_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_probes_query_platform_run
     ON probes(query, platform, run_at);
@@ -835,6 +837,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE probes ADD COLUMN fact_risks TEXT")
         if "sample_idx" not in cols:
             conn.execute("ALTER TABLE probes ADD COLUMN sample_idx INTEGER NOT NULL DEFAULT 0")
+        if "run_id" not in cols:
+            conn.execute("ALTER TABLE probes ADD COLUMN run_id TEXT")
 
 
 def store_results(
@@ -845,6 +849,8 @@ def store_results(
     """写入一次探测快照，返回本次 run_at"""
     # 微秒精度：避免同一秒内重跑两次时 run_at 相同，趋势/概览把两次运行合并
     run_at = run_at or datetime.now().astimezone().isoformat(timespec="microseconds")
+    # run_id：同一次 store 调用内的所有样本共享；硬区分同 run_at 的不同独立运行
+    run_id = uuid.uuid4().hex[:12]
     conn = connect(db_path)
     try:
         with conn:
@@ -859,8 +865,8 @@ def store_results(
                     "INSERT INTO probes(query, platform, run_at, status, cited, sentiment,"
                     " context, source, degraded, error, meta, mine_cited, mine_ids, confidence,"
                     " cited_type, owned_ids, competitor_matched, competitor_ids, fact_risks,"
-                    " sample_idx)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " sample_idx, run_id)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         r.query, r.platform, run_at, r.status, cited, r.sentiment,
                         r.context, r.source, 1 if r.degraded else 0, r.error,
@@ -874,6 +880,7 @@ def store_results(
                         json.dumps(r.competitor_ids or [], ensure_ascii=False),
                         json.dumps(r.fact_risks or [], ensure_ascii=False),
                         r.sample_idx,
+                        run_id,
                     ),
                 )
     finally:
@@ -909,7 +916,9 @@ def load_history(
 
 def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
     """按平台/run_at 聚合历史快照，生成带概率的时间序列并找出引用状态的变化点"""
-    rows = load_history(query, db_path=db_path, limit=1000)
+    # 多采样后每 run 产生 N 行：按行限流会压缩可回溯运行次数，
+    # 取 10000 行（samples=5 时约 2000 次运行）再在聚合后按 run 截断
+    rows = load_history(query, db_path=db_path, limit=10000)
     by_platform: dict[str, list[dict]] = {}
     for row in rows:
         by_platform.setdefault(row["platform"], []).append(row)
@@ -919,12 +928,15 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
     for platform, items in by_platform.items():
         ordered = sorted(items, key=lambda r: r["run_at"])
         # 多采样：同一 run_at 的 N 行聚合成一个带概率的点
-        by_run: dict[str, list[dict]] = {}
+        by_run: dict[tuple, list[dict]] = {}
         for r in ordered:
-            by_run.setdefault(r["run_at"], []).append(r)
+            # (run_at, run_id) 分组：run_id 硬区分同一时间戳的不同独立运行
+            key = (r["run_at"], r["run_id"] or r["run_at"])
+            by_run.setdefault(key, []).append(r)
         points: list[dict] = []
-        for run_at in sorted(by_run):
-            group = by_run[run_at]
+        for key in sorted(by_run):
+            run_at, _run_id = key
+            group = by_run[key]
             # cited 为 NULL 的失败/未配置样本不计入概率分母
             valid = [r for r in group if r["cited"] is not None]
             invalid = len(group) - len(valid)
@@ -973,7 +985,8 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
                     _parse_mine_ids(r["fact_risks"]) for r in group
                 ]),
             })
-        series[platform] = points
+        # 按 run 截断：每平台保留最近 200 次运行（与原语义一致）
+        series[platform] = points[-200:]
         prev: bool | None = None
         for item in points:
             cur_val = bool(item["cited"]) if item["cited"] is not None else None
@@ -1382,7 +1395,7 @@ def render_markdown(
                 continue
             def point_txt(p: dict) -> str:
                 if p.get("n", 1) > 1 and p.get("prob") is not None:
-                    return f"{'是' if p['cited'] else '否'}({p['prob']:.0%})"
+                    return f"{'是' if p['cited'] else '否'} ({p['prob']:.0%}, {p['hits']}/{p['n']})"
                 return "是" if p["cited"] else "否" if p["cited"] is False else "未知"
 
             states = " → ".join(point_txt(p) for p in points)
