@@ -879,6 +879,18 @@ class TestB5IndexCheck:
         assert len(items) == 1
         assert "zhuanlan.zhihu.com/p/123" in items[0]["snippet"]
 
+    def test_parse_baidu_class_order_independent(self):
+        # class 顺序变化（c-container result）不因正则顺序漏解析
+        html = """
+        <div class="c-container result">
+          <h3 class="t"><a href="http://www.baidu.com/link?url=x">文章标题</a></h3>
+          <span>摘要内容 https://zhuanlan.zhihu.com/p/123</span>
+        </div>
+        """
+        items = search_ai._parse_baidu(html)
+        assert len(items) == 1
+        assert items[0]["title"] == "文章标题"
+
     def test_check_index_bing_indexed(self, monkeypatch):
         def fake_get(base, params=None, headers=None, timeout=None):
             if "bing.com" in base:
@@ -922,6 +934,29 @@ class TestB5IndexCheck:
         assert result["sources"]["bing"]["status"] == "not_indexed"
         assert result["sources"]["baidu"]["status"] == "not_indexed"
 
+    def test_check_index_block_page_is_error_even_when_large(self, monkeypatch):
+        # 反爬页体积大（>2KB）也判探测失败，不因大小阈值误判未收录
+        html = ("<html><title>百度安全验证</title>" + "<div>填充内容</div>" * 400 + "</html>")
+
+        def fake_get(base, params=None, headers=None, timeout=None):
+            return FakeResponse(text=html)
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        result = search_ai.check_index("https://zhuanlan.zhihu.com/p/123")
+        assert result["sources"]["bing"]["status"] == "error"
+        assert result["sources"]["baidu"]["status"] == "error"
+
+    def test_check_index_no_result_marker_small_page(self, monkeypatch):
+        # 小体积但含无结果标记 → 未收录
+        html = "<html><body>抱歉，没有找到与 site: 相关的网页</body></html>"
+
+        def fake_get(base, params=None, headers=None, timeout=None):
+            return FakeResponse(text=html)
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        result = search_ai.check_index("https://zhuanlan.zhihu.com/p/123")
+        assert result["sources"]["bing"]["status"] == "not_indexed"
+
     def test_check_index_request_error(self, monkeypatch):
         def boom(*a, **kw):
             raise requests.exceptions.ConnectionError("network down")
@@ -949,6 +984,12 @@ class TestB5IndexCheck:
         assert "Bing：已收录" in captured
         assert "百度：未收录" in captured
         assert len(list(tmp_path.glob("index-check-*.json"))) == 1
+
+    def test_main_index_check_rejects_conflicting_args(self, monkeypatch, capsys):
+        code = main(["--index-check", "https://a.com/p/1", "--mine", "https://a.com/1"])
+        assert code == 2
+        assert "互斥" in capsys.readouterr().err
+
 
     def test_render_markdown_probability(self):
         r = ProbeResult(

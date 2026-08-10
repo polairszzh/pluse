@@ -679,9 +679,10 @@ def _parse_baidu(html_text: str, limit: int = 10) -> list[dict]:
     """
     results: list[dict] = []
     # 块边界到下一个结果块或结尾：避免 .*?</div> 在嵌套 div 处提前截断
+    block_class = r'class="(?=[^"]*result)(?=[^"]*c-container)[^"]*"'
     for block in re.findall(
-        r'<div[^>]*class="[^"]*result[^"]*c-container[^"]*"[^>]*>'
-        r'(.*?)(?=<div[^>]*class="[^"]*result[^"]*c-container|$)',
+        r"<div[^>]*" + block_class + r"[^>]*>"
+        r"(.*?)(?=<div[^>]*" + block_class + r"|$)",
         html_text,
         re.DOTALL,
     ):
@@ -717,6 +718,36 @@ def _site_query(url: str) -> str:
     return f"site:{host}{path}"
 
 
+_NO_RESULT_MARKERS = (
+    "没有找到",
+    "抱歉，没有找到",
+    "未找到相关",
+    "No results",
+    "There are no results",
+)
+_BLOCK_MARKERS = (
+    "安全验证",
+    "wappass",
+    "verify",
+    "captcha",
+    "网络不给力",
+    "访问过于频繁",
+)
+
+
+def _classify_empty_page(html_text: str) -> str:
+    """区分空解析结果页的语义：not_indexed（有效无结果）vs error（反爬/解析失败）
+
+    反爬/拦截标记优先判定（反爬页体积可能超过 2KB）；无结果标记或正常体积
+    （>=2KB）视为有效无结果页；其余按解析失败处理。
+    """
+    if any(m in html_text for m in _BLOCK_MARKERS):
+        return "error"
+    if any(m in html_text for m in _NO_RESULT_MARKERS) or len(html_text) >= 2000:
+        return "not_indexed"
+    return "error"
+
+
 def check_index(
     url: str,
     timeout: int = 20,
@@ -749,9 +780,7 @@ def check_index(
             continue
         items = _parse_bing(html_text) if name == "bing" else _parse_baidu(html_text)
         if not items:
-            # 区分「有效结果页无命中」与「解析失败/反爬」：
-            # 正常无结果页体积较大（>2KB），反爬/拦截页通常很小
-            if len(html_text) >= 2000:
+            if _classify_empty_page(html_text) == "not_indexed":
                 sources[name] = {"status": "not_indexed", "found": False, "results": []}
                 continue
             sources[name] = {
@@ -764,12 +793,12 @@ def check_index(
             _url_present(url, item.get("url", "")) for item in items
         )
         # 疑似收录：摘要文本里出现该 URL（百度跳转链接/参数变体场景）
-        title_hit = any(
+        snippet_hit = any(
             _url_present(url, item.get("snippet", "")) for item in items
         )
         if url_hit:
             status = "indexed"
-        elif title_hit:
+        elif snippet_hit:
             status = "likely_indexed"
         else:
             status = "not_indexed"
@@ -1845,7 +1874,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--samples",
         type=_positive_int,
-        default=5,
+        default=None,
         help="每平台采样次数（默认 5）：多次探测计算被提及概率与置信区间；1 为单次判定",
     )
     parser.add_argument(
@@ -1861,6 +1890,25 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.index_check:
+        conflicting = [
+            name
+            for name, val in (
+                ("--mine", args.mine),
+                ("--mine-owned", args.mine_owned),
+                ("--competitor", args.competitor),
+                ("--platforms", args.platforms),
+                ("--samples", args.samples),
+                ("--output", args.output),
+                ("--db", args.db),
+            )
+            if val
+        ]
+        if conflicting:
+            print(
+                f"--index-check 与 {'、'.join(conflicting)} 互斥，请勿同时传入",
+                file=sys.stderr,
+            )
+            return 2
         result = check_index(args.index_check)
         label = {"bing": "Bing", "baidu": "百度"}
         status_txt = {
@@ -1898,7 +1946,7 @@ def main(argv: list[str] | None = None) -> int:
     mine_ids = list(dict.fromkeys(earned_ids + owned_ids))
     db_path = Path(args.db) if args.db else DEFAULT_DB
     out_dir = Path(args.output) if args.output else None
-    samples = args.samples
+    samples = args.samples or 5
 
     try:
         raw_samples: list[ProbeResult] = []
