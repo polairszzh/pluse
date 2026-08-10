@@ -192,7 +192,7 @@ class TestB3Quality:
         # 复合数量单位不得被截断：1.8万亿 不能提取成 1.8万
         risks = search_ai._extract_fact_risks(
             "WorkBuddy 估值 1.8万亿，年营收 5000万元，补贴 3亿元，累计 1000万用户，"
-            "接待 1.8万人次，日活 1.8亿用户，调用 3亿次",
+            "接待 1.8万人次，日活 1.8亿用户，调用 3亿次，服务 100亿次请求，覆盖 5000万人",
             "WorkBuddy",
             limit=10,
         )
@@ -203,6 +203,9 @@ class TestB3Quality:
         assert any("1.8万人次" in r for r in risks)
         assert any("1.8亿用户" in r for r in risks)
         assert any("3亿次" in r for r in risks)
+        # 数量级/对象单位解耦后，未枚举的新组合（百亿次/千万人）也能完整提取
+        assert any("100亿次" in r for r in risks)
+        assert any("5000万人" in r for r in risks)
         # 不得出现被截断的「1.8万（…）」标签
         assert not any(r.startswith("1.8万（") for r in risks)
 
