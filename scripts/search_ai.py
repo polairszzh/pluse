@@ -678,8 +678,10 @@ def _parse_baidu(html_text: str, limit: int = 10) -> list[dict]:
     url 字段保留原始跳转链接供参考。
     """
     results: list[dict] = []
+    # 块边界到下一个结果块或结尾：避免 .*?</div> 在嵌套 div 处提前截断
     for block in re.findall(
-        r'<div[^>]*class="[^"]*result[^"]*c-container[^"]*"[^>]*>.*?</div>',
+        r'<div[^>]*class="[^"]*result[^"]*c-container[^"]*"[^>]*>'
+        r'(.*?)(?=<div[^>]*class="[^"]*result[^"]*c-container|$)',
         html_text,
         re.DOTALL,
     ):
@@ -688,13 +690,16 @@ def _parse_baidu(html_text: str, limit: int = 10) -> list[dict]:
             continue
         url = link.group(1)
         title = html_module.unescape(re.sub(r"<[^>]+>", "", link.group(2))).strip()
-        snip = re.search(r"<span[^>]*>(.*?)</span>", block, re.DOTALL)
-        snippet = (
-            html_module.unescape(re.sub(r"<[^>]+>", "", snip.group(1))).strip()
-            if snip else ""
-        )
         if not title:
             continue
+        # 摘要取 h3 之后最近的非空文本块（嵌套 div 内也取得到）
+        snippet = ""
+        after = block[link.end() :]
+        for m in re.finditer(r"<[^>]+>([^<>]+)</[^>]+>", after):
+            text = html_module.unescape(m.group(1)).strip()
+            if text:
+                snippet = text
+                break
         results.append({"title": title, "url": url, "snippet": snippet})
         if len(results) >= limit:
             break
@@ -744,6 +749,11 @@ def check_index(
             continue
         items = _parse_bing(html_text) if name == "bing" else _parse_baidu(html_text)
         if not items:
+            # 区分「有效结果页无命中」与「解析失败/反爬」：
+            # 正常无结果页体积较大（>2KB），反爬/拦截页通常很小
+            if len(html_text) >= 2000:
+                sources[name] = {"status": "not_indexed", "found": False, "results": []}
+                continue
             sources[name] = {
                 "status": "error",
                 "error": "no_results_parsed（页面结构变化或触发反爬）",

@@ -866,6 +866,19 @@ class TestB5IndexCheck:
         assert items[0]["title"] == "文章标题"
         assert "zhuanlan.zhihu.com/p/123" in items[0]["snippet"]
 
+    def test_parse_baidu_nested_div_snippet(self):
+        # 摘要 span 在嵌套 div 之后：块匹配不得在首个 </div> 提前截断
+        html = """
+        <div class="result c-container">
+          <h3 class="t"><a href="http://www.baidu.com/link?url=x">文章标题</a></h3>
+          <div class="a"></div>
+          <span class="b">摘要内容 https://zhuanlan.zhihu.com/p/123</span>
+        </div>
+        """
+        items = search_ai._parse_baidu(html)
+        assert len(items) == 1
+        assert "zhuanlan.zhihu.com/p/123" in items[0]["snippet"]
+
     def test_check_index_bing_indexed(self, monkeypatch):
         def fake_get(base, params=None, headers=None, timeout=None):
             if "bing.com" in base:
@@ -896,6 +909,18 @@ class TestB5IndexCheck:
         monkeypatch.setattr(requests, "get", fake_get)
         result = search_ai.check_index("https://zhuanlan.zhihu.com/p/123")
         assert result["sources"]["bing"]["status"] == "not_indexed"
+
+    def test_check_index_empty_results_page_is_not_indexed(self, monkeypatch):
+        # 有效结果页但无命中（体积正常、无结果块）→ 未收录，而非探测失败
+        html = "<html>" + "<div>填充内容</div>" * 400 + "</html>"
+
+        def fake_get(base, params=None, headers=None, timeout=None):
+            return FakeResponse(text=html)
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        result = search_ai.check_index("https://zhuanlan.zhihu.com/p/123")
+        assert result["sources"]["bing"]["status"] == "not_indexed"
+        assert result["sources"]["baidu"]["status"] == "not_indexed"
 
     def test_check_index_request_error(self, monkeypatch):
         def boom(*a, **kw):
