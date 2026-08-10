@@ -277,6 +277,120 @@ class TestB3Quality:
         )
         assert miss.competitor_matched is False
 
+
+class TestB1Sampling:
+    """B1 多采样概率闭环：Wilson 区间、样本聚合、概率趋势与展示"""
+
+    def test_wilson_interval(self):
+        lo, hi = search_ai._wilson_interval(4, 5)
+        assert lo <= 0.8 <= hi
+        assert 0.0 <= lo <= hi <= 1.0
+        assert search_ai._wilson_interval(0, 5)[0] == 0.0
+        assert search_ai._wilson_interval(5, 5)[1] == 1.0
+        assert search_ai._wilson_interval(3, 0) == (0.0, 0.0)
+
+    def test_aggregate_samples_majority_and_prob(self):
+        s1 = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c1", "api", False,
+            mine_cited=True, mine_ids=["https://a.com/1"], cited_type="earned",
+        )
+        s2 = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "negative", "c2", "api", False,
+            mine_cited=True, mine_ids=["https://a.com/1"], cited_type="earned",
+        )
+        s3 = ProbeResult(
+            "品牌A", "deepseek", "ok", False, None, "c3", "api", False,
+            mine_cited=False, mine_ids=["https://a.com/1"],
+        )
+        agg = search_ai._aggregate_samples([s1, s2, s3])
+        assert agg.cited is True  # 2/3 多数
+        assert agg.prob == 2 / 3
+        assert agg.sample_count == 3
+        assert agg.sentiment == "positive"  # 多数派
+        assert agg.mine_cited is True
+        assert agg.ci_low <= agg.prob <= agg.ci_high
+
+    def test_aggregate_samples_risk_conservative(self):
+        # competitor/fact_risks 保守：任一样本命中即保留，不因多数而漏报
+        s1 = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            competitor_matched=False,
+        )
+        s2 = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            competitor_matched=True, fact_risks=["版本 2.3.1"],
+        )
+        agg = search_ai._aggregate_samples([s1, s2])
+        assert agg.competitor_matched is True
+        assert "版本 2.3.1" in agg.fact_risks
+
+    def test_build_trend_aggregates_samples(self, tmp_path):
+        db = tmp_path / "monitor.db"
+
+        def mk(cited, sample_idx):
+            return ProbeResult(
+                "品牌A", "deepseek", "ok", cited, "positive", "c", "api", False,
+                sample_idx=sample_idx,
+            )
+
+        store_results(
+            [mk(True, 0), mk(True, 1), mk(False, 2)],
+            db_path=db, run_at="2026-08-01T10:00:00+08:00",
+        )
+        store_results(
+            [mk(False, 0), mk(True, 1), mk(False, 2)],
+            db_path=db, run_at="2026-08-02T10:00:00+08:00",
+        )
+        trend = build_trend("品牌A", db_path=db)
+        points = trend["series"]["deepseek"]
+        assert len(points) == 2
+        p1, p2 = points[0], points[1]
+        assert p1["n"] == 3 and p1["hits"] == 2 and p1["prob"] == 2 / 3
+        assert p2["n"] == 3 and p2["hits"] == 1 and p2["prob"] == 1 / 3
+        assert p1["cited"] is True and p2["cited"] is False  # 多数派
+        assert trend["changes"] == [{
+            "platform": "deepseek",
+            "from": True,
+            "to": False,
+            "run_at": "2026-08-02T10:00:00+08:00",
+        }]
+        delta = build_delta("品牌A", db_path=db, trend=trend)
+        assert delta["platforms"]["deepseek"]["cited_change"] == "lost"
+
+    def test_main_samples_loop_and_prob_display(self, tmp_path, monkeypatch, capsys):
+        calls = {"n": 0}
+
+        def fake_probe(query, mine_ids=None, owned_ids=None, competitor_ids=None):
+            calls["n"] += 1
+            return ProbeResult(
+                query, "deepseek", "ok", calls["n"] != 3,
+                "positive", "c", "api", False,
+            )
+
+        monkeypatch.setitem(search_ai.PLATFORMS["deepseek"], "probe", fake_probe)
+        db = tmp_path / "monitor.db"
+        out = tmp_path / "snap"
+        code = main([
+            "--query", "codex", "--platforms", "deepseek", "--samples", "5",
+            "--db", str(db), "--output", str(out),
+        ])
+        assert code == 0
+        assert calls["n"] == 5
+        captured = capsys.readouterr().out
+        assert "被提及 是 (80%, 4/5)" in captured
+        history = load_history("codex", db_path=db)
+        assert len(history) == 5
+        assert {r["sample_idx"] for r in history} == {0, 1, 2, 3, 4}
+
+    def test_render_markdown_probability(self):
+        r = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            prob=0.8, ci_low=0.38, ci_high=0.96, sample_count=5,
+        )
+        r.meta = {"sample_hits": 4}
+        md = render_markdown("品牌A", [r], {"series": {}, "changes": []}, [])
+        assert "是 (80%, 4/5)" in md
+
     def test_empty_inputs(self):
         assert _detect_mine("", ["a"]) == []
         assert _detect_mine("任意文本", []) == []
@@ -646,7 +760,7 @@ class TestDB:
             "id", "query", "platform", "run_at", "status", "cited", "sentiment",
             "context", "source", "degraded", "error", "meta", "mine_cited",
             "mine_ids", "confidence", "cited_type", "owned_ids",
-            "competitor_matched", "competitor_ids", "fact_risks",
+            "competitor_matched", "competitor_ids", "fact_risks", "sample_idx",
         ]
         assert not any(chr(39) in c for c in cols)
 
@@ -1509,12 +1623,14 @@ class TestCLI:
             "--query", "codex", "--platforms", "deepseek",
             "--mine", "https://a.com/1",
             "--competitor", "https://comp.example.com",
+            "--samples", "1",
             "--db", str(db), "--output", str(out),
         ]) == 0
         assert main([
             "--query", "codex", "--platforms", "deepseek",
             "--mine", "https://a.com/1",
             "--competitor", "https://comp.example.com",
+            "--samples", "1",
             "--db", str(db), "--output", str(out),
         ]) == 0
         captured = capsys.readouterr().out
@@ -1572,11 +1688,13 @@ class TestCLI:
         out = tmp_path / "snap"
         assert main([
             "--query", "codex", "--platforms", "deepseek",
-            "--mine", "https://a.com/1", "--db", str(db), "--output", str(out),
+            "--mine", "https://a.com/1", "--samples", "1",
+            "--db", str(db), "--output", str(out),
         ]) == 0
         assert main([
             "--query", "codex", "--platforms", "deepseek",
-            "--mine", "https://a.com/1", "--db", str(db), "--output", str(out),
+            "--mine", "https://a.com/1", "--samples", "1",
+            "--db", str(db), "--output", str(out),
         ]) == 0
         captured = capsys.readouterr().out
         # 仅 mine 变化时不得出现「： · 」的多余分隔符

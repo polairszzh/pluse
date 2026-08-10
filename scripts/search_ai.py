@@ -18,11 +18,13 @@ from __future__ import annotations
 import argparse
 import html as html_module
 import json
+import math
 import os
 import re
 import shlex
 import sqlite3
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -184,6 +186,81 @@ def _extract_fact_risks(answer: str, query: str, limit: int = 5) -> list[str]:
     return risks
 
 
+def _wilson_interval(hits: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """二项分布 Wilson score 区间（小样本也稳定），返回 (low, high)"""
+    if n <= 0 or hits < 0 or hits > n:
+        return (0.0, 0.0)
+    p = hits / n
+    denom = 1 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    margin = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
+    return (max(0.0, center - margin), min(1.0, center + margin))
+
+
+def _aggregate_samples(samples: list[ProbeResult]) -> ProbeResult:
+    """把同一 run 的 N 个采样样本聚合为带概率/置信区间的单条结果
+
+    cited / mine_cited / sentiment / cited_type 取多数派；
+    competitor_matched / fact_risks 保守取任一命中 / 合并（风险信号不因多数而漏报）；
+    prob / ci_low / ci_high / sample_count 基于被提及命中数。
+    """
+    if not samples:
+        raise ValueError("aggregate requires at least one sample")
+    n = len(samples)
+    hits = sum(1 for s in samples if s.cited is True)
+    prob = hits / n
+    ci_low, ci_high = _wilson_interval(hits, n)
+
+    def majority(values: list) -> object | None:
+        cnt = Counter(v for v in values if v is not None)
+        return cnt.most_common(1)[0][0] if cnt else None
+
+    base = samples[0]
+    cited = hits * 2 >= n  # 多数派命中才算被提及（概率单独展示）
+    mine_cited = majority([s.mine_cited for s in samples])
+    sentiment = majority([s.sentiment for s in samples])
+    cited_type = majority([s.cited_type for s in samples])
+    competitor_matched = any(s.competitor_matched is True for s in samples)
+    fact_risks = list(dict.fromkeys(r for s in samples for r in s.fact_risks))
+    hit_context = next(
+        (s.context for s in samples if s.cited is True and s.context),
+        base.context,
+    )
+    answers = [
+        s.meta.get("answer")
+        for s in samples
+        if isinstance(s.meta.get("answer"), str) and s.meta["answer"]
+    ]
+    meta = dict(base.meta)
+    meta["sample_answers"] = answers[:5]
+    meta["sample_count"] = n
+    meta["sample_hits"] = hits
+    return ProbeResult(
+        query=base.query,
+        platform=base.platform,
+        status=majority([s.status for s in samples]) or base.status,
+        cited=cited,
+        sentiment=sentiment,
+        context=hit_context,
+        source=base.source,
+        degraded=base.degraded,
+        error=base.error,
+        meta=meta,
+        mine_cited=mine_cited,
+        mine_ids=base.mine_ids,
+        confidence=base.confidence,
+        cited_type=cited_type,
+        owned_ids=base.owned_ids,
+        competitor_matched=competitor_matched,
+        competitor_ids=base.competitor_ids,
+        fact_risks=fact_risks,
+        prob=prob,
+        ci_low=ci_low,
+        ci_high=ci_high,
+        sample_count=n,
+    )
+
+
 _URL_TOKEN_RE = re.compile(r"https?://[^\s<>\"'，。；：！？（）【】「」『』《》]+", re.IGNORECASE)
 _URL_TRAIL = ".,;:!?)]}"
 
@@ -233,6 +310,17 @@ def _non_empty_query(value: str) -> str:
     return value
 
 
+def _positive_int(value: str) -> int:
+    """argparse 校验：正整数（--samples 等）"""
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("必须是正整数")
+    if n < 1:
+        raise argparse.ArgumentTypeError("必须 >= 1")
+    return n
+
+
 def re_slug(text: str, max_len: int = 40) -> str:
     """查询词 -> 文件名 slug（保留中文）"""
     slug = re.sub(r"[^\w]+", "-", text or "untitled").strip("-")
@@ -266,6 +354,11 @@ class ProbeResult:
     competitor_matched: bool | None = None  # 本次探测是否检测到竞品内容出现
     competitor_ids: list[str] = field(default_factory=list)  # 本次检查的竞品标识
     fact_risks: list[str] = field(default_factory=list)  # 回答中关于品牌的未核实数字断言
+    sample_idx: int = 0             # 多采样编号（同一 run_at 内 0..N-1）
+    prob: float | None = None       # 聚合后：被提及概率（命中数 / 样本数）
+    ci_low: float | None = None     # 聚合后：Wilson 置信区间下界
+    ci_high: float | None = None    # 聚合后：Wilson 置信区间上界
+    sample_count: int = 1           # 聚合后：样本数
 
 
 # --------------------------------------------------------------------------
@@ -675,7 +768,8 @@ CREATE TABLE IF NOT EXISTS probes (
       owned_ids TEXT,
       competitor_matched INTEGER,
       competitor_ids TEXT,
-      fact_risks TEXT
+      fact_risks TEXT,
+      sample_idx INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_probes_query_platform_run
     ON probes(query, platform, run_at);
@@ -710,6 +804,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE probes ADD COLUMN competitor_ids TEXT")
         if "fact_risks" not in cols:
             conn.execute("ALTER TABLE probes ADD COLUMN fact_risks TEXT")
+        if "sample_idx" not in cols:
+            conn.execute("ALTER TABLE probes ADD COLUMN sample_idx INTEGER NOT NULL DEFAULT 0")
 
 
 def store_results(
@@ -733,8 +829,9 @@ def store_results(
                 conn.execute(
                     "INSERT INTO probes(query, platform, run_at, status, cited, sentiment,"
                     " context, source, degraded, error, meta, mine_cited, mine_ids, confidence,"
-                    " cited_type, owned_ids, competitor_matched, competitor_ids, fact_risks)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " cited_type, owned_ids, competitor_matched, competitor_ids, fact_risks,"
+                    " sample_idx)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         r.query, r.platform, run_at, r.status, cited, r.sentiment,
                         r.context, r.source, 1 if r.degraded else 0, r.error,
@@ -747,6 +844,7 @@ def store_results(
                         competitor_matched,
                         json.dumps(r.competitor_ids or [], ensure_ascii=False),
                         json.dumps(r.fact_risks or [], ensure_ascii=False),
+                        r.sample_idx,
                     ),
                 )
     finally:
@@ -781,7 +879,7 @@ def load_history(
 
 
 def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
-    """按平台聚合历史快照，生成时间序列并找出引用状态的变化点"""
+    """按平台/run_at 聚合历史快照，生成带概率的时间序列并找出引用状态的变化点"""
     rows = load_history(query, db_path=db_path, limit=1000)
     by_platform: dict[str, list[dict]] = {}
     for row in rows:
@@ -791,28 +889,67 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
     changes: list[dict] = []
     for platform, items in by_platform.items():
         ordered = sorted(items, key=lambda r: r["run_at"])
-        series[platform] = [
-            {
-                "run_at": r["run_at"],
-                "cited": bool(r["cited"]) if r["cited"] is not None else None,
-                "status": r["status"],
-                "sentiment": r["sentiment"],
-                "mine_cited": bool(r["mine_cited"]) if r["mine_cited"] is not None else None,
-                "mine_checked": bool(_parse_mine_ids(r["mine_ids"])),
-                "mine_ids": _parse_mine_ids(r["mine_ids"]),
-                "cited_type": r["cited_type"],
-                "owned_ids": _parse_mine_ids(r["owned_ids"]),
-                "competitor_matched": (
-                    bool(r["competitor_matched"])
-                    if r["competitor_matched"] is not None else None
-                ),
-                "competitor_ids": _parse_mine_ids(r["competitor_ids"]),
-                "fact_risks": _parse_mine_ids(r["fact_risks"]),
-            }
-            for r in ordered
-        ]
+        # 多采样：同一 run_at 的 N 行聚合成一个带概率的点
+        by_run: dict[str, list[dict]] = {}
+        for r in ordered:
+            by_run.setdefault(r["run_at"], []).append(r)
+        points: list[dict] = []
+        for run_at in sorted(by_run):
+            group = by_run[run_at]
+            n = len(group)
+            # DB 读出 cited 为 INTEGER(0/1)，直接按真值计数
+            hits = sum(1 for r in group if r["cited"])
+            prob = hits / n
+            ci_low, ci_high = _wilson_interval(hits, n)
+
+            def majority(values: list) -> object | None:
+                cnt = Counter(v for v in values if v is not None)
+                return cnt.most_common(1)[0][0] if cnt else None
+
+            mine_ids = next(
+                (_parse_mine_ids(r["mine_ids"]) for r in group if r["mine_ids"]),
+                [],
+            )
+            comp_vals = [
+                bool(r["competitor_matched"])
+                for r in group
+                if r["competitor_matched"] is not None
+            ]
+            competitor_matched = (
+                True if any(comp_vals) else (False if comp_vals else None)
+            )
+            cited_raw = majority([r["cited"] for r in group])
+            mine_cited_raw = majority([r["mine_cited"] for r in group])
+            points.append({
+                "run_at": run_at,
+                "n": n,
+                "hits": hits,
+                "prob": prob,
+                "ci_low": ci_low,
+                "ci_high": ci_high,
+                "cited": bool(cited_raw) if cited_raw is not None else None,
+                "status": majority([r["status"] for r in group]) or "error",
+                "sentiment": majority([r["sentiment"] for r in group]),
+                "mine_cited": bool(mine_cited_raw) if mine_cited_raw is not None else None,
+                "mine_checked": bool(mine_ids),
+                "mine_ids": mine_ids,
+                "cited_type": majority([r["cited_type"] for r in group]),
+                "owned_ids": _parse_mine_ids(next(
+                    (r["owned_ids"] for r in group if r["owned_ids"]), None
+                )),
+                "competitor_matched": competitor_matched,
+                "competitor_ids": _parse_mine_ids(next(
+                    (r["competitor_ids"] for r in group if r["competitor_ids"]), None
+                )),
+                "fact_risks": list(dict.fromkeys(
+                    risk
+                    for r in group
+                    for risk in _parse_mine_ids(r["fact_risks"])
+                )),
+            })
+        series[platform] = points
         prev: bool | None = None
-        for item in ordered:
+        for item in points:
             cur_val = bool(item["cited"]) if item["cited"] is not None else None
             if cur_val is None:
                 # 无效探测（未配置密钥/失败）不参与变化点，也不重置基线，
@@ -1145,7 +1282,11 @@ def render_markdown(
         lines.append("| 平台 | 状态 | 置信度 | 被提及 | 情感 | 上下文 / 说明 |")
         lines.append("|---|---|---|---|---|---|")
     for r in results:
-        cited_txt = {True: "是", False: "否", None: "未知"}.get(r.cited, "未知")
+        if r.sample_count > 1 and r.prob is not None:
+            hits = r.meta.get("sample_hits", 0)
+            cited_txt = f"{'是' if r.cited else '否'} ({r.prob:.0%}, {hits}/{r.sample_count})"
+        else:
+            cited_txt = {True: "是", False: "否", None: "未知"}.get(r.cited, "未知")
         mine_txt = {True: "是", False: "否", None: "—"}.get(r.mine_cited, "—")
         if r.mine_cited is True:
             if r.cited_type == "earned":
@@ -1213,10 +1354,12 @@ def render_markdown(
             if len(points) < 2:
                 lines.append(f"- **{label}**：{len(points)} 次快照，重跑一次后生成趋势。")
                 continue
-            states = " → ".join(
-                "是" if p["cited"] else "否" if p["cited"] is False else "未知"
-                for p in points
-            )
+            def point_txt(p: dict) -> str:
+                if p.get("n", 1) > 1 and p.get("prob") is not None:
+                    return f"{'是' if p['cited'] else '否'}({p['prob']:.0%})"
+                return "是" if p["cited"] else "否" if p["cited"] is False else "未知"
+
+            states = " → ".join(point_txt(p) for p in points)
             line = f"- **{label}**（{len(points)} 次）：{states}"
             # 只要历史里有任何一次检查过 mine，就按 mine_ids 分组展示：
             # 不同次用不同标识时不会显示成假回归；未检查的运行显式标次数
@@ -1299,6 +1442,8 @@ def render_markdown(
     lines.append("## 数据说明")
     lines.append("")
     lines.append("- DeepSeek：真实 API 探测，被提及 = 回答正文出现品牌名（精确匹配），原始回答可在 JSON 快照的 meta.answer 复核。")
+    lines.append("- 默认每平台采样 5 次（--samples 可调，1 为单次判定）：被提及 = 多数样本命中，概率 = 命中数/样本数，"
+                 "置信区间为 Wilson 95% 区间；单次采样时显示是/否。")
     lines.append("- Kimi / 豆包 / 元宝：无公开 API，使用 Bing 搜索结果推断检索库中的存在信号，**不等同于该平台真实引用**。")
     lines.append("- Kimi / 豆包 / 元宝 各自用 Bing 对同一查询词做搜索推断（结果通常相同），是检索库存在信号，不代表各平台各自的真实引用。")
     lines.append("- 传 --mine <你的内容标识>（URL/标题/作者名，可重复传多次，一次一个）时，额外判断 AI 回答/Bing 结果里是否出现你的内容；"
@@ -1404,6 +1549,12 @@ def build_parser() -> argparse.ArgumentParser:
              "传了会检测 AI 回答/搜索结果里是否出现竞品，用于 lostprompt（竞品夺走）分析",
     )
     parser.add_argument(
+        "--samples",
+        type=_positive_int,
+        default=5,
+        help="每平台采样次数（默认 5）：多次探测计算被提及概率与置信区间；1 为单次判定",
+    )
+    parser.add_argument(
         "--platforms",
         type=_parse_platforms,
         help="逗号分隔的平台列表，默认全部（deepseek,kimi,doubao,yuanbao）",
@@ -1429,18 +1580,26 @@ def main(argv: list[str] | None = None) -> int:
     mine_ids = list(dict.fromkeys(earned_ids + owned_ids))
     db_path = Path(args.db) if args.db else DEFAULT_DB
     out_dir = Path(args.output) if args.output else None
+    samples = args.samples
 
     try:
+        raw_samples: list[ProbeResult] = []
+        for sample_idx in range(samples):
+            for p in platforms:
+                r = PLATFORMS[p]["probe"](
+                    args.query,
+                    mine_ids=mine_ids,
+                    owned_ids=owned_ids,
+                    competitor_ids=competitor_ids,
+                )
+                r.sample_idx = sample_idx
+                raw_samples.append(r)
+        store_results(raw_samples, db_path=db_path)
+        # 多采样聚合：每平台多数派判定 + 被提及概率/置信区间
         results = [
-            PLATFORMS[p]["probe"](
-                args.query,
-                mine_ids=mine_ids,
-                owned_ids=owned_ids,
-                competitor_ids=competitor_ids,
-            )
+            _aggregate_samples([r for r in raw_samples if r.platform == p])
             for p in platforms
         ]
-        store_results(results, db_path=db_path)
         trend = build_trend(args.query, db_path=db_path)
         delta = build_delta(args.query, db_path=db_path, trend=trend, platforms=platforms)
         recs = build_recommendations(args.query, results, delta=delta)
@@ -1472,7 +1631,11 @@ def main(argv: list[str] | None = None) -> int:
                     mine_txt += "（未知）"
             mine = f" · 我的内容 {mine_txt}"
         if r.status == "ok":
-            cited = "是" if r.cited else "否"
+            if r.sample_count > 1 and r.prob is not None:
+                hits = r.meta.get("sample_hits", 0)
+                cited = f"{'是' if r.cited else '否'} ({r.prob:.0%}, {hits}/{r.sample_count})"
+            else:
+                cited = "是" if r.cited else "否"
             extra = f" · 情感 {SENTIMENT_LABEL.get(r.sentiment or '', '—')}" if r.sentiment else ""
             conf = f" · 置信度 {CONFIDENCE_LABEL.get(r.confidence or '', '—')}"
             print(f"  {label}：{STATUS_LABEL[r.status]} · 被提及 {cited}{extra}{conf}{mine}")
