@@ -341,6 +341,26 @@ class TestB1Sampling:
         assert agg.meta["sample_invalid"] == 2
         assert agg.cited is True
 
+    def test_aggregate_samples_tie_votes_not_cited(self):
+        # 偶数采样平局（1/2 命中）按严格多数应为「否」，与 build_trend 一致
+        s1 = ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)
+        s2 = ProbeResult("品牌A", "deepseek", "ok", False, "neutral", "c", "api", False)
+        agg = search_ai._aggregate_samples([s1, s2])
+        assert agg.prob == 0.5
+        assert agg.cited is False
+
+    def test_aggregate_samples_keeps_all_answers(self):
+        # sample_answers 不截断：--samples > 5 时全部样本原文可复核
+        samples = [
+            ProbeResult(
+                "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+                meta={"answer": f"原始回答 {i}"},
+            )
+            for i in range(7)
+        ]
+        agg = search_ai._aggregate_samples(samples)
+        assert len(agg.meta["sample_answers"]) == 7
+
     def test_aggregate_samples_all_invalid_prob_none(self):
         samples = [
             ProbeResult(
@@ -404,6 +424,17 @@ class TestB1Sampling:
         }]
         delta = build_delta("品牌A", db_path=db, trend=trend)
         assert delta["platforms"]["deepseek"]["cited_change"] == "lost"
+
+    def test_build_trend_tie_votes_not_cited(self, tmp_path):
+        # 2 样本 1 命中：严格多数为否，与 _aggregate_samples 一致（不依赖插入顺序）
+        db = tmp_path / "monitor.db"
+        store_results([
+            ProbeResult("品牌A", "deepseek", "ok", False, "neutral", "c", "api", False, sample_idx=0),
+            ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False, sample_idx=1),
+        ], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        p = build_trend("品牌A", db_path=db)["series"]["deepseek"][0]
+        assert p["hits"] == 1 and p["n"] == 2
+        assert p["cited"] is False
 
     def test_main_samples_loop_and_prob_display(self, tmp_path, monkeypatch, capsys):
         calls = {"n": 0}

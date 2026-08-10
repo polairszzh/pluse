@@ -223,7 +223,7 @@ def _aggregate_samples(samples: list[ProbeResult]) -> ProbeResult:
         return cnt.most_common(1)[0][0] if cnt else None
 
     base = samples[0]
-    cited = hits * 2 >= n if n else None  # 多数派命中才算被提及（概率单独展示）
+    cited = hits * 2 > n if n else None  # 严格多数（>1/2）才算被提及；偶数平局为否
     mine_cited = majority([s.mine_cited for s in samples])
     sentiment = majority([s.sentiment for s in samples])
     cited_type = majority([s.cited_type for s in samples])
@@ -239,7 +239,7 @@ def _aggregate_samples(samples: list[ProbeResult]) -> ProbeResult:
         if isinstance(s.meta.get("answer"), str) and s.meta["answer"]
     ]
     meta = dict(base.meta)
-    meta["sample_answers"] = answers[:5]
+    meta["sample_answers"] = answers
     meta["sample_count"] = n
     meta["sample_hits"] = hits
     meta["sample_invalid"] = invalid
@@ -932,7 +932,6 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
             competitor_matched = (
                 True if any(comp_vals) else (False if comp_vals else None)
             )
-            cited_raw = majority([r["cited"] for r in valid])
             mine_cited_raw = majority([r["mine_cited"] for r in group])
             points.append({
                 "run_at": run_at,
@@ -942,7 +941,7 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
                 "prob": prob,
                 "ci_low": ci_low,
                 "ci_high": ci_high,
-                "cited": bool(cited_raw) if cited_raw is not None else None,
+                "cited": hits * 2 > n if n else None,
                 "status": majority([r["status"] for r in group]) or "error",
                 "sentiment": majority([r["sentiment"] for r in group]),
                 "mine_cited": bool(mine_cited_raw) if mine_cited_raw is not None else None,
