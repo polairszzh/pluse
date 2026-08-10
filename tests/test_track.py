@@ -372,6 +372,18 @@ class TestB1Sampling:
         assert agg.prob == 0.4
         assert agg.context == "未命中A"
 
+    def test_aggregate_samples_context_fallback_not_mismatched(self):
+        # 判定为否且未命中样本 context 全空时，不得回退到命中样本的 context
+        hit = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "命中内容", "api", False
+        )
+        miss = ProbeResult(
+            "品牌A", "deepseek", "ok", False, "neutral", "", "api", False
+        )
+        agg = search_ai._aggregate_samples([hit, miss, miss, miss, miss])
+        assert agg.cited is False
+        assert agg.context == ""
+
     def test_aggregate_samples_keeps_all_answers(self):
         # sample_answers 不截断：--samples > 5 时全部样本原文可复核
         samples = [
@@ -520,6 +532,35 @@ class TestB1Sampling:
         ], db_path=db, run_at="2026-08-01T10:00:00+08:00")
         points = build_trend("品牌A", db_path=db)["series"]["deepseek"]
         assert [p["hits"] for p in points] == [1, 0]
+
+    def test_build_trend_changes_stay_within_truncated_series(self, monkeypatch):
+        # 截断到最近 1000 次运行后，变化点不得引用序列范围外的 run_at
+        rows = []
+        for i in range(1005):
+            rows.append({
+                "id": i + 1,
+                "platform": "deepseek",
+                "run_at": f"run-{i:04d}",
+                "cited": 1 if i % 2 == 0 else 0,
+                "status": "ok",
+                "sentiment": "positive",
+                "mine_cited": None,
+                "mine_ids": None,
+                "cited_type": None,
+                "owned_ids": None,
+                "competitor_matched": None,
+                "competitor_ids": None,
+                "fact_risks": None,
+                "sample_idx": 0,
+                "run_id": f"r{i}",
+            })
+        monkeypatch.setattr(
+            search_ai, "load_history", lambda *a, **kw: rows
+        )
+        trend = search_ai.build_trend("品牌A", db_path=Path("unused.db"))
+        shown = {p["run_at"] for p in trend["series"]["deepseek"]}
+        assert len(shown) == 1000
+        assert all(ch["run_at"] in shown for ch in trend["changes"])
 
     def test_render_markdown_trend_probability_format(self):
         # 趋势点概率格式与表格/CLI 一致：是 (80%, 4/5)

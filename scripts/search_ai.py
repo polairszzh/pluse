@@ -249,14 +249,14 @@ def _aggregate_samples(samples: list[ProbeResult]) -> ProbeResult:
     fact_risks = _union_strings([s.fact_risks for s in samples])
     status = _majority([s.status for s in samples]) or "error"
     # 上下文必须与最终判定一致：cited=True 取命中样本，False 取未命中样本，
-    # 避免「否 (40%)」却展示命中内容
+    # 避免「否 (40%)」却展示命中内容；无匹配上下文时留空，不回退到相反判定的样本
     hit_context = next(
         (
             s.context
             for s in samples
             if s.cited is not None and bool(s.cited) == bool(cited) and s.context
         ),
-        base.context,
+        "",
     )
     answers = [
         s.meta.get("answer")
@@ -997,8 +997,10 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
                 ]),
             })
         # 按 run 截断：每平台保留最近 1000 次运行（与单采样时代 limit=1000 行的
-        # 可回溯范围一致，多采样后按 run 计数而不是按行计数）
-        series[platform] = points[-1000:]
+        # 可回溯范围一致，多采样后按 run 计数而不是按行计数）；
+        # 变化点检测也基于截断后的序列，避免引用展示范围外的 run_at
+        points = points[-1000:]
+        series[platform] = points
         prev: bool | None = None
         for item in points:
             cur_val = bool(item["cited"]) if item["cited"] is not None else None
