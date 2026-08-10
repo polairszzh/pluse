@@ -282,7 +282,7 @@ def _aggregate_samples(samples: list[ProbeResult]) -> ProbeResult:
     )
     # 样本原文关联命中状态，便于复核定位具体哪次采样命中
     answers = [
-        {"answer": s.meta.get("answer"), "cited": s.cited}
+        {"answer": s.meta.get("answer"), "cited": s.cited, "sample_idx": s.sample_idx}
         for s in samples
         if isinstance(s.meta.get("answer"), str) and s.meta["answer"]
     ]
@@ -868,6 +868,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE probes ADD COLUMN sample_idx INTEGER NOT NULL DEFAULT 0")
         if "run_id" not in cols:
             conn.execute("ALTER TABLE probes ADD COLUMN run_id TEXT")
+        # run_id ???????????? _migrate ?????
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_probes_run_id ON probes(run_id)")
 
 
 def store_results(
@@ -966,13 +968,16 @@ def _recent_run_rows(
         )
         run_ids = [r["run_id"] for r in cur.fetchall()]
         if run_ids:
-            placeholders = ",".join("?" * len(run_ids))
-            cur = conn.execute(
-                f"SELECT * FROM probes WHERE query=? AND run_id IN ({placeholders}) "
-                "ORDER BY run_at, id",
-                [query, *run_ids],
-            )
-            rows.extend(dict(r) for r in cur.fetchall())
+            # 分批 IN 查询：避免超出 SQLite 绑定变量上限（旧版默认 999）
+            for start in range(0, len(run_ids), 500):
+                chunk = run_ids[start : start + 500]
+                placeholders = ",".join("?" * len(chunk))
+                cur = conn.execute(
+                    f"SELECT * FROM probes WHERE query=? AND run_id IN ({placeholders}) "
+                    "ORDER BY run_at, id",
+                    [query, *chunk],
+                )
+                rows.extend(dict(r) for r in cur.fetchall())
         # 旧数据（无 run_id）：单采样时代，一行一 run，按行取最近 max_runs 行
         cur = conn.execute(
             "SELECT * FROM probes WHERE query=? AND run_id IS NULL "
@@ -1020,8 +1025,13 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
             n, hits = agg["n"], agg["hits"]
             prob, ci_low, ci_high = agg["prob"], agg["ci_low"], agg["ci_high"]
 
+            # 取首个「解析后非空」的 mine_ids：空 JSON 字符串 "[]" 不得提前停止
             mine_ids = next(
-                (_parse_mine_ids(r["mine_ids"]) for r in group if r["mine_ids"]),
+                (
+                    parsed
+                    for r in group
+                    if (parsed := _parse_mine_ids(r["mine_ids"]))
+                ),
                 [],
             )
             competitor_matched = _aggregate_bool_tristate([
@@ -1047,13 +1057,23 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
                 "mine_checked": bool(mine_ids),
                 "mine_ids": mine_ids,
                 "cited_type": _majority([r["cited_type"] for r in group]),
-                "owned_ids": _parse_mine_ids(next(
-                    (r["owned_ids"] for r in group if r["owned_ids"]), None
-                )),
+                "owned_ids": next(
+                    (
+                        parsed
+                        for r in group
+                        if (parsed := _parse_mine_ids(r["owned_ids"]))
+                    ),
+                    [],
+                ),
                 "competitor_matched": competitor_matched,
-                "competitor_ids": _parse_mine_ids(next(
-                    (r["competitor_ids"] for r in group if r["competitor_ids"]), None
-                )),
+                "competitor_ids": next(
+                    (
+                        parsed
+                        for r in group
+                        if (parsed := _parse_mine_ids(r["competitor_ids"]))
+                    ),
+                    [],
+                ),
                 "fact_risks": _union_strings([
                     _parse_mine_ids(r["fact_risks"]) for r in group
                 ]),

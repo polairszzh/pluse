@@ -396,7 +396,10 @@ class TestB1Sampling:
         agg = search_ai._aggregate_samples(samples)
         assert len(agg.meta["sample_answers"]) == 7
         assert all(
-            isinstance(a, dict) and "answer" in a and "cited" in a
+            isinstance(a, dict)
+            and "answer" in a
+            and "cited" in a
+            and "sample_idx" in a
             for a in agg.meta["sample_answers"]
         )
 
@@ -601,6 +604,22 @@ class TestB1Sampling:
         assert all(
             sum(1 for r in rows if r["run_id"] == rid) == 5 for rid in run_ids
         )
+
+    def test_build_trend_skips_empty_mine_ids_rows(self, tmp_path):
+        # 同 run 内空 mine_ids 行（"[]"）在前时，不得提前停止而忽略后续真实值
+        db = tmp_path / "monitor.db"
+        store_results([
+            ProbeResult(
+                "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+                mine_ids=[], sample_idx=0,
+            ),
+            ProbeResult(
+                "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+                mine_ids=["https://a.com/1"], sample_idx=1,
+            ),
+        ], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        p = build_trend("品牌A", db_path=db)["series"]["deepseek"][0]
+        assert p["mine_ids"] == ["https://a.com/1"]
 
     def test_render_markdown_trend_probability_format(self):
         # 趋势点概率格式与表格/CLI 一致：是 (80%, 4/5)
