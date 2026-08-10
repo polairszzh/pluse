@@ -612,11 +612,11 @@ CREATE TABLE IF NOT EXISTS probes (
       meta TEXT,
       mine_cited INTEGER,
       mine_ids TEXT,
-    '      confidence TEXT,'
-    '      cited_type TEXT,'
-    '      owned_ids TEXT,'
-    '      competitor_matched INTEGER,'
-    '      fact_risks TEXT'
+      confidence TEXT,
+      cited_type TEXT,
+      owned_ids TEXT,
+      competitor_matched INTEGER,
+      fact_risks TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_probes_query_platform_run
     ON probes(query, platform, run_at);

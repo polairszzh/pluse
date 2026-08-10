@@ -563,6 +563,20 @@ class TestDB:
         assert history[0]["mine_cited"] == 1
         assert json.loads(history[0]["mine_ids"]) == ["https://a.com/1", "我的昵称"]
 
+    def test_schema_has_clean_b3_columns(self, tmp_path):
+        # regression: quoted column names must not appear in CREATE TABLE
+        db = tmp_path / "monitor.db"
+        conn = search_ai.connect(db)
+        cols = [c[1] for c in conn.execute("PRAGMA table_info(probes)").fetchall()]
+        conn.close()
+        assert cols == [
+            "id", "query", "platform", "run_at", "status", "cited", "sentiment",
+            "context", "source", "degraded", "error", "meta", "mine_cited",
+            "mine_ids", "confidence", "cited_type", "owned_ids",
+            "competitor_matched", "fact_risks",
+        ]
+        assert not any(chr(39) in c for c in cols)
+
     def test_store_and_load_confidence(self, tmp_path):
         db = tmp_path / "monitor.db"
         row = ProbeResult(
