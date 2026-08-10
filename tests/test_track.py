@@ -481,6 +481,21 @@ class TestSearchInference:
         assert result.mine_cited is False
         assert result.meta["mine_matched"] == []
 
+    def test_search_inference_tolerates_missing_snippet_key(self, monkeypatch):
+        # 防御：_parse_bing 返回项缺 snippet 键时，竞品/我的内容检测不抛 KeyError
+        items = [{"title": "AI搜索优化入门", "url": "https://example.com/comp"}]
+        monkeypatch.setattr(search_ai, "_parse_bing", lambda html: items)
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text="<html>"))
+        result = probe_search_inference(
+            "AI搜索优化", "kimi",
+            mine_ids=["https://example.com/comp"],
+            competitor_ids=["https://example.com/comp"],
+        )
+        assert result.status == "ok"
+        assert result.cited is True
+        assert result.mine_cited is True
+        assert result.competitor_matched is True
+
     def test_non_url_mine_matches_title(self, monkeypatch):
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=BING_HTML))
         result = probe_search_inference("AI搜索优化", "kimi", mine_ids=["AI 搜索优化入门"])

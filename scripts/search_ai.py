@@ -518,7 +518,7 @@ def probe_search_inference(
     # cited 只看标题+摘要：URL 常含关键词（如 github.com/openai/codex），拼入会误判「被提及」
     cited = False
     context = ""
-    text_blobs = [f"{item['title']} {item['snippet']}" for item in results]
+    text_blobs = [f"{item.get('title', '')} {item.get('snippet', '')}" for item in results]
     for text_blob in text_blobs:
         if query.lower() in text_blob.lower():
             cited = True
@@ -526,14 +526,17 @@ def probe_search_inference(
             break
     if not context:
         top = results[0]
-        context = _truncate(f"{top['title']} {top['snippet']}", 300)
+        context = _truncate(f"{top.get('title', '')} {top.get('snippet', '')}", 300)
     # 我的内容标识匹配：URL 类标识扫 title+url+snippet（作者常以链接被收录），
     # 非 URL 类标识（标题/作者名/年份等）只扫 title+snippet，避免在 URL 里误命中
     url_mine_ids = [m for m in mine_ids if m.lower().startswith(("http://", "https://"))]
     text_mine_ids = [m for m in mine_ids if m not in url_mine_ids]
     url_matched = list(dict.fromkeys(
         matched for item in results
-        for matched in _detect_mine(f"{item['title']} {item.get('url', '')} {item['snippet']}", url_mine_ids)
+        for matched in _detect_mine(
+            f"{item.get('title', '')} {item.get('url', '')} {item.get('snippet', '')}",
+            url_mine_ids,
+        )
     ))
     text_matched = list(dict.fromkeys(
         matched for blob in text_blobs for matched in _detect_mine(blob, text_mine_ids)
@@ -547,7 +550,8 @@ def probe_search_inference(
             matched
             for item in results
             for matched in _detect_mine(
-                f"{item['title']} {item.get('url', '')} {item['snippet']}", url_comp
+                f"{item.get('title', '')} {item.get('url', '')} {item.get('snippet', '')}",
+                url_comp,
             )
         ))
         comp_matched += list(dict.fromkeys(
@@ -1369,7 +1373,7 @@ def main(argv: list[str] | None = None) -> int:
             mine = {"gained": "我的内容新增被引用", "lost": "我的内容丢失被引用"}.get(item.get("mine_change"), "")
             parts = [p for p in (cited, flip) if p]
             if item.get("competitor_replaced"):
-                parts.append(f"竞品夺走（{item['competitor_replaced_at']}）")
+                parts.append(f"竞品夺走（{item.get('competitor_replaced_at', '')}）")
             if parts or mine:
                 body = "、".join(parts)
                 if mine:
