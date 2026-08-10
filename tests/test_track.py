@@ -361,6 +361,32 @@ class TestB1Sampling:
         agg = search_ai._aggregate_samples(samples)
         assert len(agg.meta["sample_answers"]) == 7
 
+    def test_aggregate_samples_competitor_none_stays_none(self):
+        # 未传 --competitor（全 None）时聚合结果应为 None（未知），与 build_trend 一致
+        samples = [
+            ProbeResult(
+                "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+                competitor_matched=None,
+            )
+            for _ in range(3)
+        ]
+        agg = search_ai._aggregate_samples(samples)
+        assert agg.competitor_matched is None
+
+    def test_aggregate_samples_error_detail_from_majority(self):
+        # 多数样本失败但首个正常：status=error 且保留错误详情
+        ok = ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)
+        bad1 = ProbeResult(
+            "品牌A", "deepseek", "error", None, None, "boom", "api", True, error="network down"
+        )
+        bad2 = ProbeResult(
+            "品牌A", "deepseek", "error", None, None, "boom", "api", True, error="network down"
+        )
+        agg = search_ai._aggregate_samples([ok, bad1, bad2])
+        assert agg.status == "error"
+        assert agg.error == "network down"
+        assert agg.degraded is True
+
     def test_aggregate_samples_all_invalid_prob_none(self):
         samples = [
             ProbeResult(

@@ -227,7 +227,12 @@ def _aggregate_samples(samples: list[ProbeResult]) -> ProbeResult:
     mine_cited = majority([s.mine_cited for s in samples])
     sentiment = majority([s.sentiment for s in samples])
     cited_type = majority([s.cited_type for s in samples])
-    competitor_matched = any(s.competitor_matched is True for s in samples)
+    comp_vals = [
+        s.competitor_matched for s in samples if s.competitor_matched is not None
+    ]
+    competitor_matched = (
+        True if any(comp_vals) else (False if comp_vals else None)
+    )
     fact_risks = list(dict.fromkeys(r for s in samples for r in s.fact_risks))
     hit_context = next(
         (s.context for s in samples if s.cited is True and s.context),
@@ -251,8 +256,8 @@ def _aggregate_samples(samples: list[ProbeResult]) -> ProbeResult:
         sentiment=sentiment,
         context=hit_context,
         source=base.source,
-        degraded=base.degraded,
-        error=base.error,
+        degraded=bool(majority([s.degraded for s in samples])),
+        error=next((s.error for s in samples if s.error), None),
         meta=meta,
         mine_cited=mine_cited,
         mine_ids=base.mine_ids,
