@@ -596,6 +596,33 @@ class TestDB:
         assert delta["platforms"]["deepseek"]["cited_change"] == "added"
         assert delta["has_history"] is True
 
+    def test_build_delta_sorts_trend_points_by_run_at(self, tmp_path):
+        # 不依赖外部 trend 的排序，显式按 run_at 升序取最新点
+        trend = {
+            "series": {
+                "deepseek": [
+                    {
+                        "run_at": "2026-08-02T10:00:00+08:00",
+                        "status": "ok", "cited": True,
+                        "sentiment": "positive",
+                        "mine_cited": None, "mine_checked": False, "mine_ids": [],
+                    },
+                    {
+                        "run_at": "2026-08-01T10:00:00+08:00",
+                        "status": "ok", "cited": False,
+                        "sentiment": "neutral",
+                        "mine_cited": None, "mine_checked": False, "mine_ids": [],
+                    },
+                ],
+            },
+            "changes": [],
+            "total_runs": 2,
+        }
+        delta = build_delta("品牌A", db_path=tmp_path / "monitor.db", trend=trend)
+        item = delta["platforms"]["deepseek"]
+        assert item["run_at"] == "2026-08-02T10:00:00+08:00"
+        assert item["cited_change"] == "added"
+
     def test_default_run_at_has_microsecond_precision(self, tmp_path):
         db = tmp_path / "monitor.db"
         run_at = store_results(
@@ -1044,7 +1071,9 @@ class TestCLI:
             "--mine", "https://a.com/1", "--db", str(db), "--output", str(out),
         ]) == 0
         captured = capsys.readouterr().out
-        assert "我的内容新增被引用" in captured
+        # 仅 mine 变化时不得出现「： · 」的多余分隔符
+        assert "与上次对比 · DeepSeek：我的内容新增被引用" in captured
+        assert "： · " not in captured
 
     def test_invalid_platform_rejected(self, tmp_path):
         with pytest.raises(SystemExit) as exc:

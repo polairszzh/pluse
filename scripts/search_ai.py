@@ -668,6 +668,8 @@ def build_delta(
     for platform, points in series.items():
         if not points:
             continue
+        # 不依赖外部 trend 的构造顺序，显式按 run_at 升序取最新点
+        points = sorted(points, key=lambda p: p["run_at"])
         latest = points[-1]
         if latest["status"] != "ok":
             # 本次探测无有效数据：不把历史两次快照的对比误报成「本次 vs 上次」
@@ -1108,10 +1110,13 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             cited = cited_label.get(item.get("cited_change"))
             flip = item.get("sentiment_flip")
-            mine = {"gained": " · 我的内容新增被引用", "lost": " · 我的内容丢失被引用"}.get(item.get("mine_change"), "")
+            mine = {"gained": "我的内容新增被引用", "lost": "我的内容丢失被引用"}.get(item.get("mine_change"), "")
             parts = [p for p in (cited, flip) if p]
             if parts or mine:
-                print(f"  与上次对比 · {label}：{'、'.join(parts)}{mine}")
+                body = "、".join(parts)
+                if mine:
+                    body = f"{body} · {mine}" if body else mine
+                print(f"  与上次对比 · {label}：{body}")
     print(f"行动建议：{len(recs)} 条（P0={sum(1 for r in recs if r.priority == 'P0')}）")
     for p in paths:
         print(f"已保存：{p}")
