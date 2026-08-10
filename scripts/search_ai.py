@@ -851,6 +851,9 @@ def build_delta(
         ):
             item["competitor_replaced"] = True
             item["competitor_replaced_at"] = last["run_at"]
+            # 上次明确未命中竞品（False）才算已确认夺走；
+            # 上次未检查（None，首次启用 --competitor 的历史）按推断处理，待人工确认
+            item["competitor_replaced_confirmed"] = prev["competitor_matched"] is False
         # 两个有效快照均无可对比数据（cited/sentiment/mine 全缺）时不写入空壳条目，
         # 避免 has_history=False 时渲染出全「—」的对比行
         if any(
@@ -1159,8 +1162,13 @@ def render_markdown(
     for platform, item in (delta or {"platforms": {}})["platforms"].items():
         if item.get("competitor_replaced"):
             label = PLATFORMS.get(platform, {}).get("label", platform)
+            suffix = (
+                ""
+                if item.get("competitor_replaced_confirmed")
+                else "（推断：上次未检查竞品，待人工确认）"
+            )
             risk_lines.append(
-                f"- ⚠ **{label}**：上次被引用，本次被竞品替换"
+                f"- ⚠ **{label}**：上次被引用，本次被竞品替换{suffix}"
                 f"（{item.get('competitor_replaced_at', '')}），建议补充差异化内容强化品牌锚定"
             )
     for r in results:
@@ -1383,7 +1391,10 @@ def main(argv: list[str] | None = None) -> int:
             mine = {"gained": "我的内容新增被引用", "lost": "我的内容丢失被引用"}.get(item.get("mine_change"), "")
             parts = [p for p in (cited, flip) if p]
             if item.get("competitor_replaced"):
-                parts.append(f"竞品夺走（{item.get('competitor_replaced_at', '')}）")
+                suffix = "" if item.get("competitor_replaced_confirmed") else "（推断）"
+                parts.append(
+                    f"竞品夺走{suffix}（{item.get('competitor_replaced_at', '')}）"
+                )
             if parts or mine:
                 body = "、".join(parts)
                 if mine:

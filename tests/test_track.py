@@ -789,8 +789,29 @@ class TestDB:
         delta = build_delta("品牌A", db_path=db)
         item = delta["platforms"]["deepseek"]
         assert item["competitor_replaced"] is True
+        # 上次未检查竞品（None）→ 推断待人工确认，而非已确认
+        assert item["competitor_replaced_confirmed"] is False
         assert item["mine_change"] == "lost"
         assert delta["has_history"] is True
+
+    def test_build_delta_competitor_replaced_confirmed_when_prev_missed(self, tmp_path):
+        # 上次明确未命中竞品（False）→ 竞品夺走为已确认
+        db = tmp_path / "monitor.db"
+        prev = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=True, mine_ids=["https://a.com/1"],
+            competitor_matched=False,
+        )
+        last = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=False, mine_ids=["https://a.com/1"],
+            competitor_matched=True,
+        )
+        store_results([prev], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        store_results([last], db_path=db, run_at="2026-08-02T10:00:00+08:00")
+        item = build_delta("品牌A", db_path=db)["platforms"]["deepseek"]
+        assert item["competitor_replaced"] is True
+        assert item["competitor_replaced_confirmed"] is True
 
     def test_build_delta_no_competitor_replaced_when_competitor_persists(self, tmp_path):
         # 上一轮竞品已命中时不判「夺走」：竞品一直在场，本轮丢失引用不是被替换
@@ -1118,6 +1139,7 @@ class TestReport:
             "platforms": {
                 "deepseek": {
                     "competitor_replaced": True,
+                    "competitor_replaced_confirmed": False,
                     "competitor_replaced_at": "2026-08-02T10:00:00+08:00",
                 },
             }
@@ -1130,6 +1152,7 @@ class TestReport:
         md = render_markdown("品牌A", results, {"series": {}, "changes": []}, [], delta)
         assert "## 风险提示" in md
         assert "竞品夺走" in md
+        assert "推断" in md
         assert "版本 2.3.1" in md
         assert "是（原创）" in md
 
@@ -1333,6 +1356,8 @@ class TestCLI:
         captured = capsys.readouterr().out
         # 竞品夺走与引用变化应同条输出，不跳过 cited/flip 变化
         assert "竞品夺走" in captured
+        # prev 明确未命中竞品（False）→ 已确认夺走，不带「推断」标注
+        assert "（推断）" not in captured
         assert "无变化" in captured
 
     def test_main_prints_mine_unknown_type_when_cited_type_missing(self, tmp_path, monkeypatch, capsys):
