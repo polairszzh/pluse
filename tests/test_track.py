@@ -833,6 +833,98 @@ class TestB1Sampling:
         captured = capsys.readouterr().out
         assert "被提及 未知" in captured
 
+
+BAIDU_HTML = """
+<div class="result c-container">
+  <h3 class="t"><a href="http://www.baidu.com/link?url=x">文章标题</a></h3>
+  <span>摘要内容 https://zhuanlan.zhihu.com/p/123</span>
+</div>
+"""
+
+BING_INDEXED_HTML = """
+<ol id="b_results">
+  <li class="b_algo">
+    <h2><a href="https://zhuanlan.zhihu.com/p/123">文章标题</a></h2>
+    <p>摘要内容。</p>
+  </li>
+</ol>
+"""
+
+
+class TestB5IndexCheck:
+    """B5 国内收录检查：site: 探测、Bing/百度解析、收录判定"""
+
+    def test_site_query_strips_protocol(self):
+        assert search_ai._site_query("https://zhuanlan.zhihu.com/p/123") == (
+            "site:zhuanlan.zhihu.com/p/123"
+        )
+        assert search_ai._site_query("https://a.com") == "site:a.com"
+
+    def test_parse_baidu(self):
+        items = search_ai._parse_baidu(BAIDU_HTML)
+        assert len(items) == 1
+        assert items[0]["title"] == "文章标题"
+        assert "zhuanlan.zhihu.com/p/123" in items[0]["snippet"]
+
+    def test_check_index_bing_indexed(self, monkeypatch):
+        def fake_get(base, params=None, headers=None, timeout=None):
+            if "bing.com" in base:
+                return FakeResponse(text=BING_INDEXED_HTML)
+            return FakeResponse(text="<html>no results</html>")
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        result = search_ai.check_index("https://zhuanlan.zhihu.com/p/123")
+        assert result["sources"]["bing"]["status"] == "indexed"
+
+    def test_check_index_baidu_likely_via_snippet(self, monkeypatch):
+        def fake_get(base, params=None, headers=None, timeout=None):
+            if "baidu.com" in base:
+                return FakeResponse(text=BAIDU_HTML)
+            return FakeResponse(text="<html>no results</html>")
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        result = search_ai.check_index("https://zhuanlan.zhihu.com/p/123")
+        # 百度跳转链接场景：摘要含 URL → 疑似收录
+        assert result["sources"]["baidu"]["status"] == "likely_indexed"
+
+    def test_check_index_not_indexed(self, monkeypatch):
+        def fake_get(base, params=None, headers=None, timeout=None):
+            return FakeResponse(
+                text='<ol id="b_results"><li class="b_algo"><h2><a href="https://other.com/x">别的</a></h2><p>无关</p></li></ol>'
+            )
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        result = search_ai.check_index("https://zhuanlan.zhihu.com/p/123")
+        assert result["sources"]["bing"]["status"] == "not_indexed"
+
+    def test_check_index_request_error(self, monkeypatch):
+        def boom(*a, **kw):
+            raise requests.exceptions.ConnectionError("network down")
+
+        monkeypatch.setattr(requests, "get", boom)
+        result = search_ai.check_index("https://zhuanlan.zhihu.com/p/123")
+        assert result["sources"]["bing"]["status"] == "error"
+        assert result["sources"]["baidu"]["status"] == "error"
+
+    def test_main_index_check(self, tmp_path, monkeypatch, capsys):
+        fake = {
+            "url": "https://a.com/p/1",
+            "query": "site:a.com/p/1",
+            "sources": {
+                "bing": {"status": "indexed", "found": True, "results": []},
+                "baidu": {"status": "not_indexed", "found": False, "results": []},
+            },
+        }
+        monkeypatch.setattr(search_ai, "check_index", lambda url: fake)
+        monkeypatch.setattr(search_ai, "SNAPSHOT_DIR", tmp_path)
+        code = main(["--index-check", "https://a.com/p/1"])
+        assert code == 0
+        captured = capsys.readouterr().out
+        assert "收录检查：https://a.com/p/1" in captured
+        assert "Bing：已收录" in captured
+        assert "百度：未收录" in captured
+        assert len(list(tmp_path.glob("index-check-*.json"))) == 1
+
     def test_render_markdown_probability(self):
         r = ProbeResult(
             "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,

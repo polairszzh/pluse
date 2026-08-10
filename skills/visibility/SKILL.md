@@ -45,6 +45,7 @@ Monitor brand mentions across AI platforms. Input: a brand name or keyword. Outp
 
 Workflow:
 1. Run `python scripts/search_ai.py --query <topic>` (optionally `--platforms deepseek,kimi` to limit; `--samples 5` default samples each platform N times and reports mention probability + Wilson 95% CI, `--samples 1` for single-shot)
+1. To check whether a specific article is indexed by search engines (B5 国内收录), run `python scripts/search_ai.py --index-check <文章URL>` (mutually exclusive with `--query`): outputs Bing/百度 收录状态 and saves a JSON snapshot under `data/snapshots/index-check-*.json`. Baidu may report 探测失败 due to anti-scraping (honest limitation); Sogou/Bocha pending.
 2. To check whether **your content** is cited (not just the topic mentioned), add `--mine <URL或标题或作者名>` (repeatable, one identifier per flag): `python scripts/search_ai.py --query "codex 如何安装" --mine "https://zhuanlan.zhihu.com/p/xxx" --mine "我的昵称"`
 3. (B3 引用质量，可选) `--mine-owned <标识>` 标记转载/自有渠道内容（仅命中 owned 且未命中原创标识时记为「转载」，否则按原创记）；`--competitor <标识>` 传入竞品标识，用于 lostprompt（竞品夺走）分析
 4. Results are stored in `data/monitor.db` (SQLite) automatically

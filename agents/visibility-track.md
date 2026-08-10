@@ -24,6 +24,7 @@ tools: Read, Write, Bash, Glob, Grep
 2. 运行执行层脚本：
    - 监测全部平台：`python scripts/search_ai.py --query "<品牌/关键词>"`
    - 多采样（默认 5 次）：`--samples N` 计算被提及概率与置信区间，`--samples 1` 为单次判定
+   - 收录检查（B5）：python scripts/search_ai.py --index-check "<文章URL>"（与 --query 互斥），输出 Bing/百度 收录状态；百度反爬时如实标注探测失败
    - 指定平台：`python scripts/search_ai.py --query "<品牌>" --platforms deepseek,kimi`
    - 检查「你的内容是否被引用」（不只看话题是否被提及）：`python scripts/search_ai.py --query "<话题>" --mine "<文章URL>" --mine "<作者名/标题>"`
    - 引用质量分层（可选）：`--mine-owned "<转载标识>"` 标记转载/自有渠道（仅命中 owned 且未命中原创标识时记「转载」）；`--competitor "<竞品标识>"` 用于 lostprompt（竞品夺走）分析
