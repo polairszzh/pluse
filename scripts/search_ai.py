@@ -240,7 +240,10 @@ def _aggregate_samples(samples: list[ProbeResult]) -> ProbeResult:
 
     base = samples[0]
     cited = hits * 2 > n if n else None  # 严格多数（>1/2）才算被提及；偶数平局为否
-    mine_cited = _majority([s.mine_cited for s in samples])
+    # mine_cited 与 cited 统一严格多数（平局为否），避免偶样本平局时口径矛盾
+    mine_valid = [s.mine_cited for s in samples if s.mine_cited is not None]
+    mine_hits = sum(1 for v in mine_valid if v)
+    mine_cited = mine_hits * 2 > len(mine_valid) if mine_valid else None
     sentiment = _majority([s.sentiment for s in samples])
     cited_type = _majority([s.cited_type for s in samples])
     competitor_matched = _aggregate_bool_tristate(
@@ -258,8 +261,9 @@ def _aggregate_samples(samples: list[ProbeResult]) -> ProbeResult:
         ),
         "",
     )
+    # 样本原文关联命中状态，便于复核定位具体哪次采样命中
     answers = [
-        s.meta.get("answer")
+        {"answer": s.meta.get("answer"), "cited": s.cited}
         for s in samples
         if isinstance(s.meta.get("answer"), str) and s.meta["answer"]
     ]
@@ -969,7 +973,13 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
                 for r in group
                 if r["competitor_matched"] is not None
             ])
-            mine_cited_raw = _majority([r["mine_cited"] for r in group])
+            mine_vals = [
+                r["mine_cited"] for r in group if r["mine_cited"] is not None
+            ]
+            mine_hits = sum(1 for v in mine_vals if v)
+            mine_cited = (
+                mine_hits * 2 > len(mine_vals) if mine_vals else None
+            )
             points.append({
                 "run_at": run_at,
                 "n": n,
@@ -981,7 +991,7 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
                 "cited": hits * 2 > n if n else None,
                 "status": _majority([r["status"] for r in group]) or "error",
                 "sentiment": _majority([r["sentiment"] for r in group]),
-                "mine_cited": bool(mine_cited_raw) if mine_cited_raw is not None else None,
+                "mine_cited": mine_cited,
                 "mine_checked": bool(mine_ids),
                 "mine_ids": mine_ids,
                 "cited_type": _majority([r["cited_type"] for r in group]),
@@ -1337,7 +1347,12 @@ def render_markdown(
     for r in results:
         if r.sample_count > 1 and r.prob is not None:
             hits = r.meta.get("sample_hits", 0)
-            cited_txt = f"{'是' if r.cited else '否'} ({r.prob:.0%}, {hits}/{r.sample_count})"
+            invalid = r.meta.get("sample_invalid", 0)
+            invalid_note = f"，{invalid} 次无效" if invalid else ""
+            cited_txt = (
+                f"{'是' if r.cited else '否'} "
+                f"({r.prob:.0%}, {hits}/{r.sample_count}{invalid_note})"
+            )
         else:
             cited_txt = {True: "是", False: "否", None: "未知"}.get(r.cited, "未知")
         mine_txt = {True: "是", False: "否", None: "—"}.get(r.mine_cited, "—")
@@ -1686,7 +1701,12 @@ def main(argv: list[str] | None = None) -> int:
         if r.status == "ok":
             if r.sample_count > 1 and r.prob is not None:
                 hits = r.meta.get("sample_hits", 0)
-                cited = f"{'是' if r.cited else '否'} ({r.prob:.0%}, {hits}/{r.sample_count})"
+                invalid = r.meta.get("sample_invalid", 0)
+                invalid_note = f"，{invalid} 次无效" if invalid else ""
+                cited = (
+                    f"{'是' if r.cited else '否'} "
+                    f"({r.prob:.0%}, {hits}/{r.sample_count}{invalid_note})"
+                )
             else:
                 cited = "是" if r.cited else "否"
             extra = f" · 情感 {SENTIMENT_LABEL.get(r.sentiment or '', '—')}" if r.sentiment else ""

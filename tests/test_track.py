@@ -395,6 +395,23 @@ class TestB1Sampling:
         ]
         agg = search_ai._aggregate_samples(samples)
         assert len(agg.meta["sample_answers"]) == 7
+        assert all(
+            isinstance(a, dict) and "answer" in a and "cited" in a
+            for a in agg.meta["sample_answers"]
+        )
+
+    def test_aggregate_samples_mine_cited_tie_not_true(self):
+        # mine_cited 与 cited 统一严格多数：1/2 平局为否
+        s1 = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=True, mine_ids=["https://a.com/1"],
+        )
+        s2 = ProbeResult(
+            "品牌A", "deepseek", "ok", False, "neutral", "c", "api", False,
+            mine_cited=False, mine_ids=["https://a.com/1"],
+        )
+        agg = search_ai._aggregate_samples([s1, s2])
+        assert agg.mine_cited is False
 
     def test_aggregate_samples_competitor_none_stays_none(self):
         # 未传 --competitor（全 None）时聚合结果应为 None（未知），与 build_trend 一致
@@ -621,6 +638,16 @@ class TestB1Sampling:
         r.meta = {"sample_hits": 4}
         md = render_markdown("品牌A", [r], {"series": {}, "changes": []}, [])
         assert "是 (80%, 4/5)" in md
+
+    def test_render_markdown_probability_with_invalid_note(self):
+        # 存在无效样本时附注无效数，避免「4/5」被误读为总采样 5 次
+        r = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            prob=1.0, ci_low=0.6, ci_high=1.0, sample_count=4,
+        )
+        r.meta = {"sample_hits": 4, "sample_invalid": 1}
+        md = render_markdown("品牌A", [r], {"series": {}, "changes": []}, [])
+        assert "是 (100%, 4/4，1 次无效)" in md
 
     def test_render_markdown_unknown_when_all_samples_invalid(self):
         # 全部样本无效（失败/未配置）时显示「未知」，不得显示「否 (0%, 0/5)」
