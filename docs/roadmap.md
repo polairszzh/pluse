@@ -132,6 +132,7 @@
   - factcheck（AI 回答里出现关于你的错误信息）。
 - **做法**：`--mine` 结果之上加 `cited_type`、`competitor_replaced` 字段；报告新增「风险」小节。
 - **优先级**：P1。
+  **实现**（2026-08-10，PR #12）：`--mine-owned`（转载/自有渠道）+ `--competitor`（竞品标识）参数；ProbeResult 新增 cited_type/competitor_matched/fact_risks/owned_ids 并落库；build_delta 计算 competitor_replaced（lostprompt）；DeepSeek 回答数字/版本断言提取为未核实风险（只提示不判定）；报告/CLI/JSON 新增「风险提示」（竞品夺走 + 未核实断言）。dashboard 展示待后续排期。
 
 ### B4. 变化点基线（claude-seo drift）
 - **设计**：每次 run 与上次快照对比，输出「本周变化」摘要：引用新增/丢失、情感反转、首次被提及，而不是只给原始快照列表。

@@ -133,6 +133,143 @@ class TestDetectMine:
         assert _detect_mine(text, ["我的昵称"]) == ["我的昵称"]
         assert _detect_mine(text, ["https://other.com/x"]) == []
 
+
+class TestB3Quality:
+    """B3 引用质量分层：earned/owned 拆分、lostprompt、未核实断言"""
+
+    def test_classify_cited_type(self):
+        assert search_ai._classify_cited_type(["https://a.com/1"], []) == "earned"
+        assert search_ai._classify_cited_type(
+            ["https://a.com/1"], ["https://a.com/1"]
+        ) == "owned"
+        # 命中任一非 owned 标识即记为 earned（更高价值口径）
+        assert search_ai._classify_cited_type(
+            ["https://a.com/1", "https://a.com/2"], ["https://a.com/1"]
+        ) == "earned"
+        assert search_ai._classify_cited_type([], ["https://a.com/1"]) is None
+
+    def test_extract_fact_risks(self):
+        answer = "WorkBuddy 最新版本 2.3.1，注册送 5000 积分，已有 10000 用户使用。"
+        risks = search_ai._extract_fact_risks(answer, "WorkBuddy")
+        assert any("版本 2.3.1" in r for r in risks)
+        assert any("5000积分" in r for r in risks)
+        assert any("10000用户" in r for r in risks)
+
+    def test_extract_fact_risks_dedupe_and_limit(self):
+        answer = "该品牌版本 1.0 与版本 1.0 重复；另有 3 天、4 天、5 天、6 天、7 天、8 天"
+        risks = search_ai._extract_fact_risks(answer, "该品牌", limit=5)
+        assert len(risks) <= 5
+        assert sum(1 for r in risks if "版本 1.0" in r) == 1
+
+    def test_extract_fact_risks_skips_date_units(self):
+        # 年/月/天属于日期表述，不提取为风险噪音
+        answer = "该产品 2026 年发布，3 天前更新，当前版本 2.3.1"
+        risks = search_ai._extract_fact_risks(answer, "该产品")
+        assert not any(r.startswith(("2026", "3 天")) for r in risks)
+        assert any("版本 2.3.1" in r for r in risks)
+
+    def test_extract_fact_risks_skips_relative_time(self):
+        # 相对时间表达（X 小时前/X 分钟后）不作为未核实断言
+        answer = "该功能 3 小时前上线，5 分钟后可用，升级需 2 分钟"
+        risks = search_ai._extract_fact_risks(answer, "该功能")
+        assert risks == []
+
+    def test_extract_fact_risks_includes_context(self):
+        answer = "WorkBuddy 最新版本 2.3.1，注册送 5000 积分。"
+        risks = search_ai._extract_fact_risks(answer, "WorkBuddy")
+        assert any("版本 2.3.1" in r and "最新" in r for r in risks)
+        assert any("5000积分" in r and "注册送" in r for r in risks)
+
+    def test_extract_fact_risks_version_with_colon(self):
+        # 版本与数字之间允许中英文冒号
+        risks = search_ai._extract_fact_risks(
+            "WorkBuddy 版本：2.3.1 和 version: 1.0.2", "WorkBuddy"
+        )
+        assert any("版本 2.3.1" in r for r in risks)
+        assert any("版本 1.0.2" in r for r in risks)
+
+    def test_extract_fact_risks_compound_units(self):
+        # 复合数量单位不得被截断：1.8万亿 不能提取成 1.8万
+        risks = search_ai._extract_fact_risks(
+            "WorkBuddy 估值 1.8万亿，年营收 5000万元，补贴 3亿元，累计 1000万用户，接待 1.8万人次",
+            "WorkBuddy",
+        )
+        assert any("1.8万亿" in r for r in risks)
+        assert any("5000万元" in r for r in risks)
+        assert any("3亿元" in r for r in risks)
+        assert any("1000万用户" in r for r in risks)
+        assert any("1.8万人次" in r for r in risks)
+        # 不得出现被截断的「1.8万（…）」标签
+        assert not any(r.startswith("1.8万（") for r in risks)
+
+    def test_extract_fact_risks_only_near_brand(self):
+        # 远离品牌词的数字（系统要求 16GB 内存）不作为品牌断言提取
+        answer = (
+            "WorkBuddy 提供稳定的云服务，功能丰富。"
+            + "。" * 100
+            + "系统要求 16GB 内存，升级耗时 2 小时。"
+        )
+        risks = search_ai._extract_fact_risks(answer, "WorkBuddy")
+        assert all("16GB" not in r and "2 小时" not in r for r in risks)
+
+    def test_probe_deepseek_cited_type_earned_and_owned(self, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
+        answer = "可参考 https://zhuanlan.zhihu.com/p/123 的教程"
+        monkeypatch.setattr(
+            requests, "post",
+            lambda *a, **kw: FakeResponse(
+                data={"choices": [{"message": {"content": answer}}]}
+            ),
+        )
+        earned = probe_deepseek(
+            "codex 安装", mine_ids=["https://zhuanlan.zhihu.com/p/123"]
+        )
+        assert earned.cited_type == "earned"
+        owned = probe_deepseek(
+            "codex 安装",
+            mine_ids=["https://zhuanlan.zhihu.com/p/123"],
+            owned_ids=["https://zhuanlan.zhihu.com/p/123"],
+        )
+        assert owned.cited_type == "owned"
+
+    def test_probe_deepseek_competitor_and_fact_risks(self, monkeypatch):
+        monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
+        answer = "WorkBuddy 最新版本 2.3.1，可参考竞品 https://comp.example.com 的文档"
+        monkeypatch.setattr(
+            requests, "post",
+            lambda *a, **kw: FakeResponse(
+                data={"choices": [{"message": {"content": answer}}]}
+            ),
+        )
+        hit = probe_deepseek("WorkBuddy", competitor_ids=["https://comp.example.com"])
+        assert hit.competitor_matched is True
+        assert any("版本 2.3.1" in r for r in hit.fact_risks)
+        miss = probe_deepseek("WorkBuddy", competitor_ids=["https://nope.example/x"])
+        assert miss.competitor_matched is False
+        not_checked = probe_deepseek("WorkBuddy")
+        assert not_checked.competitor_matched is None
+
+    def test_probe_search_inference_cited_type_owned(self, monkeypatch):
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=BING_HTML))
+        result = probe_search_inference(
+            "AI搜索优化", "kimi",
+            mine_ids=["https://example.com/1"],
+            owned_ids=["https://example.com/1"],
+        )
+        assert result.mine_cited is True
+        assert result.cited_type == "owned"
+
+    def test_probe_search_inference_competitor_matched(self, monkeypatch):
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=BING_HTML))
+        hit = probe_search_inference(
+            "AI搜索优化", "kimi", competitor_ids=["https://example.com/1"]
+        )
+        assert hit.competitor_matched is True
+        miss = probe_search_inference(
+            "AI搜索优化", "kimi", competitor_ids=["https://nope.example/x"]
+        )
+        assert miss.competitor_matched is False
+
     def test_empty_inputs(self):
         assert _detect_mine("", ["a"]) == []
         assert _detect_mine("任意文本", []) == []
@@ -382,6 +519,21 @@ class TestSearchInference:
         assert result.mine_cited is False
         assert result.meta["mine_matched"] == []
 
+    def test_search_inference_tolerates_missing_snippet_key(self, monkeypatch):
+        # 防御：_parse_bing 返回项缺 snippet 键时，竞品/我的内容检测不抛 KeyError
+        items = [{"title": "AI搜索优化入门", "url": "https://example.com/comp"}]
+        monkeypatch.setattr(search_ai, "_parse_bing", lambda html: items)
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text="<html>"))
+        result = probe_search_inference(
+            "AI搜索优化", "kimi",
+            mine_ids=["https://example.com/comp"],
+            competitor_ids=["https://example.com/comp"],
+        )
+        assert result.status == "ok"
+        assert result.cited is True
+        assert result.mine_cited is True
+        assert result.competitor_matched is True
+
     def test_non_url_mine_matches_title(self, monkeypatch):
         monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResponse(text=BING_HTML))
         result = probe_search_inference("AI搜索优化", "kimi", mine_ids=["AI 搜索优化入门"])
@@ -477,6 +629,20 @@ class TestDB:
         assert history[0]["mine_cited"] == 1
         assert json.loads(history[0]["mine_ids"]) == ["https://a.com/1", "我的昵称"]
 
+    def test_schema_has_clean_b3_columns(self, tmp_path):
+        # regression: quoted column names must not appear in CREATE TABLE
+        db = tmp_path / "monitor.db"
+        conn = search_ai.connect(db)
+        cols = [c[1] for c in conn.execute("PRAGMA table_info(probes)").fetchall()]
+        conn.close()
+        assert cols == [
+            "id", "query", "platform", "run_at", "status", "cited", "sentiment",
+            "context", "source", "degraded", "error", "meta", "mine_cited",
+            "mine_ids", "confidence", "cited_type", "owned_ids",
+            "competitor_matched", "competitor_ids", "fact_risks",
+        ]
+        assert not any(chr(39) in c for c in cols)
+
     def test_store_and_load_confidence(self, tmp_path):
         db = tmp_path / "monitor.db"
         row = ProbeResult(
@@ -486,6 +652,26 @@ class TestDB:
         store_results([row], db_path=db, run_at="2026-08-06T10:00:00+08:00")
         history = load_history("品牌A", db_path=db)
         assert history[0]["confidence"] == "confirmed"
+
+    def test_store_and_load_b3_quality_fields(self, tmp_path):
+        db = tmp_path / "monitor.db"
+        row = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            meta={"answer": "原始回答", "mine_checked": ["https://a.com/1"]},
+            mine_cited=True, mine_ids=["https://a.com/1"],
+            cited_type="owned", owned_ids=["https://a.com/1"],
+            competitor_matched=True, competitor_ids=["https://comp.example.com"],
+            fact_risks=["版本 2.3.1"],
+        )
+        store_results([row], db_path=db, run_at="2026-08-06T10:00:00+08:00")
+        saved = load_history("品牌A", db_path=db)[0]
+        assert json.loads(saved["meta"])["answer"] == "原始回答"
+        assert saved["mine_cited"] == 1
+        assert saved["cited_type"] == "owned"
+        assert json.loads(saved["owned_ids"]) == ["https://a.com/1"]
+        assert saved["competitor_matched"] == 1
+        assert json.loads(saved["competitor_ids"]) == ["https://comp.example.com"]
+        assert json.loads(saved["fact_risks"]) == ["版本 2.3.1"]
 
     def test_build_delta(self, tmp_path):
         db = tmp_path / "monitor.db"
@@ -622,6 +808,104 @@ class TestDB:
         item = delta["platforms"]["deepseek"]
         assert item["run_at"] == "2026-08-02T10:00:00+08:00"
         assert item["cited_change"] == "added"
+
+    def test_build_delta_detects_competitor_replaced(self, tmp_path):
+        # lostprompt：上次被引用、本次未被引用但话题仍被提及、本次检出竞品
+        db = tmp_path / "monitor.db"
+        prev = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=True, mine_ids=["https://a.com/1"],
+        )
+        last = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=False, mine_ids=["https://a.com/1"],
+            competitor_matched=True,
+        )
+        store_results([prev], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        store_results([last], db_path=db, run_at="2026-08-02T10:00:00+08:00")
+        delta = build_delta("品牌A", db_path=db)
+        item = delta["platforms"]["deepseek"]
+        assert item["competitor_replaced"] is True
+        # 上次未检查竞品（None）→ 推断待人工确认，而非已确认
+        assert item["competitor_replaced_confirmed"] is False
+        assert item["mine_change"] == "lost"
+        assert delta["has_history"] is True
+
+    def test_build_delta_competitor_replaced_confirmed_when_prev_missed(self, tmp_path):
+        # 上次明确未命中竞品（False）→ 竞品夺走为已确认
+        db = tmp_path / "monitor.db"
+        prev = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=True, mine_ids=["https://a.com/1"],
+            competitor_matched=False, competitor_ids=["https://comp.example.com"],
+        )
+        last = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=False, mine_ids=["https://a.com/1"],
+            competitor_matched=True, competitor_ids=["https://comp.example.com"],
+        )
+        store_results([prev], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        store_results([last], db_path=db, run_at="2026-08-02T10:00:00+08:00")
+        item = build_delta("品牌A", db_path=db)["platforms"]["deepseek"]
+        assert item["competitor_replaced"] is True
+        assert item["competitor_replaced_confirmed"] is True
+
+    def test_build_delta_no_competitor_replaced_when_mine_ids_changed(self, tmp_path):
+        # 前后两次 mine_ids 不一致（用户更换标识）时不判竞品夺走，避免假回归
+        db = tmp_path / "monitor.db"
+        prev = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=True, mine_ids=["https://a.com/1"],
+            competitor_matched=False,
+        )
+        last = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=False, mine_ids=["https://a.com/2"],
+            competitor_matched=True,
+        )
+        store_results([prev], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        store_results([last], db_path=db, run_at="2026-08-02T10:00:00+08:00")
+        item = build_delta("品牌A", db_path=db)["platforms"]["deepseek"]
+        assert item.get("competitor_replaced") is not True
+
+    def test_build_delta_competitor_replaced_inferred_when_competitor_ids_changed(self, tmp_path):
+        # 前后竞品标识不一致（用户更换 --competitor）时不得确认夺走，按推断处理
+        db = tmp_path / "monitor.db"
+        prev = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=True, mine_ids=["https://a.com/1"],
+            competitor_matched=False, competitor_ids=["https://comp-a.example"],
+        )
+        last = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=False, mine_ids=["https://a.com/1"],
+            competitor_matched=True, competitor_ids=["https://comp-b.example"],
+        )
+        store_results([prev], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        store_results([last], db_path=db, run_at="2026-08-02T10:00:00+08:00")
+        item = build_delta("品牌A", db_path=db)["platforms"]["deepseek"]
+        assert item["competitor_replaced"] is True
+        assert item["competitor_replaced_confirmed"] is False
+
+    def test_build_delta_no_competitor_replaced_when_competitor_persists(self, tmp_path):
+        # 上一轮竞品已命中时不判「夺走」：竞品一直在场，本轮丢失引用不是被替换
+        db = tmp_path / "monitor.db"
+        prev = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=True, mine_ids=["https://a.com/1"],
+            competitor_matched=True,
+        )
+        last = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=False, mine_ids=["https://a.com/1"],
+            competitor_matched=True,
+        )
+        store_results([prev], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        store_results([last], db_path=db, run_at="2026-08-02T10:00:00+08:00")
+        delta = build_delta("品牌A", db_path=db)
+        item = delta["platforms"]["deepseek"]
+        assert item.get("competitor_replaced") is not True
+        assert item["mine_change"] == "lost"
 
     def test_default_run_at_has_microsecond_precision(self, tmp_path):
         db = tmp_path / "monitor.db"
@@ -799,6 +1083,84 @@ class TestRecommendations:
         recs = build_recommendations("品牌A", results)
         assert not any(r.dimension == "内容引用归属" for r in recs)
 
+    def test_competitor_replaced_confirmed_p1(self):
+        # 单次对比样本（AI 回答有随机性）不直接给 P0，降为 P1 并建议重跑确认
+        delta = {
+            "platforms": {
+                "deepseek": {
+                    "competitor_replaced": True,
+                    "competitor_replaced_confirmed": True,
+                    "competitor_replaced_at": "2026-08-02T10:00:00+08:00",
+                },
+            }
+        }
+        recs = build_recommendations("品牌A", [], delta=delta)
+        confirmed = [r for r in recs if r.dimension == "竞品夺走"]
+        assert confirmed and confirmed[0].priority == "P1"
+        assert "单次对比样本" in confirmed[0].action
+        assert all(r.falsifiability_check for r in recs)
+
+    def test_competitor_replaced_inferred_p1(self):
+        # 推断（上次未检查竞品）降为 P1，并明确标注待人工确认
+        delta = {
+            "platforms": {
+                "deepseek": {
+                    "competitor_replaced": True,
+                    "competitor_replaced_confirmed": False,
+                    "competitor_replaced_at": "2026-08-02T10:00:00+08:00",
+                },
+            }
+        }
+        recs = build_recommendations("品牌A", [], delta=delta)
+        inferred = [r for r in recs if r.dimension == "竞品夺走（推断）"]
+        assert inferred and inferred[0].priority == "P1"
+        assert "人工确认" in inferred[0].action
+        assert not any(r.priority == "P0" and r.dimension == "竞品夺走" for r in recs)
+
+    def test_competitor_replaced_falsifiability_uses_actual_mine(self):
+        # 复跑命令必须使用实际 mine 标识（标题/作者名），而非硬编码 URL 占位
+        delta = {
+            "platforms": {
+                "deepseek": {
+                    "competitor_replaced": True,
+                    "competitor_replaced_confirmed": True,
+                },
+            }
+        }
+        results = [ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=False, mine_ids=["我的昵称"],
+        )]
+        recs = build_recommendations("品牌A", results, delta=delta)
+        rec = next(r for r in recs if r.dimension == "竞品夺走")
+        assert "--mine '我的昵称'" in rec.falsifiability_check
+
+    def test_competitor_replaced_falsifiability_joins_all_mine_ids(self):
+        # 多个 --mine 标识时复跑命令须全部拼接，不能只取第一个
+        delta = {
+            "platforms": {
+                "deepseek": {
+                    "competitor_replaced": True,
+                    "competitor_replaced_confirmed": True,
+                },
+            }
+        }
+        results = [ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=False, mine_ids=["https://a.com/1", "我的昵称"],
+        )]
+        recs = build_recommendations("品牌A", results, delta=delta)
+        rec = next(r for r in recs if r.dimension == "竞品夺走")
+        assert "--mine https://a.com/1 --mine '我的昵称'" in rec.falsifiability_check
+
+    def test_fact_risks_p1(self):
+        results = [ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            fact_risks=["版本 2.3.1"],
+        )]
+        recs = build_recommendations("品牌A", results)
+        assert any(r.priority == "P1" and r.dimension == "信息风险" for r in recs)
+
 
 class TestReport:
     def test_render_markdown(self):
@@ -902,6 +1264,43 @@ class TestReport:
         delta = {"platforms": {"deepseek": {"cited_change": "same"}}}
         md = render_markdown("品牌A", [], {"series": {}, "changes": []}, [], delta)
         assert "无变化" in md
+
+    def test_render_markdown_b3_risk_section(self):
+        delta = {
+            "platforms": {
+                "deepseek": {
+                    "competitor_replaced": True,
+                    "competitor_replaced_confirmed": False,
+                    "competitor_replaced_at": "2026-08-02T10:00:00+08:00",
+                },
+            }
+        }
+        results = [ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=True, mine_ids=["https://a.com/1"], cited_type="earned",
+            fact_risks=["版本 2.3.1"],
+        )]
+        md = render_markdown("品牌A", results, {"series": {}, "changes": []}, [], delta)
+        assert "## 风险提示" in md
+        assert "竞品夺走" in md
+        assert "推断" in md
+        assert "版本 2.3.1" in md
+        assert "是（原创）" in md
+
+    def test_render_markdown_no_risk_section_when_clean(self):
+        results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]
+        md = render_markdown("品牌A", results, {"series": {}, "changes": []}, [])
+        assert "## 风险提示" not in md
+
+    def test_render_markdown_mine_unknown_type_not_marked_owned(self):
+        # mine_cited=True 但 cited_type 缺失（旧数据/手工构造）时不得误标「转载」
+        results = [ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=True, mine_ids=["https://a.com/1"],
+        )]
+        md = render_markdown("品牌A", results, {"series": {}, "changes": []}, [])
+        assert "是（未知）" in md
+        assert "（转载）" not in md
 
     def test_render_markdown_filters_changes_by_requested_platforms(self):
         results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]
@@ -1034,6 +1433,104 @@ class TestCLI:
         history = load_history("codex", db_path=db)
         assert json.loads(history[0]["mine_ids"]) == ["https://a.com/1"]
 
+    def test_main_parses_mine_owned_and_competitor(self, tmp_path, monkeypatch):
+        captured = {}
+
+        def fake_probe(query, mine_ids=None, owned_ids=None, competitor_ids=None):
+            captured["mine_ids"] = mine_ids
+            captured["owned_ids"] = owned_ids
+            captured["competitor_ids"] = competitor_ids
+            return ProbeResult(query, "deepseek", "ok", True, "positive", "c", "api", False)
+
+        monkeypatch.setitem(search_ai.PLATFORMS["deepseek"], "probe", fake_probe)
+        db = tmp_path / "monitor.db"
+        out = tmp_path / "snap"
+        code = main([
+            "--query", "codex", "--platforms", "deepseek",
+            "--mine", "https://a.com/1",
+            "--mine-owned", "https://a.com/2",
+            "--competitor", "https://comp.example.com",
+            "--db", str(db), "--output", str(out),
+        ])
+        assert code == 0
+        assert captured["mine_ids"] == ["https://a.com/1", "https://a.com/2"]
+        assert captured["owned_ids"] == ["https://a.com/2"]
+        assert captured["competitor_ids"] == ["https://comp.example.com"]
+
+    def test_main_owned_earned_overlap_prefers_earned(self, tmp_path, monkeypatch, capsys):
+        # 同一标识同时传 --mine 与 --mine-owned：按原创处理并从 owned 移除，stderr 提示
+        captured = {}
+
+        def fake_probe(query, mine_ids=None, owned_ids=None, competitor_ids=None):
+            captured["owned_ids"] = owned_ids
+            return ProbeResult(query, "deepseek", "ok", True, "positive", "c", "api", False)
+
+        monkeypatch.setitem(search_ai.PLATFORMS["deepseek"], "probe", fake_probe)
+        db = tmp_path / "monitor.db"
+        out = tmp_path / "snap"
+        code = main([
+            "--query", "codex", "--platforms", "deepseek",
+            "--mine", "https://a.com/1",
+            "--mine-owned", "https://a.com/1",
+            "--db", str(db), "--output", str(out),
+        ])
+        assert code == 0
+        assert captured["owned_ids"] == []
+        assert "按原创（earned）处理" in capsys.readouterr().err
+
+    def test_main_prints_competitor_replaced(self, tmp_path, monkeypatch, capsys):
+        calls = {"n": 0}
+
+        def fake_probe(query, mine_ids=None, owned_ids=None, competitor_ids=None):
+            calls["n"] += 1
+            return ProbeResult(
+                query, "deepseek", "ok", True, "positive", "c", "api", False,
+                mine_cited=calls["n"] == 1,
+                mine_ids=mine_ids or [],
+                competitor_matched=calls["n"] > 1,
+                competitor_ids=competitor_ids or [],
+            )
+
+        monkeypatch.setitem(search_ai.PLATFORMS["deepseek"], "probe", fake_probe)
+        db = tmp_path / "monitor.db"
+        out = tmp_path / "snap"
+        assert main([
+            "--query", "codex", "--platforms", "deepseek",
+            "--mine", "https://a.com/1",
+            "--competitor", "https://comp.example.com",
+            "--db", str(db), "--output", str(out),
+        ]) == 0
+        assert main([
+            "--query", "codex", "--platforms", "deepseek",
+            "--mine", "https://a.com/1",
+            "--competitor", "https://comp.example.com",
+            "--db", str(db), "--output", str(out),
+        ]) == 0
+        captured = capsys.readouterr().out
+        # 竞品夺走与引用变化应同条输出，不跳过 cited/flip 变化
+        assert "竞品夺走" in captured
+        # prev 明确未命中竞品（False）→ 已确认夺走，不带「推断」标注
+        assert "（推断）" not in captured
+        assert "无变化" in captured
+
+    def test_main_prints_mine_unknown_type_when_cited_type_missing(self, tmp_path, monkeypatch, capsys):
+        # mine_cited=True 但 cited_type 缺失时显示「未知」，不得误标「转载」
+        def fake_probe(query, mine_ids=None, owned_ids=None, competitor_ids=None):
+            return ProbeResult(
+                query, "deepseek", "ok", True, "positive", "c", "api", False,
+                mine_cited=True, mine_ids=mine_ids or [],
+            )
+
+        monkeypatch.setitem(search_ai.PLATFORMS["deepseek"], "probe", fake_probe)
+        db = tmp_path / "monitor.db"
+        out = tmp_path / "snap"
+        assert main([
+            "--query", "codex", "--platforms", "deepseek",
+            "--mine", "https://a.com/1", "--db", str(db), "--output", str(out),
+        ]) == 0
+        captured = capsys.readouterr().out
+        assert "我的内容 是（未知）" in captured
+
     def test_main_prints_mine_for_no_key(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr("search_ai._load_key", lambda: None)
         db = tmp_path / "monitor.db"
@@ -1050,7 +1547,7 @@ class TestCLI:
         # 仅「我的内容」变化（cited/flip 均无变化）时，控制台仍应打印对比条目
         calls = {"n": 0}
 
-        def fake_probe(query, mine_ids=None):
+        def fake_probe(query, mine_ids=None, owned_ids=None, competitor_ids=None):
             calls["n"] += 1
             return ProbeResult(
                 query, "deepseek", "ok", None, None, "ctx", "api",
