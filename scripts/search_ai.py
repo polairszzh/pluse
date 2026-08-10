@@ -131,14 +131,34 @@ _FACT_UNIT_RE = re.compile(
 )
 
 
-def _extract_fact_risks(answer: str, limit: int = 5) -> list[str]:
-    """从 AI 回答中提取未核实的数字断言（版本号、价格、数量等），供人工复核
+def _extract_fact_risks(answer: str, query: str, limit: int = 5) -> list[str]:
+    """从 AI 回答中提取「关于品牌」的未核实数字断言（版本号、价格、数量等），供人工复核
 
     只做「风险提示」不做事实判定：回答里出现这类断言即列入清单，
     报告标注「未经核实」并附断言上下文，由发布前人工核查。
     年/月/天/小时/分钟等时间单位不提取，避免把「2026 年」「3 天前」「5 分钟后」当风险噪音。
+    只提取品牌词（query）附近 ±80 字内的断言，避免把「需要 16GB 内存」等与品牌无关的
+    数字当作风险（与字段注释「关于品牌」一致）。
     """
     text = str(answer or "")
+    q = str(query or "").lower()
+    if not q or q not in text.lower():
+        return []
+    # 品牌词出现位置 ±80 字构成候选窗口，窗口外断言不提取
+    windows: list[tuple[int, int]] = []
+    start = 0
+    while True:
+        idx = text.lower().find(q, start)
+        if idx < 0:
+            break
+        windows.append((max(0, idx - 80), min(len(text), idx + len(q) + 80)))
+        start = idx + len(q)
+    merged: list[tuple[int, int]] = []
+    for w in sorted(windows):
+        if merged and w[0] <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], w[1]))
+        else:
+            merged.append(w)
     risks: list[str] = []
     seen: set[str] = set()
     patterns = (
@@ -147,6 +167,8 @@ def _extract_fact_risks(answer: str, limit: int = 5) -> list[str]:
     )
     for pattern, fmt in patterns:
         for m in pattern.finditer(text):
+            if not any(w[0] <= m.start() and m.end() <= w[1] for w in merged):
+                continue
             label = fmt(m)
             if label in seen:
                 continue
@@ -425,7 +447,7 @@ def probe_deepseek(
     cited = query.lower() in answer.lower()
     mine_matched = _detect_mine(answer, mine_ids)
     competitor_matched = bool(_detect_mine(answer, competitor_ids)) if competitor_ids else None
-    fact_risks = _extract_fact_risks(answer) if cited else []
+    fact_risks = _extract_fact_risks(answer, query) if cited else []
     return ProbeResult(
         query=query, platform="deepseek", status="ok", cited=cited,
         sentiment=classify_sentiment(answer), context=_truncate(answer, 300),
@@ -990,12 +1012,12 @@ def build_recommendations(
             "--mine <你的内容URL>",
         )
         recs.append(Recommendation(
-            priority="P0",
+            priority="P1",
             dimension="竞品夺走",
             action=f"在 {names} 上，你的内容上次被引用、本次被竞品替换："
-                   "围绕差异化优势补充独家数据/实测/案例，并在标题与首段强化品牌锚定，"
-                   "让 AI 能明确区分你与竞品",
-            expected_impact="把 AI 引用从竞品拉回你的内容",
+                   "该判定基于单次对比样本（AI 回答有随机性），建议先重跑一次确认；"
+                   "确属夺走则围绕差异化优势补充独家数据/实测/案例，并在标题与首段强化品牌锚定",
+            expected_impact="确认后把 AI 引用从竞品拉回你的内容",
             falsifiability_check=f"重跑 /pulse track --query {_shell_quote(query)} "
                                  f"{mine_args} --competitor <竞品标识>，"
                                  "对应平台「竞品夺走」风险消失、我的内容变为「是」",

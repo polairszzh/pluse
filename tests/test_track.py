@@ -150,46 +150,49 @@ class TestB3Quality:
 
     def test_extract_fact_risks(self):
         answer = "WorkBuddy 最新版本 2.3.1，注册送 5000 积分，已有 10000 用户使用。"
-        risks = search_ai._extract_fact_risks(answer)
+        risks = search_ai._extract_fact_risks(answer, "WorkBuddy")
         assert any("版本 2.3.1" in r for r in risks)
         assert any("5000积分" in r for r in risks)
         assert any("10000用户" in r for r in risks)
 
     def test_extract_fact_risks_dedupe_and_limit(self):
-        answer = "版本 1.0 与版本 1.0 重复；另有 3 天、4 天、5 天、6 天、7 天、8 天"
-        risks = search_ai._extract_fact_risks(answer, limit=5)
+        answer = "该品牌版本 1.0 与版本 1.0 重复；另有 3 天、4 天、5 天、6 天、7 天、8 天"
+        risks = search_ai._extract_fact_risks(answer, "该品牌", limit=5)
         assert len(risks) <= 5
         assert sum(1 for r in risks if "版本 1.0" in r) == 1
 
     def test_extract_fact_risks_skips_date_units(self):
         # 年/月/天属于日期表述，不提取为风险噪音
         answer = "该产品 2026 年发布，3 天前更新，当前版本 2.3.1"
-        risks = search_ai._extract_fact_risks(answer)
+        risks = search_ai._extract_fact_risks(answer, "该产品")
         assert not any(r.startswith(("2026", "3 天")) for r in risks)
         assert any("版本 2.3.1" in r for r in risks)
 
     def test_extract_fact_risks_skips_relative_time(self):
         # 相对时间表达（X 小时前/X 分钟后）不作为未核实断言
         answer = "该功能 3 小时前上线，5 分钟后可用，升级需 2 分钟"
-        risks = search_ai._extract_fact_risks(answer)
+        risks = search_ai._extract_fact_risks(answer, "该功能")
         assert risks == []
 
     def test_extract_fact_risks_includes_context(self):
         answer = "WorkBuddy 最新版本 2.3.1，注册送 5000 积分。"
-        risks = search_ai._extract_fact_risks(answer)
+        risks = search_ai._extract_fact_risks(answer, "WorkBuddy")
         assert any("版本 2.3.1" in r and "最新" in r for r in risks)
         assert any("5000积分" in r and "注册送" in r for r in risks)
 
     def test_extract_fact_risks_version_with_colon(self):
         # 版本与数字之间允许中英文冒号
-        risks = search_ai._extract_fact_risks("版本：2.3.1 和 version: 1.0.2")
+        risks = search_ai._extract_fact_risks(
+            "WorkBuddy 版本：2.3.1 和 version: 1.0.2", "WorkBuddy"
+        )
         assert any("版本 2.3.1" in r for r in risks)
         assert any("版本 1.0.2" in r for r in risks)
 
     def test_extract_fact_risks_compound_units(self):
         # 复合数量单位不得被截断：1.8万亿 不能提取成 1.8万
         risks = search_ai._extract_fact_risks(
-            "估值 1.8万亿，年营收 5000万元，补贴 3亿元，累计 1000万用户，接待 1.8万人次"
+            "WorkBuddy 估值 1.8万亿，年营收 5000万元，补贴 3亿元，累计 1000万用户，接待 1.8万人次",
+            "WorkBuddy",
         )
         assert any("1.8万亿" in r for r in risks)
         assert any("5000万元" in r for r in risks)
@@ -198,6 +201,16 @@ class TestB3Quality:
         assert any("1.8万人次" in r for r in risks)
         # 不得出现被截断的「1.8万（…）」标签
         assert not any(r.startswith("1.8万（") for r in risks)
+
+    def test_extract_fact_risks_only_near_brand(self):
+        # 远离品牌词的数字（系统要求 16GB 内存）不作为品牌断言提取
+        answer = (
+            "WorkBuddy 提供稳定的云服务，功能丰富。"
+            + "。" * 100
+            + "系统要求 16GB 内存，升级耗时 2 小时。"
+        )
+        risks = search_ai._extract_fact_risks(answer, "WorkBuddy")
+        assert all("16GB" not in r and "2 小时" not in r for r in risks)
 
     def test_probe_deepseek_cited_type_earned_and_owned(self, monkeypatch):
         monkeypatch.setattr("search_ai._load_key", lambda: "sk-test")
@@ -1070,7 +1083,8 @@ class TestRecommendations:
         recs = build_recommendations("品牌A", results)
         assert not any(r.dimension == "内容引用归属" for r in recs)
 
-    def test_competitor_replaced_confirmed_p0(self):
+    def test_competitor_replaced_confirmed_p1(self):
+        # 单次对比样本（AI 回答有随机性）不直接给 P0，降为 P1 并建议重跑确认
         delta = {
             "platforms": {
                 "deepseek": {
@@ -1081,7 +1095,9 @@ class TestRecommendations:
             }
         }
         recs = build_recommendations("品牌A", [], delta=delta)
-        assert any(r.priority == "P0" and r.dimension == "竞品夺走" for r in recs)
+        confirmed = [r for r in recs if r.dimension == "竞品夺走"]
+        assert confirmed and confirmed[0].priority == "P1"
+        assert "单次对比样本" in confirmed[0].action
         assert all(r.falsifiability_check for r in recs)
 
     def test_competitor_replaced_inferred_p1(self):
