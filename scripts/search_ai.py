@@ -270,6 +270,9 @@ def _aggregate_samples(samples: list[ProbeResult]) -> ProbeResult:
     )
     fact_risks = _union_strings([s.fact_risks for s in samples])
     status = _majority([s.status for s in samples]) or "error"
+    # 元信息取多数派：samples[0] 可能是少数失败样本，confidence/source 不能从它继承
+    confidence = _majority([s.confidence for s in samples])
+    source = _majority([s.source for s in samples]) or base.source
     if status != "ok":
         # 整体失败/未配置：cited/mine_cited 统一无效（表格显示未知，趋势不参与），
         # 避免与部分有效样本的命中结果口径不一致；上下文同时清空，
@@ -306,7 +309,7 @@ def _aggregate_samples(samples: list[ProbeResult]) -> ProbeResult:
         cited=cited,
         sentiment=sentiment,
         context=hit_context,
-        source=base.source,
+        source=source,
         degraded=_aggregate_binary([s.degraded for s in samples])["cited"],
         error=next(
             (s.error for s in samples if s.status == status and s.error),
@@ -315,7 +318,7 @@ def _aggregate_samples(samples: list[ProbeResult]) -> ProbeResult:
         meta=meta,
         mine_cited=mine_cited,
         mine_ids=base.mine_ids,
-        confidence=base.confidence,
+        confidence=confidence,
         cited_type=cited_type,
         owned_ids=base.owned_ids,
         competitor_matched=competitor_matched,
@@ -1443,9 +1446,13 @@ def render_markdown(
             hits = r.meta.get("sample_hits", 0)
             invalid = r.meta.get("sample_invalid", 0)
             invalid_note = f"，{invalid} 次无效" if invalid else ""
+            ci_note = (
+                f"，CI {r.ci_low:.0%}-{r.ci_high:.0%}"
+                if r.ci_low is not None and r.ci_high is not None else ""
+            )
             cited_txt = (
                 f"{'是' if r.cited else '否'} "
-                f"({r.prob:.0%}, {hits}/{r.sample_count}{invalid_note})"
+                f"({r.prob:.0%}, {hits}/{r.sample_count}{invalid_note}{ci_note})"
             )
         else:
             cited_txt = {True: "是", False: "否", None: "未知"}.get(r.cited, "未知")
@@ -1805,12 +1812,16 @@ def main(argv: list[str] | None = None) -> int:
                 hits = r.meta.get("sample_hits", 0)
                 invalid = r.meta.get("sample_invalid", 0)
                 invalid_note = f"，{invalid} 次无效" if invalid else ""
+                ci_note = (
+                    f"，CI {r.ci_low:.0%}-{r.ci_high:.0%}"
+                    if r.ci_low is not None and r.ci_high is not None else ""
+                )
                 cited = (
                     f"{'是' if r.cited else '否'} "
-                    f"({r.prob:.0%}, {hits}/{r.sample_count}{invalid_note})"
+                    f"({r.prob:.0%}, {hits}/{r.sample_count}{invalid_note}{ci_note})"
                 )
             else:
-                cited = "是" if r.cited else "否"
+                cited = {True: "是", False: "否", None: "未知"}.get(r.cited, "未知")
             extra = f" · 情感 {SENTIMENT_LABEL.get(r.sentiment or '', '—')}" if r.sentiment else ""
             conf = f" · 置信度 {CONFIDENCE_LABEL.get(r.confidence or '', '—')}"
             print(f"  {label}：{STATUS_LABEL[r.status]} · 被提及 {cited}{extra}{conf}{mine}")

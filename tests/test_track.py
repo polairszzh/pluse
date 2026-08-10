@@ -479,6 +479,24 @@ class TestB1Sampling:
         assert agg.cited is None
         assert agg.context == ""
 
+    def test_aggregate_samples_confidence_from_majority(self):
+        # 状态混合时 confidence 取多数派，不从首个失败样本继承
+        ok = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            confidence="confirmed",
+        )
+        ok2 = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            confidence="confirmed",
+        )
+        bad = ProbeResult(
+            "品牌A", "deepseek", "error", None, None, "boom", "api", True,
+            error="x", confidence=None,
+        )
+        agg = search_ai._aggregate_samples([bad, ok, ok2])
+        assert agg.status == "ok"
+        assert agg.confidence == "confirmed"
+
     def test_aggregate_samples_all_invalid_prob_none(self):
         samples = [
             ProbeResult(
@@ -793,10 +811,27 @@ class TestB1Sampling:
         assert code == 0
         assert calls["n"] == 5
         captured = capsys.readouterr().out
-        assert "被提及 是 (80%, 4/5)" in captured
+        assert "被提及 是 (80%, 4/5" in captured
         history = load_history("codex", db_path=db)
         assert len(history) == 5
         assert {r["sample_idx"] for r in history} == {0, 1, 2, 3, 4}
+
+    def test_main_prints_unknown_when_cited_none(self, tmp_path, monkeypatch, capsys):
+        # 防御：status=ok 但 cited=None（异常数据）时 CLI 显示「未知」而非「否」
+        def fake_probe(query, mine_ids=None, owned_ids=None, competitor_ids=None):
+            return ProbeResult(
+                query, "deepseek", "ok", None, None, "c", "api", False
+            )
+
+        monkeypatch.setitem(search_ai.PLATFORMS["deepseek"], "probe", fake_probe)
+        db = tmp_path / "monitor.db"
+        out = tmp_path / "snap"
+        assert main([
+            "--query", "codex", "--platforms", "deepseek", "--samples", "3",
+            "--db", str(db), "--output", str(out),
+        ]) == 0
+        captured = capsys.readouterr().out
+        assert "被提及 未知" in captured
 
     def test_render_markdown_probability(self):
         r = ProbeResult(
@@ -805,7 +840,7 @@ class TestB1Sampling:
         )
         r.meta = {"sample_hits": 4}
         md = render_markdown("品牌A", [r], {"series": {}, "changes": []}, [])
-        assert "是 (80%, 4/5)" in md
+        assert "是 (80%, 4/5，CI 38%-96%)" in md
 
     def test_render_markdown_probability_with_invalid_note(self):
         # 存在无效样本时附注无效数，避免「4/5」被误读为总采样 5 次
@@ -815,7 +850,7 @@ class TestB1Sampling:
         )
         r.meta = {"sample_hits": 4, "sample_invalid": 1}
         md = render_markdown("品牌A", [r], {"series": {}, "changes": []}, [])
-        assert "是 (100%, 4/4，1 次无效)" in md
+        assert "是 (100%, 4/4，1 次无效，CI 60%-100%)" in md
 
     def test_render_markdown_error_status_shows_unknown_cited(self):
         # 多数失败 + 少数成功：聚合 status=error 时被提及显示「未知」，不得显示「是」
