@@ -21,7 +21,7 @@ instructions = """
    - 监测全部平台：python scripts/search_ai.py --query "<品牌/关键词>"
    - 指定平台：python scripts/search_ai.py --query "<品牌>" --platforms deepseek,kimi
    - 检查「你的内容是否被引用」（不只看话题是否被提及）：python scripts/search_ai.py --query "<话题>" --mine "<文章URL>" --mine "<作者名/标题>"
-   - 引用质量分层（可选）：--mine-owned "<转载标识>" 标记转载/自有渠道（命中记「转载」）；--competitor "<竞品标识>" 用于 lostprompt（竞品夺走）分析
+   - 引用质量分层（可选）：--mine-owned "<转载标识>" 标记转载/自有渠道（仅命中 owned 且未命中原创标识时记「转载」）；--competitor "<竞品标识>" 用于 lostprompt（竞品夺走）分析
 3. 打开 data/snapshots/ 下刚生成的 track-*.md 报告，核对各平台状态、「我的内容」列、趋势与行动清单。
 4. 如需可视化：提示用户运行 node dashboard/server.js 后访问 http://localhost:8766。
 5. 向用户呈现：各平台被提及情况 + 与上次对比的变化 + P0 建议 + 报告文件路径。

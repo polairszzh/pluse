@@ -833,6 +833,24 @@ class TestDB:
         assert item["competitor_replaced"] is True
         assert item["competitor_replaced_confirmed"] is True
 
+    def test_build_delta_no_competitor_replaced_when_mine_ids_changed(self, tmp_path):
+        # 前后两次 mine_ids 不一致（用户更换标识）时不判竞品夺走，避免假回归
+        db = tmp_path / "monitor.db"
+        prev = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=True, mine_ids=["https://a.com/1"],
+            competitor_matched=False,
+        )
+        last = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
+            mine_cited=False, mine_ids=["https://a.com/2"],
+            competitor_matched=True,
+        )
+        store_results([prev], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        store_results([last], db_path=db, run_at="2026-08-02T10:00:00+08:00")
+        item = build_delta("品牌A", db_path=db)["platforms"]["deepseek"]
+        assert item.get("competitor_replaced") is not True
+
     def test_build_delta_no_competitor_replaced_when_competitor_persists(self, tmp_path):
         # 上一轮竞品已命中时不判「夺走」：竞品一直在场，本轮丢失引用不是被替换
         db = tmp_path / "monitor.db"
@@ -1029,11 +1047,12 @@ class TestRecommendations:
         recs = build_recommendations("品牌A", results)
         assert not any(r.dimension == "内容引用归属" for r in recs)
 
-    def test_competitor_replaced_p0(self):
+    def test_competitor_replaced_confirmed_p0(self):
         delta = {
             "platforms": {
                 "deepseek": {
                     "competitor_replaced": True,
+                    "competitor_replaced_confirmed": True,
                     "competitor_replaced_at": "2026-08-02T10:00:00+08:00",
                 },
             }
@@ -1041,6 +1060,23 @@ class TestRecommendations:
         recs = build_recommendations("品牌A", [], delta=delta)
         assert any(r.priority == "P0" and r.dimension == "竞品夺走" for r in recs)
         assert all(r.falsifiability_check for r in recs)
+
+    def test_competitor_replaced_inferred_p1(self):
+        # 推断（上次未检查竞品）降为 P1，并明确标注待人工确认
+        delta = {
+            "platforms": {
+                "deepseek": {
+                    "competitor_replaced": True,
+                    "competitor_replaced_confirmed": False,
+                    "competitor_replaced_at": "2026-08-02T10:00:00+08:00",
+                },
+            }
+        }
+        recs = build_recommendations("品牌A", [], delta=delta)
+        inferred = [r for r in recs if r.dimension == "竞品夺走（推断）"]
+        assert inferred and inferred[0].priority == "P1"
+        assert "人工确认" in inferred[0].action
+        assert not any(r.priority == "P0" and r.dimension == "竞品夺走" for r in recs)
 
     def test_fact_risks_p1(self):
         results = [ProbeResult(

@@ -844,8 +844,11 @@ def build_delta(
         # lostprompt：上次被引用、本次未被引用但话题仍被提及、本次检出竞品内容出现
         # 上一轮竞品已命中（competitor_matched=True）时不判「夺走」——竞品一直在场，
         # 本轮丢失引用不是被替换；上一轮未查（None）按未命中处理，避免旧数据漏报
+        # 前后两次 mine_ids 集合不一致时也不判——用户更换 --mine 标识会导致假回归
         if (
             last["mine_checked"] and prev["mine_checked"]
+            and last["mine_ids"] and prev["mine_ids"]
+            and set(last["mine_ids"]) == set(prev["mine_ids"])
             and prev["mine_cited"] is True
             and last["mine_cited"] is False
             and last["cited"] is True
@@ -950,8 +953,14 @@ def build_recommendations(
         for platform, item in delta["platforms"].items()
         if item.get("competitor_replaced")
     ]
-    if replaced:
-        names = "、".join(PLATFORMS.get(p, {}).get("label", p) for p, _ in replaced)
+    confirmed_replaced = [
+        (p, item) for p, item in replaced if item.get("competitor_replaced_confirmed")
+    ]
+    inferred_replaced = [
+        (p, item) for p, item in replaced if not item.get("competitor_replaced_confirmed")
+    ]
+    if confirmed_replaced:
+        names = "、".join(PLATFORMS.get(p, {}).get("label", p) for p, _ in confirmed_replaced)
         recs.append(Recommendation(
             priority="P0",
             dimension="竞品夺走",
@@ -962,6 +971,19 @@ def build_recommendations(
             falsifiability_check=f"重跑 /pulse track --query {_shell_quote(query)} "
                                  "--mine <你的内容URL> --competitor <竞品标识>，"
                                  "对应平台「竞品夺走」风险消失、我的内容变为「是」",
+        ))
+    if inferred_replaced:
+        names = "、".join(PLATFORMS.get(p, {}).get("label", p) for p, _ in inferred_replaced)
+        recs.append(Recommendation(
+            priority="P1",
+            dimension="竞品夺走（推断）",
+            action=f"在 {names} 上，你的内容上次被引用、本次未被引用且检出竞品——"
+                   "因上次未检查竞品，该判定为推断，请先人工确认竞品是否新出现："
+                   "确属夺走则补充差异化内容强化品牌锚定",
+            expected_impact="确认是否为真实竞品夺走，避免误判后浪费优化动作",
+            falsifiability_check=f"重跑 /pulse track --query {_shell_quote(query)} "
+                                 "--mine <你的内容URL> --competitor <竞品标识>，"
+                                 "连续两次检查后「竞品夺走」转为已确认或消失",
         ))
     risk_results = [
         r for r in results
@@ -1211,8 +1233,8 @@ def render_markdown(
     lines.append("- Kimi / 豆包 / 元宝 各自用 Bing 对同一查询词做搜索推断（结果通常相同），是检索库存在信号，不代表各平台各自的真实引用。")
     lines.append("- 传 --mine <你的内容标识>（URL/标题/作者名，可重复传多次，一次一个）时，额外判断 AI 回答/Bing 结果里是否出现你的内容；"
                  "URL 在搜索推断里更有效，标题/作者名在 AI 回答里更常见。")
-    lines.append("- --mine-owned 传转载/自有渠道标识，命中时引用类型记为「转载（owned）」；"
-                 "--mine 默认视为原创内容，命中记为「原创（earned）」。")
+    lines.append("- --mine-owned 传转载/自有渠道标识：仅命中 owned 且未命中任何原创标识时记为「转载（owned）」；"
+                 "命中任一原创标识（--mine）即按更高价值口径记为「原创（earned）」。")
     lines.append("- --competitor 传竞品标识，用于 lostprompt（竞品夺走）分析："
                  "上次被引用、本次被竞品替换且话题仍被提及时会标出风险。")
     lines.append("- 「风险提示」中的未核实断言来自 AI 回答原文的数字/版本提取，只做风险提示不做事实判定，需人工复核。")
@@ -1302,7 +1324,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="转载/自有渠道内容标识（区别于 --mine 原创内容），可重复传；"
-             "命中时引用类型记为「转载（owned）」而非「原创（earned）」",
+             "仅命中 owned 且未命中任何原创标识时，引用类型才记为「转载（owned）」",
     )
     parser.add_argument(
         "--competitor",
