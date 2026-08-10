@@ -18,6 +18,7 @@ from search_ai import (
     _parse_bing,
     _parse_platforms,
     _shell_quote,
+    build_delta,
     build_recommendations,
     build_trend,
     classify_sentiment,
@@ -486,6 +487,142 @@ class TestDB:
         history = load_history("品牌A", db_path=db)
         assert history[0]["confidence"] == "confirmed"
 
+    def test_build_delta(self, tmp_path):
+        db = tmp_path / "monitor.db"
+        r1 = ProbeResult(
+            "品牌A", "deepseek", "ok", False, "neutral", "c", "api",
+            degraded=False, mine_cited=False, mine_ids=["https://a.com/1"],
+        )
+        r2 = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api",
+            degraded=False, mine_cited=True, mine_ids=["https://a.com/1"],
+        )
+        store_results([r1], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        store_results([r2], db_path=db, run_at="2026-08-02T10:00:00+08:00")
+        delta = build_delta("品牌A", db_path=db)
+        item = delta["platforms"]["deepseek"]
+        assert item["cited_change"] == "added"
+        assert item["sentiment_flip"] == "neutral→positive"
+        assert item["mine_change"] == "gained"
+        assert delta["has_history"] is True
+
+    def test_build_delta_single_run_no_history(self, tmp_path):
+        db = tmp_path / "monitor.db"
+        r = ProbeResult(
+            "品牌A", "deepseek", "ok", False, "neutral", "c", "api",
+            degraded=False,
+        )
+        store_results([r], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        delta = build_delta("品牌A", db_path=db)
+        assert delta["has_history"] is False
+        assert delta["platforms"] == {}
+
+    def test_build_delta_marks_no_valid_data_for_latest_failure(self, tmp_path):
+        # 本次探测失败时，不得把历史两次有效快照的对比误报成「本次 vs 上次」
+        db = tmp_path / "monitor.db"
+        ok_run = ProbeResult(
+            "品牌A", "deepseek", "ok", False, "neutral", "c", "api",
+            degraded=False,
+        )
+        failed_run = ProbeResult(
+            "品牌A", "deepseek", "error", None, None, "网络异常", "api",
+            degraded=True, error="boom",
+        )
+        store_results([ok_run], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        store_results([failed_run], db_path=db, run_at="2026-08-02T10:00:00+08:00")
+        delta = build_delta("品牌A", db_path=db)
+        item = delta["platforms"]["deepseek"]
+        assert item["status"] == "error"
+        assert "无有效数据" in item["note"]
+        assert "cited_change" not in item
+        # note 条目不算真实对比，has_history 不得为 True
+        assert delta["has_history"] is False
+
+    def test_build_delta_skips_shell_entries_without_comparison(self, tmp_path):
+        # 两个有效快照均无可对比数据时，不写入空壳条目
+        db = tmp_path / "monitor.db"
+        r1 = ProbeResult(
+            "品牌A", "deepseek", "ok", None, None, "c", "api",
+            degraded=False,
+        )
+        r2 = ProbeResult(
+            "品牌A", "deepseek", "ok", None, None, "c", "api",
+            degraded=False,
+        )
+        store_results([r1], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        store_results([r2], db_path=db, run_at="2026-08-02T10:00:00+08:00")
+        delta = build_delta("品牌A", db_path=db)
+        assert delta["platforms"] == {}
+        assert delta["has_history"] is False
+
+    def test_build_delta_accepts_prebuilt_trend(self, tmp_path):
+        # 复用 main 已构建的 trend，避免 build_delta 内部重复读库
+        db = tmp_path / "monitor.db"
+        r1 = ProbeResult(
+            "品牌A", "deepseek", "ok", False, "neutral", "c", "api",
+            degraded=False,
+        )
+        r2 = ProbeResult(
+            "品牌A", "deepseek", "ok", True, "positive", "c", "api",
+            degraded=False,
+        )
+        store_results([r1], db_path=db, run_at="2026-08-01T10:00:00+08:00")
+        store_results([r2], db_path=db, run_at="2026-08-02T10:00:00+08:00")
+        trend = build_trend("品牌A", db_path=db)
+        assert build_delta("品牌A", db_path=db, trend=trend) == build_delta(
+            "品牌A", db_path=db
+        )
+
+    def test_build_delta_filters_by_requested_platforms(self, tmp_path):
+        # 只对本次探测的平台生成对比，历史其他平台不混入
+        db = tmp_path / "monitor.db"
+
+        def mk(p, cited):
+            return ProbeResult(
+                "品牌A", p, "ok", cited, "positive", "c", "api",
+                degraded=False,
+            )
+
+        store_results(
+            [mk("deepseek", False), mk("kimi", True)],
+            db_path=db, run_at="2026-08-01T10:00:00+08:00",
+        )
+        store_results(
+            [mk("deepseek", True), mk("kimi", False)],
+            db_path=db, run_at="2026-08-02T10:00:00+08:00",
+        )
+        delta = build_delta("品牌A", db_path=db, platforms=["deepseek"])
+        assert set(delta["platforms"]) == {"deepseek"}
+        assert delta["platforms"]["deepseek"]["cited_change"] == "added"
+        assert delta["has_history"] is True
+
+    def test_build_delta_sorts_trend_points_by_run_at(self, tmp_path):
+        # 不依赖外部 trend 的排序，显式按 run_at 升序取最新点
+        trend = {
+            "series": {
+                "deepseek": [
+                    {
+                        "run_at": "2026-08-02T10:00:00+08:00",
+                        "status": "ok", "cited": True,
+                        "sentiment": "positive",
+                        "mine_cited": None, "mine_checked": False, "mine_ids": [],
+                    },
+                    {
+                        "run_at": "2026-08-01T10:00:00+08:00",
+                        "status": "ok", "cited": False,
+                        "sentiment": "neutral",
+                        "mine_cited": None, "mine_checked": False, "mine_ids": [],
+                    },
+                ],
+            },
+            "changes": [],
+            "total_runs": 2,
+        }
+        delta = build_delta("品牌A", db_path=tmp_path / "monitor.db", trend=trend)
+        item = delta["platforms"]["deepseek"]
+        assert item["run_at"] == "2026-08-02T10:00:00+08:00"
+        assert item["cited_change"] == "added"
+
     def test_default_run_at_has_microsecond_precision(self, tmp_path):
         db = tmp_path / "monitor.db"
         run_at = store_results(
@@ -698,6 +835,74 @@ class TestReport:
         confs = {r["platform"]: r["confidence"] for r in data["results"]}
         assert confs == {"deepseek": "confirmed", "kimi": "likely"}
 
+    def test_render_markdown_shows_delta(self):
+        delta = {
+            "platforms": {
+                "deepseek": {"cited_change": "added", "sentiment_flip": "neutral→positive"},
+            }
+        }
+        md = render_markdown("品牌A", [], {"series": {}, "changes": []}, [], delta)
+        assert "与上次对比" in md
+        assert "新增被提及" in md
+        assert "neutral→positive" in md
+
+    def test_render_markdown_table_rows_contiguous(self):
+        # 回归：表格行之间不得插入空行（否则破坏 Markdown 表格渲染）
+        results = [
+            ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False),
+            ProbeResult("品牌A", "kimi", "ok", False, None, "c2", "search_inference", True),
+        ]
+        md = render_markdown("品牌A", results, {"series": {}, "changes": []}, [])
+        lines = md.splitlines()
+        start = lines.index("## 本次快照")
+        end = lines.index("## 趋势对比")
+        for i in range(start, end):
+            if (
+                lines[i] == ""
+                and i > start
+                and lines[i - 1].startswith("|")
+                and i + 1 < end
+                and lines[i + 1].startswith("|")
+            ):
+                raise AssertionError("表格行之间出现空行")
+
+    def test_render_markdown_delta_preceded_by_blank_when_no_results(self):
+        # 回归：results 为空时，与上次对比章节前仍应有空行分隔
+        delta = {"platforms": {"deepseek": {"cited_change": "added"}}}
+        md = render_markdown("品牌A", [], {"series": {}, "changes": []}, [], delta)
+        lines = md.splitlines()
+        idx = lines.index("## 与上次对比")
+        assert idx > 0 and lines[idx - 1] == ""
+
+    def test_render_markdown_delta_shows_no_valid_data_note(self):
+        delta = {
+            "platforms": {
+                "deepseek": {
+                    "run_at": "t",
+                    "status": "error",
+                    "note": "本次探测无有效数据，未参与与上次对比",
+                },
+            }
+        }
+        md = render_markdown("品牌A", [], {"series": {}, "changes": []}, [], delta)
+        assert "本次探测无有效数据，未参与与上次对比" in md
+
+    def test_render_markdown_delta_skips_shell_rows(self):
+        # 外部传入仅含 run_at 的空壳条目时，不渲染全「—」的对比表格
+        delta = {
+            "platforms": {
+                "deepseek": {"run_at": "t", "previous_run_at": "t0"},
+            }
+        }
+        md = render_markdown("品牌A", [], {"series": {}, "changes": []}, [], delta)
+        assert "与上次对比" not in md
+
+    def test_render_markdown_delta_same_shown_as_no_change(self):
+        # cited_change == "same" 时显示「无变化」，与 CLI 一致，避免唯一对比也成全「—」行
+        delta = {"platforms": {"deepseek": {"cited_change": "same"}}}
+        md = render_markdown("品牌A", [], {"series": {}, "changes": []}, [], delta)
+        assert "无变化" in md
+
     def test_render_markdown_filters_changes_by_requested_platforms(self):
         results = [ProbeResult("品牌A", "deepseek", "ok", True, "positive", "c", "api", False)]
         trend = {
@@ -840,6 +1045,35 @@ class TestCLI:
         assert code == 0
         captured = capsys.readouterr().out
         assert "我的内容 —" in captured
+
+    def test_main_prints_delta_mine_only_change(self, tmp_path, monkeypatch, capsys):
+        # 仅「我的内容」变化（cited/flip 均无变化）时，控制台仍应打印对比条目
+        calls = {"n": 0}
+
+        def fake_probe(query, mine_ids=None):
+            calls["n"] += 1
+            return ProbeResult(
+                query, "deepseek", "ok", None, None, "ctx", "api",
+                degraded=False,
+                mine_cited=calls["n"] > 1,
+                mine_ids=mine_ids or [],
+            )
+
+        monkeypatch.setitem(search_ai.PLATFORMS["deepseek"], "probe", fake_probe)
+        db = tmp_path / "monitor.db"
+        out = tmp_path / "snap"
+        assert main([
+            "--query", "codex", "--platforms", "deepseek",
+            "--mine", "https://a.com/1", "--db", str(db), "--output", str(out),
+        ]) == 0
+        assert main([
+            "--query", "codex", "--platforms", "deepseek",
+            "--mine", "https://a.com/1", "--db", str(db), "--output", str(out),
+        ]) == 0
+        captured = capsys.readouterr().out
+        # 仅 mine 变化时不得出现「： · 」的多余分隔符
+        assert "与上次对比 · DeepSeek：我的内容新增被引用" in captured
+        assert "： · " not in captured
 
     def test_invalid_platform_rejected(self, tmp_path):
         with pytest.raises(SystemExit) as exc:

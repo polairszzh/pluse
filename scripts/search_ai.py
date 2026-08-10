@@ -652,6 +652,68 @@ def build_trend(query: str, db_path: Path = DEFAULT_DB) -> dict:
     }
 
 
+def build_delta(
+    query: str,
+    db_path: Path = DEFAULT_DB,
+    trend: dict | None = None,
+    platforms: list[str] | None = None,
+) -> dict:
+    """本次与上次有效快照的对比基线：引用新增/丢失、情感反转、我的内容变化"""
+    trend = trend or build_trend(query, db_path=db_path)
+    series = trend["series"]
+    if platforms is not None:
+        requested = set(platforms)
+        series = {p: pts for p, pts in series.items() if p in requested}
+    delta_platforms: dict[str, dict] = {}
+    for platform, points in series.items():
+        if not points:
+            continue
+        # 不依赖外部 trend 的构造顺序，显式按 run_at 升序取最新点
+        points = sorted(points, key=lambda p: p["run_at"])
+        latest = points[-1]
+        if latest["status"] != "ok":
+            # 本次探测无有效数据：不把历史两次快照的对比误报成「本次 vs 上次」
+            delta_platforms[platform] = {
+                "run_at": latest["run_at"],
+                "status": latest["status"],
+                "note": "本次探测无有效数据，未参与与上次对比",
+            }
+            continue
+        valid = [p for p in points if p["status"] == "ok"]
+        if len(valid) < 2:
+            continue
+        last, prev = valid[-1], valid[-2]
+        item: dict = {"run_at": last["run_at"], "previous_run_at": prev["run_at"]}
+        if last["cited"] is not None and prev["cited"] is not None:
+            item["cited"] = last["cited"]
+            item["cited_prev"] = prev["cited"]
+            if last["cited"] and not prev["cited"]:
+                item["cited_change"] = "added"
+            elif not last["cited"] and prev["cited"]:
+                item["cited_change"] = "lost"
+            else:
+                item["cited_change"] = "same"
+        if last["sentiment"] and prev["sentiment"] and last["sentiment"] != prev["sentiment"]:
+            item["sentiment_flip"] = f"{prev['sentiment']}→{last['sentiment']}"
+        if last["mine_checked"] and prev["mine_checked"] and last["mine_cited"] is not None and prev["mine_cited"] is not None:
+            if last["mine_cited"] and not prev["mine_cited"]:
+                item["mine_change"] = "gained"
+            elif not last["mine_cited"] and prev["mine_cited"]:
+                item["mine_change"] = "lost"
+        # 两个有效快照均无可对比数据（cited/sentiment/mine 全缺）时不写入空壳条目，
+        # 避免 has_history=False 时渲染出全「—」的对比行
+        if any(k in item for k in ("cited_change", "sentiment_flip", "mine_change")):
+            delta_platforms[platform] = item
+    # has_history 仅表示存在真实对比（引用/情感/我的内容任一变化或一致判定），
+    # 不含「本次无有效数据」的 note 条目，避免 JSON 消费方误读
+    compared = [
+        item
+        for item in delta_platforms.values()
+        if any(k in item for k in ("cited_change", "sentiment_flip", "mine_change"))
+    ]
+    return {"query": query, "platforms": delta_platforms, "has_history": bool(compared)}
+
+
 # --------------------------------------------------------------------------
 # 行动建议（每条带 falsifiability check）
 # --------------------------------------------------------------------------
@@ -770,6 +832,7 @@ def render_markdown(
     results: list[ProbeResult],
     trend: dict,
     recommendations: list[Recommendation],
+    delta: dict | None = None,
 ) -> str:
     lines = ["# AI 平台引用跟踪报告", ""]
     lines.append(f"- **监测对象**：{query}")
@@ -804,7 +867,34 @@ def render_markdown(
             row += f"| {mine_txt} "
         row += f"| {sentiment} | {context} |"
         lines.append(row)
+
     lines.append("")
+    delta = delta or {"platforms": {}}
+    if delta.get("platforms"):
+        # 仅渲染有 note 或任一对比键的行，避免外部传入空壳条目时出现全「—」行
+        rows = [
+            (platform, item)
+            for platform, item in delta["platforms"].items()
+            if item.get("note")
+            or any(k in item for k in ("cited_change", "sentiment_flip", "mine_change"))
+        ]
+        if rows:
+            lines.append("## 与上次对比")
+            lines.append("")
+            lines.append("| 平台 | 引用变化 | 情感变化 | 我的内容 |")
+            lines.append("|---|---|---|---|")
+            cited_label = {"added": "新增被提及", "lost": "丢失被提及", "same": "无变化"}
+            mine_label = {"gained": "新增被引用", "lost": "丢失被引用"}
+            for platform, item in rows:
+                label = PLATFORMS.get(platform, {}).get("label", platform)
+                if item.get("note"):
+                    lines.append(f"| {label} | {item['note']} | — | — |")
+                    continue
+                cited = cited_label.get(item.get("cited_change"), "—")
+                flip = item.get("sentiment_flip", "—")
+                mine = mine_label.get(item.get("mine_change"), "—")
+                lines.append(f"| {label} | {cited} | {flip} | {mine} |")
+            lines.append("")
 
     lines.append("## 趋势对比")
     lines.append("")
@@ -893,12 +983,14 @@ def render_json(
     results: list[ProbeResult],
     trend: dict,
     recommendations: list[Recommendation],
+    delta: dict | None = None,
 ) -> dict:
     return {
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "query": query,
         "results": [r.__dict__ for r in results],
         "trend": trend,
+        "delta": delta or {"platforms": {}, "has_history": False},
         "recommendations": [r.__dict__ for r in recommendations],
         "source_note": (
             "DeepSeek 为真实 API 探测；Kimi/豆包/元宝 为搜索引擎存在信号推断，不等同于真实引用"
@@ -912,6 +1004,7 @@ def save_report(
     trend: dict,
     recommendations: list[Recommendation],
     out_dir: Path | None = None,
+    delta: dict | None = None,
 ) -> list[Path]:
     out_dir = out_dir or SNAPSHOT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -919,9 +1012,9 @@ def save_report(
     slug = re_slug(query)
     md_path = out_dir / f"track-{slug}-{ts}.md"
     json_path = out_dir / f"track-{slug}-{ts}.json"
-    md_path.write_text(render_markdown(query, results, trend, recommendations), encoding="utf-8")
+    md_path.write_text(render_markdown(query, results, trend, recommendations, delta), encoding="utf-8")
     json_path.write_text(
-        json.dumps(render_json(query, results, trend, recommendations), ensure_ascii=False, indent=2),
+        json.dumps(render_json(query, results, trend, recommendations, delta), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     return [md_path, json_path]
@@ -979,8 +1072,9 @@ def main(argv: list[str] | None = None) -> int:
         results = [PLATFORMS[p]["probe"](args.query, mine_ids=mine_ids) for p in platforms]
         store_results(results, db_path=db_path)
         trend = build_trend(args.query, db_path=db_path)
+        delta = build_delta(args.query, db_path=db_path, trend=trend, platforms=platforms)
         recs = build_recommendations(args.query, results)
-        paths = save_report(args.query, results, trend, recs, out_dir)
+        paths = save_report(args.query, results, trend, recs, out_dir, delta)
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -1007,6 +1101,22 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"  {label}：{STATUS_LABEL.get(r.status, r.status)} · {_md_cell(r.context)}{mine}")
     print(f"趋势对比：{trend['total_runs']} 次快照 · {len(trend['changes'])} 处引用状态变化")
+    if delta["platforms"]:
+        cited_label = {"added": "新增被提及", "lost": "丢失被提及", "same": "无变化"}
+        for platform, item in delta["platforms"].items():
+            label = PLATFORMS.get(platform, {}).get("label", platform)
+            if item.get("note"):
+                print(f"  {label}：{item['note']}")
+                continue
+            cited = cited_label.get(item.get("cited_change"))
+            flip = item.get("sentiment_flip")
+            mine = {"gained": "我的内容新增被引用", "lost": "我的内容丢失被引用"}.get(item.get("mine_change"), "")
+            parts = [p for p in (cited, flip) if p]
+            if parts or mine:
+                body = "、".join(parts)
+                if mine:
+                    body = f"{body} · {mine}" if body else mine
+                print(f"  与上次对比 · {label}：{body}")
     print(f"行动建议：{len(recs)} 条（P0={sum(1 for r in recs if r.priority == 'P0')}）")
     for p in paths:
         print(f"已保存：{p}")
