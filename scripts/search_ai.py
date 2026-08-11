@@ -802,6 +802,14 @@ def check_index(
         except requests.exceptions.RequestException as exc:
             sources[name] = {"status": "error", "error": str(exc), "found": None}
             continue
+        # 反爬/验证拦截优先于解析：拦截页即使解析出少量结果也不得误判收录
+        if any(m in html_text.lower() for m in _BLOCK_MARKERS):
+            sources[name] = {
+                "status": "error",
+                "error": "blocked（反爬/验证拦截）",
+                "found": None,
+            }
+            continue
         items = _parse_bing(html_text) if name == "bing" else _parse_baidu(html_text)
         if not items:
             if _classify_empty_page(html_text) == "not_indexed":
@@ -1901,7 +1909,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--samples",
         type=_positive_int,
         default=argparse.SUPPRESS,
-        help="每平台采样次数（默认 5）：多次探测计算被提及概率与置信区间；1 为单次判定",
+        help="每平台采样次数（未指定时取 5）：多次探测计算被提及概率与置信区间；1 为单次判定",
     )
     parser.add_argument(
         "--platforms",

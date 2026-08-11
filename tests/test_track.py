@@ -1025,6 +1025,21 @@ class TestB5IndexCheck:
         assert result["sources"]["bing"]["status"] == "error"
         assert result["sources"]["baidu"]["status"] == "error"
 
+    def test_check_index_block_marker_wins_over_parsed_results(self, monkeypatch):
+        # 反爬页即使解析出结果块也判探测失败，不得误判收录
+        html = (
+            '<html><title>百度安全验证</title>'
+            '<ol id="b_results"><li class="b_algo"><h2><a href="https://zhuanlan.zhihu.com/p/123">标题</a></h2><p>摘要</p></li></ol>'
+            "</html>"
+        )
+
+        def fake_get(base, params=None, headers=None, timeout=None):
+            return FakeResponse(text=html)
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        result = search_ai.check_index("https://zhuanlan.zhihu.com/p/123")
+        assert result["sources"]["bing"]["status"] == "error"
+
     def test_check_index_no_result_marker_small_page(self, monkeypatch):
         # 小体积但含无结果标记 → 未收录
         html = "<html><body>抱歉，没有找到与 site: 相关的网页</body></html>"
