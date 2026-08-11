@@ -13,6 +13,7 @@ class TestParseUpdated:
     def test_missing_or_bad(self):
         assert rf.parse_updated("没有标记") is None
         assert rf.parse_updated("Updated: not-a-date") is None
+        assert rf.parse_updated("Updated: 2026-13-45") is None
 
 
 class TestCheckFile:
@@ -38,6 +39,14 @@ class TestCheckFile:
         f.write_text("> Updated: 2027-01-01\n", encoding="utf-8")
         warnings = rf.check_file(f, today=date(2026, 8, 11))
         assert any("未来日期" in w for w in warnings)
+
+    def test_invalid_date_distinct_from_missing(self, tmp_path):
+        # 有标记但日期无效：报「日期无效」而非「缺少标记」
+        f = tmp_path / "a.md"
+        f.write_text("> Updated: 2026-13-45\n", encoding="utf-8")
+        warnings = rf.check_file(f, today=date(2026, 8, 11))
+        assert any("日期无效" in w for w in warnings)
+        assert not any("缺少" in w for w in warnings)
 
 
 class TestScan:

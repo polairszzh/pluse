@@ -25,15 +25,22 @@ MAX_AGE_DAYS = 90
 _UPDATED_RE = re.compile(r"Updated:\s*(\d{4}-\d{2}-\d{2})", re.IGNORECASE)
 
 
-def parse_updated(text: str) -> date | None:
-    """解析文件中的 Updated: YYYY-MM-DD 标记，缺失/格式错误返回 None"""
+def _parse_updated_detail(text: str) -> tuple[date | None, str | None]:
+    """解析 Updated 标记：返回 (日期, 错误)。区分「无标记」与「日期无效」"""
     m = _UPDATED_RE.search(text)
     if not m:
-        return None
+        return None, "缺少 Updated: YYYY-MM-DD 标记"
+    raw = m.group(1)
     try:
-        return date.fromisoformat(m.group(1))
+        return date.fromisoformat(raw), None
     except ValueError:
-        return None
+        return None, f"Updated 日期无效：{raw}（应为 YYYY-MM-DD）"
+
+
+def parse_updated(text: str) -> date | None:
+    """解析文件中的 Updated: YYYY-MM-DD 标记，缺失/格式错误返回 None"""
+    parsed, _ = _parse_updated_detail(text)
+    return parsed
 
 
 def check_file(path: Path, today: date | None = None) -> list[str]:
@@ -43,9 +50,9 @@ def check_file(path: Path, today: date | None = None) -> list[str]:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
         return [f"无法读取：{exc}"]
-    updated = parse_updated(text)
-    if updated is None:
-        return ["缺少 Updated: YYYY-MM-DD 标记"]
+    updated, err = _parse_updated_detail(text)
+    if err:
+        return [err]
     age = (today - updated).days
     if age < 0:
         return [f"Updated 是未来日期（{updated}）"]
