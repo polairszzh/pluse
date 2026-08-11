@@ -32,7 +32,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import requests
-from audit import Recommendation
+from audit import Recommendation, rec_as_contract
 from verifier import dedupe_recommendations, detect_conflicts, sort_recommendations
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -1825,7 +1825,7 @@ def render_json(
         "results": [r.__dict__ for r in results],
         "trend": trend,
         "delta": delta or {"platforms": {}, "has_history": False},
-        "recommendations": [r.__dict__ for r in recommendations],
+        "recommendations": [rec_as_contract(r) for r in recommendations],
         "source_note": (
             "DeepSeek 为真实 API 探测；Kimi/豆包/元宝 为搜索引擎存在信号推断，不等同于真实引用"
         ),

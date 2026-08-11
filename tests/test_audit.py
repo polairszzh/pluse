@@ -179,6 +179,12 @@ class TestReport:
         assert payload["scores"]["overall"] == scores.overall
         assert payload["scores"]["grade"] == scores.grade
         assert isinstance(payload["recommendations"], list)
+        # D2 output contract：推荐项统一六元结构
+        if payload["recommendations"]:
+            keys = set(payload["recommendations"][0])
+            assert keys == {
+                "finding", "evidence", "impact", "fix", "confidence", "falsifiability",
+            }
 
     def test_blocked_article_shows_cap_reason(self, item):
         from scorer import audit_article

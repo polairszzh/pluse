@@ -191,6 +191,7 @@
 - **设计**：所有命令的输出结构统一为 `Finding / Evidence / Impact / Fix / Confidence / Falsifiability`，测试可断言结构。
 - **做法**：`docs/design.md` 输出规格统一；snapshot JSON schema 对齐。
 - **优先级**：P1。
+  **实现**（2026-08-11，PR #19）：Recommendation 增加 evidence/confidence 字段（默认值不破坏现有构造）；`rec_as_contract` 输出统一六元（finding/evidence/impact/fix/confidence/falsifiability）；audit/track/brand 的 JSON 快照 recommendations 全部走统一结构；docs/design.md 补 4.0 节说明；测试断言六元键。
 
 ### D3. 知识库 freshness（Agentic-SEO-Skill reference_freshness）
 - **设计**：`references/` 每个文件带 `Updated: YYYY-MM-DD` 标记，CI 检查超过 90 天未更新的文件并告警。平台规则会过期，这是防止「知识腐烂」的机制。
