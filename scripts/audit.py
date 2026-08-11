@@ -409,7 +409,7 @@ def render_markdown(
     channel_note = {
         "browser": "- 浏览器采集：只读 + 低频，不做 stealth 伪装；失败自动降级 API 摘要。",
         "api_summary_fallback": (
-            "- 本次 --full 浏览器抓取失败，已降级 API 摘要；可检查 Playwright/Edge 与网络后重试。"
+            "- 本次 --full 全文抓取未成功，已降级 API 摘要（原因见 CLI 输出）。"
         ),
         "api_summary": (
             "- 反爬说明：知乎 zh-zse-ck 拦截全文抓取，"
@@ -595,10 +595,17 @@ def main(argv: list[str] | None = None) -> int:
                     content_source = "browser"
                 else:
                     content_source = "api_summary_fallback"
-                    print(
-                        f"  [提示] 浏览器全文抓取失败（{fetched.get('error', '')}），已降级 API 摘要",
-                        file=sys.stderr,
-                    )
+                    err = fetched.get("error", "")
+                    if "仅支持知乎" in err:
+                        print(
+                            f"  [提示] {err}（--full 已跳过，使用 API 摘要）",
+                            file=sys.stderr,
+                        )
+                    else:
+                        print(
+                            f"  [提示] 浏览器全文抓取失败（{err}），已降级 API 摘要",
+                            file=sys.stderr,
+                        )
             scores, benchmark, recs = audit_one(item, args.query, keywords)
             paths = save_report(item, scores, benchmark, recs, args.query, out_dir, content_source)
             _print_single_summary(item, scores, recs, paths, content_source)
