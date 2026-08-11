@@ -180,6 +180,15 @@ class TestReport:
         assert payload["scores"]["grade"] == scores.grade
         assert isinstance(payload["recommendations"], list)
 
+    def test_blocked_article_shows_cap_reason(self, item):
+        from scorer import audit_article
+
+        blocked = audit_article(title="", content_text="正文内容足够长。" * 30)
+        md = render_markdown(item, blocked, {}, [], "AI搜索优化")
+        assert "已封顶" in md
+        assert "阻断原因" in md
+        assert "缺少标题" in md
+
     def test_save_report_writes_md_and_json(self, item, tmp_path):
         scores, benchmark, recs = audit_one(item)
         paths = save_report(item, scores, benchmark, recs, out_dir=tmp_path)

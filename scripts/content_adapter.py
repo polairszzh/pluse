@@ -28,7 +28,7 @@ from pathlib import Path
 import requests
 import search_ai
 from fact_checker import risk_severity, verify_facts
-from scorer import audit_article, grade
+from scorer import BLOCKED_CEILING, audit_article, grade
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = PROJECT_ROOT / "data" / "output"
@@ -333,10 +333,15 @@ def score_draft(title: str, text: str, keywords: list[str] | None = None) -> dic
     overall = _round_half_up(
         sum(dims[name] * DRAFT_WEIGHTS[name] for name in dims)
     )
+    blockers = list(base.blockers)
+    if blockers:
+        # 一票封顶：草稿存在阻断项时总分封在低档
+        overall = min(overall, BLOCKED_CEILING)
     return {
         "title": title,
         "overall": overall,
         "grade": grade(overall),
+        "blockers": blockers,
         "dimensions": dims,
         "engagement": {"status": "未发布", "note": "互动数据需发布后重跑 audit 获取"},
         "recommendations": _draft_recommendations(
@@ -1093,6 +1098,13 @@ def build_review_checklist(
         "## 1. 素材缺口（发布前必须处理）",
         "",
     ]
+    if draft_score.get("blockers"):
+        idx = lines.index("## 1. 素材缺口（发布前必须处理）")
+        lines[idx:idx] = (
+            ["**阻断原因（一票封顶）**："]
+            + [f"- {b}" for b in draft_score["blockers"]]
+            + [""]
+        )
     if gaps:
         lines.extend(
             f"- [ ] [{g['severity'].upper()}] {g['detail']} → {g['suggestion']}"
@@ -1288,6 +1300,8 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"草稿：{doc.title}（{len(doc.raw)} 字）")
     print(f"草稿得分：{draft_score['overall']}/100 · {draft_score['grade']}（互动维度未发布）")
+    for b in draft_score.get("blockers", []):
+        print(f"  [阻断] {b}（总分已封顶）")
     for name in ("AI 可引用性", "内容质量 (E-E-A-T)", "关键词覆盖", "结构与格式"):
         print(f"  {name}: {draft_score['dimensions'][name]}/100")
     for name in versions:
