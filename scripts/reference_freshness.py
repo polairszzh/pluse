@@ -22,12 +22,12 @@ DEFAULT_TARGETS = (
 )
 MAX_AGE_DAYS = 90
 
-_UPDATED_RE = re.compile(r"Updated:\s*(\d{4}-\d{2}-\d{2})", re.IGNORECASE)
+_MARKER_RE = re.compile(r"Updated\s*[:：]\s*([^\s]+)", re.IGNORECASE)
 
 
 def _parse_updated_detail(text: str) -> tuple[date | None, str | None]:
     """解析 Updated 标记：返回 (日期, 错误)。区分「无标记」与「日期无效」"""
-    m = _UPDATED_RE.search(text)
+    m = _MARKER_RE.search(text)
     if not m:
         return None, "缺少 Updated: YYYY-MM-DD 标记"
     raw = m.group(1)

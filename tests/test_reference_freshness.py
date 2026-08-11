@@ -48,6 +48,14 @@ class TestCheckFile:
         assert any("日期无效" in w for w in warnings)
         assert not any("缺少" in w for w in warnings)
 
+    def test_wrong_date_format_distinct_from_missing(self, tmp_path):
+        # Updated: 2026/08/11（格式不符）也报「日期无效」而非「缺少标记」
+        f = tmp_path / "a.md"
+        f.write_text("> Updated: 2026/08/11\n", encoding="utf-8")
+        warnings = rf.check_file(f, today=date(2026, 8, 11))
+        assert any("日期无效" in w for w in warnings)
+        assert not any("缺少" in w for w in warnings)
+
 
 class TestScan:
     def test_scan_directory(self, tmp_path):

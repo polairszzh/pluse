@@ -133,7 +133,7 @@ def _load_content_format() -> str:
 def _content_format_updated() -> str | None:
     """从知识库头部提取 Updated: YYYY-MM-DD（兼容旧「最后更新」标记）"""
     m = re.search(
-        r"(?:最后更新|Updated)\s*[:：]\s*([\d-]+)",
+        r"(?:最后更新|Updated)\s*[:：]\s*(\d{4}-\d{2}-\d{2})",
         _load_content_format(),
         re.IGNORECASE,
     )
