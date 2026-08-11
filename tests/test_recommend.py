@@ -87,6 +87,10 @@ class TestMain:
         out = capsys.readouterr().out
         assert "== DeepSeek ==" in out
         assert "== 元宝 ==" in out
+        # 元宝前三保留待校准标记，避免快速查看时误以为实测数据
+        yuanbao_block = out.split("== 元宝 ==")[1].split("==")[0]
+        assert "（待校准）" in yuanbao_block
+        assert "完整排序、内容策略与数据说明" in out
 
     def test_missing_required(self):
         import pytest

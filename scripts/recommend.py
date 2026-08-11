@@ -138,10 +138,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.engine == "all":
         for engine in ENGINE_ORDER:
             print(f"== {ENGINE_LABELS[engine]} ==")
-            for line in recommend_engine(engine)[1:4]:
-                print(line)
+            # 结构化取前三：不依赖 recommend_engine 行序；元宝保留待校准标记
+            for i, (platform, weight) in enumerate(_ranked(engine)[:3], 1):
+                note = "（待校准）" if engine == "yuanbao" else ""
+                print(f"  {i}. {platform}（{weight:.1%}）{note}")
             print()
-        print("完整排序与策略：python scripts/recommend.py --engine <引擎名>")
+        print("完整排序、内容策略与数据说明：python scripts/recommend.py --engine <引擎名>")
         return 0
     print("\n".join(recommend_engine(args.engine)))
     return 0
