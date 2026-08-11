@@ -265,7 +265,8 @@ visibility-engine/
 
 ### 4.0 统一 output contract（D2，2026-08-11）
 
-所有命令（audit / track / brand / adapt）的 JSON 快照统一结构：
+audit / track / brand 的 JSON 快照推荐项统一结构（adapt 的 `draft_score.recommendations`
+为草稿建议 dict，不含推荐数组，不在本 contract 范围）：
 
 - **顶层**：`generated_at`（ISO 时间）、`query`（目标话题）、`recommendations`（统一六元数组）、各命令专属字段（article/scores、results/trend、benchmark 等）。
 - **推荐项六元**（`rec_as_contract`，audit.py 定义，全命令共用）：

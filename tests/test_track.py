@@ -2082,6 +2082,9 @@ class TestReport:
         assert item["fix"] == "补充自包含段落"
         assert item["impact"] == "提升命中"
         assert item["falsifiability"] == "重跑后变为是"
+        # 六元结构不含旧键（dimension/action 等），避免下游混淆
+        assert "dimension" not in item
+        assert "action" not in item
 
     def test_render_markdown_shows_delta(self):
         delta = {
