@@ -40,9 +40,17 @@ def _is_article_url(url: str) -> bool:
     return bool(re.search(r"/(?:p|answer)/\d+", path))
 
 
-def _extract_content(page) -> str | None:
-    """按选择器优先级提取正文：精确选择器优先，空/过短结果跳过，全部失败返回 None"""
-    for selector in _CONTENT_SELECTORS:
+def _extract_content(page, url: str | None = None) -> str | None:
+    """按选择器优先级提取正文：精确选择器优先，空/过短结果跳过，全部失败返回 None
+
+    /answer/ 多回答页优先用目标回答锚点（#answer-<id> 容器），避免抓到其他回答。
+    """
+    selectors = list(_CONTENT_SELECTORS)
+    if url:
+        m = re.search(r"/answer/(\d+)", url)
+        if m:
+            selectors.insert(0, f"#answer-{m.group(1)} .RichText")
+    for selector in selectors:
         try:
             text = page.eval_on_selector(selector, "el => el.innerText")
         except Exception:  # noqa: BLE001, S112 — 选择器不存在/异常，尝试下一个
@@ -107,19 +115,18 @@ def fetch_full_content(url: str, timeout: int = 30) -> dict:
                     ctx = browser.new_context(user_agent=ua)
                     page = ctx.new_page()
                 page.add_init_script(
-                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+                    "Object.defineProperty(navigator, 'webdriver', {get: () => false})"
                 )
                 page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
+                # 先滚动触发懒加载（长文/回答页正文可能初始不在 DOM），再等正文容器
+                for _ in range(5):
+                    page.mouse.wheel(0, 4000)
+                    page.wait_for_timeout(500)
+                page.mouse.wheel(0, -20000)
                 page.wait_for_selector(
                     ", ".join(_CONTENT_SELECTORS), timeout=timeout * 1000
                 )
-                # 懒加载：分次滚动到底部再回到顶部，触发正文渲染
-                for _ in range(5):
-                    page.mouse.wheel(0, 4000)
-                    page.wait_for_timeout(600)
-                page.mouse.wheel(0, -20000)
-                page.wait_for_timeout(500)
-                content = _extract_content(page)
+                content = _extract_content(page, url)
                 title = page.title()
                 if content is None:
                     return {"error": "正文提取为空（页面结构变化或内容需登录/付费）"}

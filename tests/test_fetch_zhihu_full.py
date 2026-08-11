@@ -39,6 +39,21 @@ class TestFetchFullContent:
 
 
 class TestExtractContent:
+    def test_answer_url_prefers_target_anchor(self):
+        calls = []
+
+        class FakePage:
+            def eval_on_selector(self, selector, _expr):
+                calls.append(selector)
+                if selector.startswith("#answer-123"):
+                    return "目标回答正文。" * 20
+                return ""
+
+        assert fzf._extract_content(
+            FakePage(), url="https://www.zhihu.com/answer/123"
+        ) == "目标回答正文。" * 20
+        assert calls[0] == "#answer-123 .RichText"
+
     def test_prefers_specific_selector_with_content(self):
         class FakePage:
             def eval_on_selector(self, selector, _expr):
