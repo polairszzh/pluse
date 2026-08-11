@@ -263,6 +263,23 @@ visibility-engine/
 
 ## 4. 输入/输出规格
 
+### 4.0 统一 output contract（D2，2026-08-11）
+
+所有命令（audit / track / brand / adapt）的 JSON 快照统一结构：
+
+- **顶层**：`generated_at`（ISO 时间）、`query`（目标话题）、`recommendations`（统一六元数组）、各命令专属字段（article/scores、results/trend、benchmark 等）。
+- **推荐项六元**（`rec_as_contract`，audit.py 定义，全命令共用）：
+  | 键 | 含义 | 来源 |
+  |----|------|------|
+  | `finding` | 发现/问题维度 | Recommendation.dimension |
+  | `evidence` | 支撑证据 | Recommendation.evidence |
+  | `impact` | 预期影响 | Recommendation.expected_impact |
+  | `fix` | 具体动作 | Recommendation.action |
+  | `confidence` | 置信度（confirmed/likely/hypothesis） | Recommendation.confidence |
+  | `falsifiability` | 怎么知道没效果 | Recommendation.falsifiability_check |
+
+- 测试断言六元键存在（audit/track 的 render_json 输出）。
+
 ### 4.1 `/visibility audit`
 
 **输入**：

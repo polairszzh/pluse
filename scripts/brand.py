@@ -21,7 +21,7 @@ from pathlib import Path
 
 import requests
 import zhihu_api
-from audit import Recommendation
+from audit import Recommendation, rec_as_contract
 from scorer import grade
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -652,7 +652,7 @@ def render_json(result: BrandResult, competitors: list[str], topics: list[str]) 
                        for name, d in result.dimensions.items()},
         "brand_search": result.brand_search,
         "topic_coverage": result.topic_coverage,
-        "recommendations": [r.__dict__ for r in result.recommendations],
+        "recommendations": [rec_as_contract(r) for r in result.recommendations],
         "notes": result.notes,
         "source_note": "知乎开放平台 API 搜索 Top 10 可见切片；本人/竞品按作者识别。",
     }

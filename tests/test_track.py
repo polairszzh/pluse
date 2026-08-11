@@ -2067,6 +2067,22 @@ class TestReport:
         confs = {r["platform"]: r["confidence"] for r in data["results"]}
         assert confs == {"deepseek": "confirmed", "kimi": "likely"}
 
+    def test_render_json_recommendations_contract(self):
+        from audit import Recommendation
+
+        recs = [Recommendation(
+            "P0", "AI 引用", "补充自包含段落", "提升命中", "重跑后变为是",
+            evidence="评分 50/100", confidence="likely",
+        )]
+        data = render_json("品牌A", [], {"series": {}, "changes": []}, recs)
+        item = data["recommendations"][0]
+        assert item["finding"] == "AI 引用"
+        assert item["evidence"] == "评分 50/100"
+        assert item["confidence"] == "likely"
+        assert item["fix"] == "补充自包含段落"
+        assert item["impact"] == "提升命中"
+        assert item["falsifiability"] == "重跑后变为是"
+
     def test_render_markdown_shows_delta(self):
         delta = {
             "platforms": {

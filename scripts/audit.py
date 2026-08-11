@@ -43,6 +43,20 @@ class Recommendation:
     action: str              # 具体动作
     expected_impact: str     # 预期效果
     falsifiability_check: str  # 怎么知道这条建议没效果
+    evidence: str = ""          # 支撑证据（D2 output contract）
+    confidence: str = "hypothesis"  # confirmed | likely | hypothesis（D2 output contract）
+
+
+def rec_as_contract(rec: Recommendation) -> dict:
+    """推荐项统一输出结构（D2）：Finding/Evidence/Impact/Fix/Confidence/Falsifiability"""
+    return {
+        "finding": rec.dimension,
+        "evidence": rec.evidence,
+        "impact": rec.expected_impact,
+        "fix": rec.action,
+        "confidence": rec.confidence,
+        "falsifiability": rec.falsifiability_check,
+    }
 
 
 # 子维度阈值表：子分低于阈值且所属维度低于警戒线时才出建议，避免噪音。
@@ -474,7 +488,7 @@ def render_json(
             "engagement": scores.engagement,
             "dimensions": dims,
         },
-        "recommendations": [r.__dict__ for r in recs],
+        "recommendations": [rec_as_contract(r) for r in recs],
         "content_source": content_source,
         "fetch_note": fetch_note,
         "source_note": {
