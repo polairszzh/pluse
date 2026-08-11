@@ -11,82 +11,26 @@
 from __future__ import annotations
 
 import argparse
+import json
+from pathlib import Path
 from urllib.parse import urlsplit
 
-ENGINE_LABELS = {
-    "deepseek": "DeepSeek",
-    "doubao": "豆包",
-    "tongyi": "通义千问",
-    "wenxin": "文心一言",
-    "yuanbao": "元宝",
-}
+_DATA_FILE = Path(__file__).resolve().parent.parent / "data" / "recommend_sources.json"
 
-# 引擎 → 平台引用源权重（实测；元宝为生态位估计）
-ENGINE_SOURCES: dict[str, dict[str, float]] = {
-    "deepseek": {
-        "CSDN": 0.246,
-        "知乎": 0.198,
-        "博客园": 0.153,
-        "公众号": 0.112,
-        "搜狐号": 0.097,
-        "百家号": 0.074,
-        "今日头条": 0.045,
-        "网易号": 0.032,
-        "小红书": 0.018,
-    },
-    "doubao": {
-        "今日头条": 0.352,
-        "知乎": 0.218,
-        "抖音生态": 0.135,
-        "百家号": 0.094,
-        "搜狐号": 0.061,
-        "小红书": 0.053,
-        "CSDN": 0.032,
-        "博客园": 0.021,
-        "网易号": 0.018,
-    },
-    "tongyi": {
-        "搜狐号": 0.287,
-        "网易号": 0.194,
-        "知乎": 0.142,
-        "公众号": 0.118,
-        "百家号": 0.085,
-        "今日头条": 0.067,
-        "CSDN": 0.043,
-        "博客园": 0.026,
-        "抖音生态": 0.021,
-    },
-    "wenxin": {
-        "百家号": 0.413,
-        "百度知道": 0.185,
-        "知乎": 0.127,
-        "百度百科": 0.089,
-        "搜狐号": 0.064,
-        "公众号": 0.042,
-        "今日头条": 0.031,
-        "CSDN": 0.018,
-        "博客园": 0.011,
-    },
-    "yuanbao": {
-        "公众号": 0.300,
-        "腾讯新闻": 0.250,
-        "知乎": 0.150,
-        "搜狗号": 0.100,
-        "搜狐号": 0.070,
-        "百家号": 0.050,
-        "CSDN": 0.040,
-        "今日头条": 0.030,
-        "小红书": 0.010,
-    },
-}
 
-ENGINE_STRATEGY = {
-    "deepseek": "技术深度 + 可验证数据 + 来源标注；偏好老内容（14-28 天沉淀）",
-    "doubao": "场景化实用内容（直接解决具体问题）；时效敏感（4-7 天见效）",
-    "tongyi": "媒体化、口语化；第三方账号与媒体号更受青睐",
-    "wenxin": "百度系生态优先（百家号/百度知道/百度百科），查百度收录最相关",
-    "yuanbao": "微信生态优先（公众号），时效性最强（71% 一年内新内容）",
-}
+def _load_engine_data() -> tuple[dict, dict, dict]:
+    """加载外置权重数据（data/recommend_sources.json），便于真实 track 数据校准更新"""
+    with open(_DATA_FILE, encoding="utf-8") as f:
+        raw = json.load(f)
+    engines = raw["engines"]
+    return (
+        {k: v["label"] for k, v in engines.items()},
+        {k: v["strategy"] for k, v in engines.items()},
+        {k: v["sources"] for k, v in engines.items()},
+    )
+
+
+ENGINE_LABELS, ENGINE_STRATEGY, ENGINE_SOURCES = _load_engine_data()
 
 # 平台 → 域名后缀（用于 --url 识别文章所在平台）
 PLATFORM_HOSTS: dict[str, tuple[str, ...]] = {
@@ -119,12 +63,15 @@ def _platform_of(url: str) -> str | None:
         for h in hosts:
             if not (host == h or host.endswith("." + h)):
                 continue
-            # 搜狐号/网易号用一级域名时需路径确认：新闻频道（news.sohu.com 等）不误判
+            # 搜狐号/网易号限定 www/mp 子域 + 路径：news.sohu.com/a/ 等频道不误判
             if platform == "搜狐号" and not (
-                host == "mp.sohu.com" or path.startswith("/a/")
+                host == "mp.sohu.com"
+                or (host == "www.sohu.com" and path.startswith("/a/"))
             ):
                 continue
-            if platform == "网易号" and not path.startswith("/dy/"):
+            if platform == "网易号" and not (
+                host == "www.163.com" and path.startswith("/dy/")
+            ):
                 continue
             return platform
     return None
