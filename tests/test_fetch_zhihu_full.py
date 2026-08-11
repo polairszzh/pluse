@@ -39,6 +39,13 @@ class TestFetchFullContent:
 
 
 class TestExtractContent:
+    def test_content_selectors_include_answer_anchor(self):
+        selectors = fzf._content_selectors("https://www.zhihu.com/answer/123")
+        assert selectors[0] == "#answer-123 .RichText"
+        assert fzf._content_selectors("https://zhuanlan.zhihu.com/p/1") == list(
+            fzf._CONTENT_SELECTORS
+        )
+
     def test_answer_url_prefers_target_anchor(self):
         calls = []
 

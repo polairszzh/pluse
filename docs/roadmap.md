@@ -59,7 +59,7 @@
 - **风险领域标记**：医学偏方、软件版本号、价格/计费政策等易传播错误信息的领域，即使无法核实也强制标注不确定性。
 - **引用原则**：只做事实核查，不做「搬运工」——验证结论只用于放行/标注/拒绝，不把搜索结果搬进生成内容。
 - **依赖与前置**：复用 Bing 搜索通道与 track 置信度标签基建（Phase 4 第一批已落地）；防火墙实现期间通过多轮 review 收敛否定/中性/权威判定的语义边界。
-  **实现**（scripts/fact_checker.py + adapt 集成）：数字断言+上下文提取（跳过第一手经验、同断言保留最高风险上下文）、Bing 多源交叉、显式权威白名单（政府/教育/主流媒体/著名百科/著名公司官方）、四级判定（confirmed/conflict/untrusted/unverified）、风险领域分级（医学/招考 high、价格政策/版本 medium、无风险 low）、失败降级不阻断。真实验证：WorkBuddy 草稿「5000积分」曾被普通来源证实（可信度模型修正后改为仅权威可确认）、「100积分（价格/政策）」等标无法核实。
+- **实现**（scripts/fact_checker.py + adapt 集成）：数字断言+上下文提取（跳过第一手经验、同断言保留最高风险上下文）、Bing 多源交叉、显式权威白名单（政府/教育/主流媒体/著名百科/著名公司官方）、四级判定（confirmed/conflict/untrusted/unverified）、风险领域分级（医学/招考 high、价格政策/版本 medium、无风险 low）、失败降级不阻断。真实验证：WorkBuddy 草稿「5000积分」曾被普通来源证实（可信度模型修正后改为仅权威可确认）、「100积分（价格/政策）」等标无法核实。
 
 **后续增强**：
 - C2 证据引用层权重：权威引语/统计/可验证来源 ≈ 43% 权重，把「可验证性」做成评分硬指标
@@ -83,7 +83,7 @@
 - 第三方托管 reader（Jina Reader 等）实测本机连不通，海外服务在国内网络不可靠，不作依赖。
 
 **优先级**：P1（已验证、成本低）；归属 Phase 5 audit 升级，todo 已登记。
-  **实现**（2026-08-11，PR #18）：新增 `scripts/fetch_zhihu_full.py`（Playwright + 本机 Edge/Chrome，关闭自动化特征 + 正常 UA，懒加载滚动后提取正文）；`audit --url <url> --full` 启用——抓取成功用完整正文评分，失败/未装 Playwright 自动降级 API 摘要并标注；报告/JSON/CLI 标注 content_source（browser / api_summary_fallback / api_summary）。真实端到端验证：知乎文章全文抓取成功（AI 可引用性 78 分）。
+- **实现**（2026-08-11，PR #18）：新增 `scripts/fetch_zhihu_full.py`（Playwright + 本机 Edge/Chrome，关闭自动化特征 + 正常 UA，懒加载滚动后提取正文）；`audit --url <url> --full` 启用——抓取成功用完整正文评分，失败/未装 Playwright 自动降级 API 摘要并标注；报告/JSON/CLI 标注 content_source（browser / api_summary_fallback / api_summary）。真实端到端验证：知乎文章全文抓取成功（AI 可引用性 78 分）。
 
 ---
 
@@ -119,7 +119,7 @@
 - **设计**：每问句每平台采样 N 次（默认 5），取「被提及/被引用」均值 = 被引用概率，附置信区间与各次样本原文。人工或宿主 agent 采集后喂回，形成度量闭环。
 - **做法**：`track --samples 5`；DB 增加 sample 表或 runs 编号；趋势图切换为概率曲线。
 - **优先级**：P1。依赖：B2 置信度标签先落地（采样数据更可信）。
-  **实现**（2026-08-10，PR #13）：`track --samples N`（默认 5，1 为单次）；probes 表加 sample_idx 列（同一 run_at 的 N 行样本）；`_aggregate_samples` 多数派聚合 + Wilson 95% 置信区间；build_trend 按 run_at 聚合出概率序列（n/hits/prob/ci），变化点基于多数派判定；CLI/报告显示「是 (80%, 4/5)」；风险信号（竞品/未核实断言）保守合并任一命中；样本原文存 meta.sample_answers。
+- **实现**（2026-08-10，PR #13）：`track --samples N`（默认 5，1 为单次）；probes 表加 sample_idx 列（同一 run_at 的 N 行样本）；`_aggregate_samples` 多数派聚合 + Wilson 95% 置信区间；build_trend 按 run_at 聚合出概率序列（n/hits/prob/ci），变化点基于多数派判定；CLI/报告显示「是 (80%, 4/5)」；风险信号（竞品/未核实断言）保守合并任一命中；样本原文存 meta.sample_answers。
 
 ### B2. 置信度标签（Agentic-SEO-Skill）★ 此前建议第 3 条
 - **设计**：每个平台结果标注 `Confirmed`（DeepSeek 真实 API）/ `Likely`（Bing 推断）/ `Hypothesis`（启发式匹配）。报告和仪表板都显示标签，避免把推断当事实。
@@ -134,7 +134,7 @@
   - factcheck（AI 回答里出现关于你的错误信息）。
 - **做法**：`--mine` 结果之上加 `cited_type`、`competitor_replaced` 字段；报告新增「风险」小节。
 - **优先级**：P1。
-  **实现**（2026-08-10，PR #12）：`--mine-owned`（转载/自有渠道）+ `--competitor`（竞品标识）参数；ProbeResult 新增 cited_type/competitor_matched/fact_risks/owned_ids 并落库；build_delta 计算 competitor_replaced（lostprompt）；DeepSeek 回答数字/版本断言提取为未核实风险（只提示不判定）；报告/CLI/JSON 新增「风险提示」（竞品夺走 + 未核实断言）。dashboard 展示待后续排期。
+- **实现**（2026-08-10，PR #12）：`--mine-owned`（转载/自有渠道）+ `--competitor`（竞品标识）参数；ProbeResult 新增 cited_type/competitor_matched/fact_risks/owned_ids 并落库；build_delta 计算 competitor_replaced（lostprompt）；DeepSeek 回答数字/版本断言提取为未核实风险（只提示不判定）；报告/CLI/JSON 新增「风险提示」（竞品夺走 + 未核实断言）。dashboard 展示待后续排期。
 
 ### B4. 变化点基线（claude-seo drift）
 - **设计**：每次 run 与上次快照对比，输出「本周变化」摘要：引用新增/丢失、情感反转、首次被提及，而不是只给原始快照列表。
@@ -145,13 +145,13 @@
 - **设计**：国内 AI 靠百度/搜狗/博查索引喂数据。对个人创作者，检查「内容是否被这些索引收录」比检查 robots.txt 有用得多。
 - **做法**：新增 `track --index-check`（百度收录自查，site: 探测）；知识库补充「国内收录三路径 + 各平台生态位」。
 - **优先级**：P2（依赖网络探测策略定型）。
-  **实现**（2026-08-10，PR #14）：`track --index-check <URL>`（与 --query 互斥）；Bing `site:` 探测可用（已收录/未收录）；百度探测接入但当前 UA 被反爬拦截（如实标注探测失败，解析器单测通过）；搜狗/博查待接入；知识库 docs/国内收录三路径.md（三路径 + 各平台生态位权重表）。
+- **实现**（2026-08-10，PR #14）：`track --index-check <URL>`（与 --query 互斥）；Bing `site:` 探测可用（已收录/未收录）；百度探测接入但当前 UA 被反爬拦截（如实标注探测失败，解析器单测通过）；搜狗/博查待接入；知识库 docs/国内收录三路径.md（三路径 + 各平台生态位权重表）。
 
 ### B6. 平台信源推荐（HeiGe recommend）
 - **设计**：把「想被豆包引用该发哪」从静态知识变成推荐：初期用 references 静态权重表（平台×信源偏好），后期用真实 track 数据校准。
 - **做法**：新增 `pulse recommend --engine 豆包` 类命令，输出平台权重排序 + 来源说明。
 - **优先级**：P2。
-  **实现**（2026-08-11，PR #15）：`python scripts/recommend.py --engine <deepseek|doubao|tongyi|wenxin|yuanbao|all>` 输出引用源权重排序 + 内容策略 + 数据来源说明；`--url <文章URL>` 识别文章平台并输出该平台在各引擎的权重排名（可用任意文章验证）；权重数据来自 2026 年 3-5 月 16800 次查询实测（元宝为生态位估计，标注待校准）。后期用真实 track 数据校准。
+- **实现**（2026-08-11，PR #15）：`python scripts/recommend.py --engine <deepseek|doubao|tongyi|wenxin|yuanbao|all>` 输出引用源权重排序 + 内容策略 + 数据来源说明；`--url <文章URL>` 识别文章平台并输出该平台在各引擎的权重排名（可用任意文章验证）；权重数据来自 2026 年 3-5 月 16800 次查询实测（元宝为生态位估计，标注待校准）。后期用真实 track 数据校准。
 
 ---
 
@@ -161,7 +161,7 @@
 - **设计**：关键阻断项一票封顶——如全站不可索引、账号零内容，总分封在低档；没有完整覆盖率不出最终分。
 - **做法**：scorer 增加 `blockers[]`；有 blocker 时总分封顶并明确提示。Pulse 现有「no_key 平台不参与分母」「首次快照不显示 delta」是同一精神的延续，统一成规则。
 - **优先级**：P1。
-  **实现**（2026-08-11，PR #17）：scorer 增加 blockers[]（缺标题/缺正文/正文<100 字）+ extra_blockers 参数（站点级）；有 blocker 时 overall 封顶 40（C 档）并标注「已封顶」；audit 报告/JSON/CLI 与 adapt 报告/CLI 同步展示阻断原因。
+- **实现**（2026-08-11，PR #17）：scorer 增加 blockers[]（缺标题/缺正文/正文<100 字）+ extra_blockers 参数（站点级）；有 blocker 时 overall 封顶 40（C 档）并标注「已封顶」；audit 报告/JSON/CLI 与 adapt 报告/CLI 同步展示阻断原因。
 
 ### C2. 证据引用层权重（HeiGe cescore）
 - **设计**：权威原文引语 + 统计数据 + 可引用性合计约 43%，是被引用第一杠杆。现有五维权重（AI可引用性 35 / 内容质量 25 / 关键词 20 / 结构 10 / 互动 10）据此校准，尤其补「证据引用」维度。
@@ -196,7 +196,7 @@
 - **设计**：`references/` 每个文件带 `Updated: YYYY-MM-DD` 标记，CI 检查超过 90 天未更新的文件并告警。平台规则会过期，这是防止「知识腐烂」的机制。
 - **做法**：`reference_freshness.py` + CI job。
 - **优先级**：P1。
-  **实现**（2026-08-11，PR #16）：知识文件统一 `Updated: YYYY-MM-DD` 标记（references/ 3 个 + docs/国内收录三路径.md）；`scripts/reference_freshness.py` 检查缺失/超过 90 天/未来日期，`--ci` 模式告警退出 1；接入 CI（ci.yml Knowledge freshness 步骤）；content_adapter 兼容新旧标记格式。
+- **实现**（2026-08-11，PR #16）：知识文件统一 `Updated: YYYY-MM-DD` 标记（references/ 3 个 + docs/国内收录三路径.md）；`scripts/reference_freshness.py` 检查缺失/超过 90 天/未来日期，`--ci` 模式告警退出 1；接入 CI（ci.yml Knowledge freshness 步骤）；content_adapter 兼容新旧标记格式。
 
 ### D4. 双引擎同步校验（Agentic-SEO-Skill validate_skill_inventory）
 - **设计**：Claude Code（SKILL.md + agents/*.md）与 Codex（agents/*.toml）命令清单、脚本引用一致性校验，防双引擎漂移。

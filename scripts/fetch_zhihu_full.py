@@ -40,16 +40,19 @@ def _is_article_url(url: str) -> bool:
     return bool(re.search(r"/(?:p|answer)/\d+", path))
 
 
-def _extract_content(page, url: str | None = None) -> str | None:
-    """按选择器优先级提取正文：精确选择器优先，空/过短结果跳过，全部失败返回 None
-
-    /answer/ 多回答页优先用目标回答锚点（#answer-<id> 容器），避免抓到其他回答。
-    """
+def _content_selectors(url: str | None = None) -> list[str]:
+    """构建正文选择器列表：/answer/ 多回答页优先目标回答锚点，其余为通用选择器"""
     selectors = list(_CONTENT_SELECTORS)
     if url:
         m = re.search(r"/answer/(\d+)", url)
         if m:
             selectors.insert(0, f"#answer-{m.group(1)} .RichText")
+    return selectors
+
+
+def _extract_content(page, url: str | None = None) -> str | None:
+    """按选择器优先级提取正文：精确选择器优先，空/过短结果跳过，全部失败返回 None"""
+    selectors = _content_selectors(url)
     for selector in selectors:
         try:
             text = page.eval_on_selector(selector, "el => el.innerText")
@@ -123,9 +126,17 @@ def fetch_full_content(url: str, timeout: int = 30) -> dict:
                     page.mouse.wheel(0, 4000)
                     page.wait_for_timeout(500)
                 page.mouse.wheel(0, -20000)
-                page.wait_for_selector(
-                    ", ".join(_CONTENT_SELECTORS), timeout=timeout * 1000
-                )
+                try:
+                    page.wait_for_selector(
+                        ", ".join(_content_selectors(url)),
+                        timeout=timeout * 1000,
+                    )
+                except Exception:  # noqa: BLE001 — 超时转可读错误
+                    return {
+                        "error": (
+                            "正文加载超时（可能需登录/付费、页面结构变化或网络问题）"
+                        )
+                    }
                 content = _extract_content(page, url)
                 title = page.title()
                 if content is None:
