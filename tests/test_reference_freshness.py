@@ -69,10 +69,13 @@ class TestScan:
 class TestMain:
     def test_ok_exit_zero(self, tmp_path, monkeypatch):
         monkeypatch.setattr(rf, "DEFAULT_TARGETS", (tmp_path,))
+        monkeypatch.setattr(rf, "_today", lambda: date(2026, 8, 11))
         (tmp_path / "a.md").write_text("> Updated: 2026-08-11\n", encoding="utf-8")
-        assert rf.main([]) == 0
+        # --ci 模式 + 固定日期：正常场景（无告警）退出 0
+        assert rf.main(["--ci"]) == 0
 
     def test_ci_fails_on_problem(self, tmp_path, monkeypatch):
         monkeypatch.setattr(rf, "DEFAULT_TARGETS", (tmp_path,))
+        monkeypatch.setattr(rf, "_today", lambda: date(2026, 8, 11))
         (tmp_path / "a.md").write_text("无标记", encoding="utf-8")
         assert rf.main(["--ci"]) == 1

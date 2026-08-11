@@ -25,6 +25,11 @@ MAX_AGE_DAYS = 90
 _MARKER_RE = re.compile(r"Updated\s*[:：]\s*([^\s]+)", re.IGNORECASE)
 
 
+def _today() -> date:
+    """当前日期（可被测试 monkeypatch 固定）"""
+    return datetime.now().astimezone().date()
+
+
 def _parse_updated_detail(text: str) -> tuple[date | None, str | None]:
     """解析 Updated 标记：返回 (日期, 错误)。区分「无标记」与「日期无效」"""
     m = _MARKER_RE.search(text)
@@ -45,7 +50,7 @@ def parse_updated(text: str) -> date | None:
 
 def check_file(path: Path, today: date | None = None) -> list[str]:
     """检查单个知识文件的 freshness，返回告警列表（空 = 正常）"""
-    today = today or datetime.now().astimezone().date()
+    today = today or _today()
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
