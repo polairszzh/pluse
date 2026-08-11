@@ -863,6 +863,8 @@ class TestB5IndexCheck:
         assert search_ai._site_query("zhuanlan.zhihu.com/p/123") == (
             "site:zhuanlan.zhihu.com/p/123"
         )
+        # query/fragment 是噪音，不参与 site: 匹配
+        assert search_ai._site_query("https://a.com/p?id=1#top") == "site:a.com/p"
 
     def test_baidu_target_url_restores_jump_link(self):
         jump = "http://www.baidu.com/link?url=https%3A%2F%2Fzhuanlan.zhihu.com%2Fp%2F123&wd=site%3A"
@@ -998,6 +1000,17 @@ class TestB5IndexCheck:
     def test_check_index_no_result_marker_small_page(self, monkeypatch):
         # 小体积但含无结果标记 → 未收录
         html = "<html><body>抱歉，没有找到与 site: 相关的网页</body></html>"
+
+        def fake_get(base, params=None, headers=None, timeout=None):
+            return FakeResponse(text=html)
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        result = search_ai.check_index("https://zhuanlan.zhihu.com/p/123")
+        assert result["sources"]["bing"]["status"] == "not_indexed"
+
+    def test_check_index_no_result_marker_lowercase_english(self, monkeypatch):
+        # 小写英文 no results 变体也应判未收录（大小写不敏感匹配）
+        html = "<html><body>there are no results for site query</body></html>"
 
         def fake_get(base, params=None, headers=None, timeout=None):
             return FakeResponse(text=html)

@@ -706,7 +706,11 @@ def _parse_baidu(html_text: str, limit: int = 10) -> list[dict]:
 
 
 def _site_query(url: str) -> str:
-    """构造 site: 收录探测查询（去协议，保留域名与路径）"""
+    """构造 site: 收录探测查询（去协议，保留域名与路径）
+
+    query/fragment 不参与：跟踪参数/锚点是噪音，与 _url_present 的
+    「query 不参与比较」设计一致；site: 用 path 匹配范围更宽更稳。
+    """
     try:
         parts = urlsplit(url)
     except ValueError:
@@ -738,8 +742,8 @@ _NO_RESULT_MARKERS = (
     "没有找到",
     "抱歉，没有找到",
     "未找到相关",
-    "No results",
-    "There are no results",
+    "no results",
+    "there are no results",
 )
 _BLOCK_MARKERS = (
     "安全验证",
@@ -757,9 +761,10 @@ def _classify_empty_page(html_text: str) -> str:
     反爬/拦截标记 → 探测失败；明确的无结果标记 → 未收录；
     无明确特征时不猜测（避免把大体积反爬页误判为未收录），一律按探测失败处理。
     """
-    if any(m in html_text for m in _BLOCK_MARKERS):
+    lower = html_text.lower()
+    if any(m in lower for m in _BLOCK_MARKERS):
         return "error"
-    if any(m in html_text for m in _NO_RESULT_MARKERS):
+    if any(m in lower for m in _NO_RESULT_MARKERS):
         return "not_indexed"
     return "error"
 
