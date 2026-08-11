@@ -83,7 +83,7 @@
 - 第三方托管 reader（Jina Reader 等）实测本机连不通，海外服务在国内网络不可靠，不作依赖。
 
 **优先级**：P1（已验证、成本低）；归属 Phase 5 audit 升级，todo 已登记。
-  **实现**（2026-08-11，PR #18）：新增 `scripts/fetch_zhihu_full.py`（Playwright + 本机 Edge，关闭自动化特征 + 正常 UA，懒加载滚动后提取正文）；`audit --full <url>` 启用——抓取成功用完整正文评分，失败/未装 Playwright 自动降级 API 摘要并标注；报告/JSON/CLI 标注 content_source（browser / api_summary_fallback / api_summary）。真实端到端验证：知乎文章全文抓取成功（AI 可引用性 78 分）。
+  **实现**（2026-08-11，PR #18）：新增 `scripts/fetch_zhihu_full.py`（Playwright + 本机 Edge/Chrome，关闭自动化特征 + 正常 UA，懒加载滚动后提取正文）；`audit --url <url> --full` 启用——抓取成功用完整正文评分，失败/未装 Playwright 自动降级 API 摘要并标注；报告/JSON/CLI 标注 content_source（browser / api_summary_fallback / api_summary）。真实端到端验证：知乎文章全文抓取成功（AI 可引用性 78 分）。
 
 ---
 

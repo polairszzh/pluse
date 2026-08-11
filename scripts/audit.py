@@ -399,12 +399,24 @@ def render_markdown(
         ),
     }[content_source]
     lines.append(source_note)
-    lines.append("- 评分粒度：整篇摘要打分，非逐段（Phase 1 有意取舍，全文分析在 Phase 3 路线）。")
+    granularity = (
+        "- 评分粒度：整篇正文打分，非逐段。"
+        if content_source == "browser"
+        else "- 评分粒度：整篇摘要打分，非逐段（Phase 1 有意取舍，全文分析在 Phase 3 路线）。"
+    )
+    lines.append(granularity)
     lines.append("- 评分性质：AI 可引用性为规则推断，不代表真实 AI 平台引用情况；实测引用在 Phase 2 落地。")
-    if content_source == "browser":
-        lines.append("- 浏览器采集：只读 + 低频，不做 stealth 伪装；失败自动降级 API 摘要。")
-    else:
-        lines.append("- 反爬说明：知乎 zh-zse-ck 拦截全文抓取，可用 audit --full 尝试浏览器全文通道。")
+    channel_note = {
+        "browser": "- 浏览器采集：只读 + 低频，不做 stealth 伪装；失败自动降级 API 摘要。",
+        "api_summary_fallback": (
+            "- 本次 --full 浏览器抓取失败，已降级 API 摘要；可检查 Playwright/Edge 与网络后重试。"
+        ),
+        "api_summary": (
+            "- 反爬说明：知乎 zh-zse-ck 拦截全文抓取，"
+            "可用 audit --url <url> --full 尝试浏览器全文通道。"
+        ),
+    }[content_source]
+    lines.append(channel_note)
     lines.append("")
     return "\n".join(lines)
 

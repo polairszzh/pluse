@@ -45,11 +45,25 @@ def fetch_full_content(url: str, timeout: int = 30) -> dict:
         }
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(
-                channel="msedge",
-                headless=True,
-                args=["--disable-blink-features=AutomationControlled"],
-            )
+            # 优先本机 Edge，其次 Chrome；都不可用才用 Playwright 自带 Chromium
+            browser = None
+            launch_errors = []
+            for channel in ("msedge", "chrome"):
+                try:
+                    browser = p.chromium.launch(
+                        channel=channel,
+                        headless=True,
+                        args=["--disable-blink-features=AutomationControlled"],
+                    )
+                    break
+                except Exception as exc:  # noqa: BLE001 — 尝试下一个 channel
+                    launch_errors.append(f"{channel}: {exc}")
+            if browser is None:
+                raise RuntimeError(
+                    "本机未找到 Edge/Chrome："
+                    + "; ".join(launch_errors)
+                    + "（可用 playwright install msedge 安装）"
+                )
             page = browser.new_page(user_agent=BROWSER_UA)
             page.add_init_script(
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
