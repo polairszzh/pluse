@@ -12,6 +12,7 @@ class TestPlatformOf:
         assert recommend._platform_of("https://zhidao.baidu.com/question/1") == "百度知道"
         assert recommend._platform_of("https://baike.baidu.com/item/x") == "百度百科"
         assert recommend._platform_of("https://news.qq.com/a/1") == "腾讯新闻"
+        assert recommend._platform_of("https://new.qq.com/rain/a/1") == "腾讯新闻"
         # 视频子域不得误判为腾讯新闻
         assert recommend._platform_of("https://v.qq.com/x/cover/1") is None
 
@@ -22,6 +23,13 @@ class TestPlatformOf:
         assert recommend._platform_of("https://mp.sohu.com/profile?xpt=1") == "搜狐号"
         assert recommend._platform_of("https://news.163.com/1.html") is None
         assert recommend._platform_of("https://www.163.com/dy/article/abc.html") == "网易号"
+        # 移动子域
+        assert recommend._platform_of("https://m.sohu.com/a/123") == "搜狐号"
+        assert recommend._platform_of("https://m.163.com/dy/article/abc.html") == "网易号"
+
+    def test_engine_order_derived_from_data(self):
+        assert tuple(recommend.ENGINE_SOURCES) == recommend.ENGINE_ORDER
+        assert len(recommend.ENGINE_ORDER) == 5
 
     def test_unknown_host(self):
         assert recommend._platform_of("https://example.com/p/1") is None

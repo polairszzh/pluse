@@ -31,6 +31,7 @@ def _load_engine_data() -> tuple[dict, dict, dict]:
 
 
 ENGINE_LABELS, ENGINE_STRATEGY, ENGINE_SOURCES = _load_engine_data()
+ENGINE_ORDER = tuple(ENGINE_SOURCES)  # 引擎顺序从数据派生，新增引擎无需改代码
 
 # 平台 → 域名后缀（用于 --url 识别文章所在平台）
 PLATFORM_HOSTS: dict[str, tuple[str, ...]] = {
@@ -45,7 +46,7 @@ PLATFORM_HOSTS: dict[str, tuple[str, ...]] = {
     "搜狐号": ("sohu.com",),
     "网易号": ("163.com",),
     "小红书": ("xiaohongshu.com",),
-    "腾讯新闻": ("news.qq.com",),
+    "腾讯新闻": ("news.qq.com", "new.qq.com"),
     "搜狗号": ("weixin.sogou.com",),
     "抖音生态": ("douyin.com",),
 }
@@ -66,11 +67,11 @@ def _platform_of(url: str) -> str | None:
             # 搜狐号/网易号限定 www/mp 子域 + 路径：news.sohu.com/a/ 等频道不误判
             if platform == "搜狐号" and not (
                 host == "mp.sohu.com"
-                or (host == "www.sohu.com" and path.startswith("/a/"))
+                or (host in ("www.sohu.com", "m.sohu.com") and path.startswith("/a/"))
             ):
                 continue
             if platform == "网易号" and not (
-                host == "www.163.com" and path.startswith("/dy/")
+                host in ("www.163.com", "m.163.com") and path.startswith("/dy/")
             ):
                 continue
             return platform
@@ -103,7 +104,7 @@ def recommend_url(url: str) -> list[str]:
         lines.append("  （无法从域名识别平台，可用 --engine 查看各引擎推荐）")
         return lines
     lines.append("该平台在各引擎的引用权重：")
-    for engine in ("deepseek", "doubao", "tongyi", "wenxin", "yuanbao"):
+    for engine in ENGINE_ORDER:
         ranked = _ranked(engine)
         pos = next((i for i, (p, _) in enumerate(ranked, 1) if p == platform), None)
         weight = ENGINE_SOURCES[engine].get(platform)
@@ -125,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument(
         "--engine",
-        choices=["deepseek", "doubao", "tongyi", "wenxin", "yuanbao", "all"],
+        choices=[*ENGINE_ORDER, "all"],
         help="目标 AI 引擎（all 输出全部引擎前三）",
     )
     group.add_argument("--url", help="文章 URL：识别平台并输出该平台在各引擎的权重排名")
@@ -135,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
         print("\n".join(recommend_url(args.url)))
         return 0
     if args.engine == "all":
-        for engine in ("deepseek", "doubao", "tongyi", "wenxin", "yuanbao"):
+        for engine in ENGINE_ORDER:
             print(f"== {ENGINE_LABELS[engine]} ==")
             for line in recommend_engine(engine)[1:4]:
                 print(line)
