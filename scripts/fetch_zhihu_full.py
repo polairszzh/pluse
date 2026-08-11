@@ -6,7 +6,8 @@
 
 实测结论（2026-08-06）：Edge + --disable-blink-features=AutomationControlled
 + 删除 navigator.webdriver + 正常 UA，headful/headless 均能抓取知乎文章完整正文，
-无需登录。只读 + 低频，不做 stealth 指纹伪装；批量监测不依赖此通道。
+无需登录。边界说明：为读取公开页面做了最小自动化特征隐藏（禁用自动化标记、
+移除 webdriver），但不伪造 UA/浏览器指纹冒充用户；只读 + 低频，批量监测不依赖此通道。
 """
 from __future__ import annotations
 

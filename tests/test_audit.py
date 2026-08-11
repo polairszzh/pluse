@@ -276,6 +276,11 @@ class TestMain:
         assert "降级" in captured
         md = list(tmp_path.glob("*.md"))[-1].read_text(encoding="utf-8")
         assert "降级" in md
+        payload = json.loads(
+            list(tmp_path.glob("audit-*.json"))[-1].read_text(encoding="utf-8")
+        )
+        assert payload["content_source"] == "api_summary_fallback"
+        assert "失败" in payload["fetch_note"]
 
     def test_audit_url_full_url_error_hint(self, item, tmp_path, monkeypatch, capsys):
         # URL 类错误（非知乎/非文章）不提示检查 Playwright，避免误导
@@ -293,6 +298,12 @@ class TestMain:
         err = capsys.readouterr().err
         assert "仅支持知乎文章/回答" in err
         assert "浏览器全文抓取失败" not in err
+        payload = json.loads(
+            list(tmp_path.glob("audit-*.json"))[-1].read_text(encoding="utf-8")
+        )
+        # URL 类错误：标为 api_summary（等同跳过）而非 fallback，原因写入 JSON
+        assert payload["content_source"] == "api_summary"
+        assert "已跳过" in payload["fetch_note"]
 
     def test_render_markdown_content_source_browser(self, item):
         scores, benchmark, recs = audit_one(item, "AI搜索优化")
