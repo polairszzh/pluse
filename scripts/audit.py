@@ -573,6 +573,9 @@ def _parse_keywords(raw: str | None) -> list[str] | None:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.full and not args.url:
+        print("--full 仅支持 --url 模式（需指定文章 URL）", file=sys.stderr)
+        return 2
     keywords = _parse_keywords(args.keywords)
     out_dir = Path(args.output) if args.output else None
 

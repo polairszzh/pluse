@@ -45,7 +45,6 @@ def fetch_full_content(url: str, timeout: int = 30) -> dict:
         }
     try:
         with sync_playwright() as p:
-            # 优先本机 Edge，其次 Chrome；都不可用才用 Playwright 自带 Chromium
             browser = None
             launch_errors = []
             for channel in ("msedge", "chrome"):
@@ -64,28 +63,34 @@ def fetch_full_content(url: str, timeout: int = 30) -> dict:
                     + "; ".join(launch_errors)
                     + "（可用 playwright install msedge 安装）"
                 )
-            page = browser.new_page(user_agent=BROWSER_UA)
-            page.add_init_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-            )
-            page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
-            page.wait_for_selector(
-                _CONTENT_SELECTOR, timeout=timeout * 1000
-            )
-            # 懒加载：分次滚动到底部再回到顶部，触发正文渲染
-            for _ in range(5):
-                page.mouse.wheel(0, 4000)
-                page.wait_for_timeout(600)
-            page.mouse.wheel(0, -20000)
-            page.wait_for_timeout(500)
-            content = page.eval_on_selector(
-                _CONTENT_SELECTOR, "el => el.innerText"
-            )
-            title = page.title()
-            browser.close()
-            if not content or not content.strip():
-                return {"error": "正文提取为空（页面结构变化或内容需登录/付费）"}
-            return {"title": title, "content": content.strip()}
+            try:
+                page = browser.new_page(user_agent=BROWSER_UA)
+                page.add_init_script(
+                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+                )
+                page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
+                page.wait_for_selector(
+                    _CONTENT_SELECTOR, timeout=timeout * 1000
+                )
+                # 懒加载：分次滚动到底部再回到顶部，触发正文渲染
+                for _ in range(5):
+                    page.mouse.wheel(0, 4000)
+                    page.wait_for_timeout(600)
+                page.mouse.wheel(0, -20000)
+                page.wait_for_timeout(500)
+                content = page.eval_on_selector(
+                    _CONTENT_SELECTOR, "el => el.innerText"
+                )
+                title = page.title()
+                if not content or not content.strip():
+                    return {"error": "正文提取为空（页面结构变化或内容需登录/付费）"}
+                return {"title": title, "content": content.strip()}
+            finally:
+                # 无论提取成功/失败都显式关闭浏览器，避免依赖上下文隐式清理
+                try:
+                    browser.close()
+                except Exception:  # noqa: BLE001, S110 — 关闭失败不影响返回结果
+                    pass
     except Exception as exc:  # noqa: BLE001 — 浏览器/网络/选择器异常统一降级
         return {"error": str(exc)}
 

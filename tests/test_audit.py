@@ -323,6 +323,11 @@ class TestMain:
         with pytest.raises(SystemExit):
             main(["--query", "q"])
 
+    def test_full_requires_url(self):
+        # --full 仅支持 --url 模式，与 --me/--topic 连用显式报错
+        assert main(["--me", "--full"]) == 2
+        assert main(["--topic", "x", "--full"]) == 2
+
     def test_topic_top_zero_rejected(self):
         with pytest.raises(SystemExit):
             main(["--topic", "x", "--top", "0"])
