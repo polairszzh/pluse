@@ -135,8 +135,10 @@ def fetch_full_content(url: str, timeout: int = 30) -> dict:
                     page.wait_for_timeout(500)
                 page.mouse.wheel(0, -20000)
                 try:
+                    # 导航后用最终 URL（可能被重定向）重新计算锚点选择器
+                    final_url = page.url
                     page.wait_for_selector(
-                        ", ".join(_content_selectors(url)),
+                        ", ".join(_content_selectors(final_url)),
                         timeout=timeout * 1000,
                     )
                 except Exception:  # noqa: BLE001 — 超时转可读错误
@@ -145,7 +147,7 @@ def fetch_full_content(url: str, timeout: int = 30) -> dict:
                             "正文加载超时（可能需登录/付费、页面结构变化或网络问题）"
                         )
                     }
-                content = _extract_content(page, url)
+                content = _extract_content(page, final_url)
                 title = page.title()
                 if content is None:
                     return {"error": "正文提取为空（页面结构变化或内容需登录/付费）"}

@@ -341,8 +341,9 @@ class TestMain:
             fetch_note="--full 已跳过：仅支持知乎文章/回答（/p/ 或 /answer/ 链接）",
         )
         assert "可用 `audit --url" not in md
-        assert "已尝试 --full" in md
-        assert "已跳过" in md
+        assert "全文抓取说明：--full 已跳过" in md
+        # 合并后无重复的「本次已尝试 --full」独立行
+        assert "本次已尝试" not in md
 
     def test_render_unknown_content_source_no_keyerror(self, item):
         # 新增来源未同步字典时用默认值，不抛 KeyError

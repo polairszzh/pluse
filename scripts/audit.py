@@ -421,12 +421,10 @@ def render_markdown(
             "可用 `audit --url <url> --full` 尝试浏览器全文通道。"
         ),
     }.get(content_source, "- 数据说明：见 CLI 输出。")
-    if content_source == "api_summary" and fetch_note:
-        # 已尝试过 --full（如 URL 不适用被跳过）：不再提示「可用 --full」
-        channel_note = (
-            "- 本次已尝试 --full 但未执行（原因见全文抓取说明），使用 API 摘要。"
-        )
-    lines.append(channel_note)
+    # 已尝试过 --full（如 URL 不适用被跳过）：由「全文抓取说明」一行承担，
+    # 不输出独立的 channel_note，避免语义重复
+    if not (content_source == "api_summary" and fetch_note):
+        lines.append(channel_note)
     if fetch_note:
         lines.append(f"- 全文抓取说明：{fetch_note}")
     lines.append("")
