@@ -19,3 +19,5 @@ jobs:
         run: ruff check .
       - name: Test (hermetic)
         run: python -m pytest tests/ -q
+      - name: Knowledge freshness
+        run: python scripts/reference_freshness.py --ci
