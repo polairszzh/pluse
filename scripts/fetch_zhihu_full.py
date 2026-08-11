@@ -7,7 +7,8 @@
 实测结论（2026-08-06）：Edge + --disable-blink-features=AutomationControlled
 + 删除 navigator.webdriver + 正常 UA，headful/headless 均能抓取知乎文章完整正文，
 无需登录。边界说明：为读取公开页面做了最小自动化特征隐藏（禁用自动化标记、
-移除 webdriver），但不伪造 UA/浏览器指纹冒充用户；只读 + 低频，批量监测不依赖此通道。
+移除 webdriver、UA 去掉 HeadlessChrome 标记——UA 版本为浏览器内置，不伪造
+特定版本/冒充用户）；只读 + 低频，批量监测不依赖此通道。
 """
 from __future__ import annotations
 
@@ -51,15 +52,22 @@ def _content_selectors(url: str | None = None) -> list[str]:
 
 
 def _extract_content(page, url: str | None = None) -> str | None:
-    """按选择器优先级提取正文：精确选择器优先，空/过短结果跳过，全部失败返回 None"""
+    """按选择器优先级提取正文：精确选择器优先，取所有匹配中最长文本，
+    空/过短结果跳过，全部失败返回 None"""
     selectors = _content_selectors(url)
     for selector in selectors:
         try:
-            text = page.eval_on_selector(selector, "el => el.innerText")
+            texts = page.eval_on_selector_all(
+                selector, "els => els.map(e => e.innerText)"
+            )
         except Exception:  # noqa: BLE001, S112 — 选择器不存在/异常，尝试下一个
             continue
-        if text and len(text.strip()) >= _MIN_CONTENT_LEN:
-            return text.strip()
+        if texts:
+            candidates = [
+                t.strip() for t in texts if t and len(t.strip()) >= _MIN_CONTENT_LEN
+            ]
+            if candidates:
+                return max(candidates, key=len)
     return None
 
 

@@ -50,11 +50,11 @@ class TestExtractContent:
         calls = []
 
         class FakePage:
-            def eval_on_selector(self, selector, _expr):
+            def eval_on_selector_all(self, selector, _expr):
                 calls.append(selector)
                 if selector.startswith("#answer-123"):
-                    return "目标回答正文。" * 20
-                return ""
+                    return ["目标回答正文。" * 20]
+                return []
 
         assert fzf._extract_content(
             FakePage(), url="https://www.zhihu.com/answer/123"
@@ -63,27 +63,27 @@ class TestExtractContent:
 
     def test_prefers_specific_selector_with_content(self):
         class FakePage:
-            def eval_on_selector(self, selector, _expr):
+            def eval_on_selector_all(self, selector, _expr):
                 if selector == ".Post-RichText":
-                    return ""
+                    return [""]
                 if selector == ".RichText":
-                    return "正文内容足够长。" * 20
+                    return ["正文内容足够长。" * 20, "短"]
                 raise RuntimeError("not found")
 
         assert fzf._extract_content(FakePage()) == "正文内容足够长。" * 20
 
     def test_short_or_empty_skipped(self):
         class FakePage:
-            def eval_on_selector(self, selector, _expr):
+            def eval_on_selector_all(self, selector, _expr):
                 if selector == ".Post-RichText":
-                    return "太短"
+                    return ["太短"]
                 raise RuntimeError("not found")
 
         assert fzf._extract_content(FakePage()) is None
 
     def test_all_selectors_fail_returns_none(self):
         class FakePage:
-            def eval_on_selector(self, selector, _expr):
+            def eval_on_selector_all(self, selector, _expr):
                 raise RuntimeError("not found")
 
         assert fzf._extract_content(FakePage()) is None

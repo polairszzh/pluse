@@ -332,6 +332,18 @@ class TestMain:
         )
         assert "可用 `audit --url <url> --full`" in md
 
+    def test_render_markdown_skipped_full_no_suggestion(self, item):
+        # 已尝试 --full 但 URL 被跳过：不再提示「可用 --full」
+        scores, benchmark, recs = audit_one(item, "AI搜索优化")
+        md = render_markdown(
+            item, scores, benchmark, recs, "AI搜索优化",
+            content_source="api_summary",
+            fetch_note="--full 已跳过：仅支持知乎文章/回答（/p/ 或 /answer/ 链接）",
+        )
+        assert "可用 `audit --url" not in md
+        assert "已尝试 --full" in md
+        assert "已跳过" in md
+
     def test_render_unknown_content_source_no_keyerror(self, item):
         # 新增来源未同步字典时用默认值，不抛 KeyError
         scores, benchmark, recs = audit_one(item, "AI搜索优化")

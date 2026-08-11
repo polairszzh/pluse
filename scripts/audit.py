@@ -409,8 +409,9 @@ def render_markdown(
     lines.append("- 评分性质：AI 可引用性为规则推断，不代表真实 AI 平台引用情况；实测引用在 Phase 2 落地。")
     channel_note = {
         "browser": (
-            "- 浏览器采集：只读 + 低频不批量；隐藏自动化特征以读取公开页面"
-            "（不伪造 UA/指纹冒充用户）；失败自动降级 API 摘要。"
+            "- 浏览器采集：只读 + 低频不批量；隐藏自动化特征（禁用自动化标记、"
+            "移除 webdriver、UA 去 HeadlessChrome 标记——不伪造特定版本）；"
+            "失败自动降级 API 摘要。"
         ),
         "api_summary_fallback": (
             "- 本次 --full 全文抓取未成功，已降级 API 摘要（原因见 CLI 输出）。"
@@ -420,6 +421,11 @@ def render_markdown(
             "可用 `audit --url <url> --full` 尝试浏览器全文通道。"
         ),
     }.get(content_source, "- 数据说明：见 CLI 输出。")
+    if content_source == "api_summary" and fetch_note:
+        # 已尝试过 --full（如 URL 不适用被跳过）：不再提示「可用 --full」
+        channel_note = (
+            "- 本次已尝试 --full 但未执行（原因见全文抓取说明），使用 API 摘要。"
+        )
     lines.append(channel_note)
     if fetch_note:
         lines.append(f"- 全文抓取说明：{fetch_note}")
