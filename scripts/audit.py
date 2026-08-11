@@ -22,6 +22,7 @@ from pathlib import Path
 
 import requests
 import zhihu_api
+from fetch_zhihu_full import fetch_full_content
 from scorer import AuditScores, audit_article, grade
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -324,6 +325,8 @@ def render_markdown(
     benchmark: dict,
     recs: list[Recommendation],
     query: str | None = None,
+    content_source: str = "api_summary",
+    fetch_note: str | None = None,
 ) -> str:
     """生成 Markdown 审计报告"""
     lines = ["# 可见度审计报告", ""]
@@ -388,13 +391,42 @@ def render_markdown(
 
     lines.append("## 数据说明")
     lines.append("")
-    lines.append(
-        "- 数据来源：知乎开放平台 API 的 ContentText 摘要（约 300-800 字）"
-        " + 结构化互动数据（赞同/评论/收藏）。"
+    source_note = {
+        "browser": "- 数据来源：本机浏览器采集的完整正文（audit --full）+ 结构化互动数据。",
+        "api_summary_fallback": "- 数据来源：API 摘要（浏览器全文抓取失败已降级）+ 结构化互动数据。",
+        "api_summary": (
+            "- 数据来源：知乎开放平台 API 的 ContentText 摘要（约 300-800 字）"
+            " + 结构化互动数据（赞同/评论/收藏）。"
+        ),
+    }.get(content_source, "- 数据来源：API 摘要 + 结构化互动数据。")
+    lines.append(source_note)
+    granularity = (
+        "- 评分粒度：整篇正文打分，非逐段。"
+        if content_source == "browser"
+        else "- 评分粒度：整篇摘要打分，非逐段（Phase 1 有意取舍，全文分析在 Phase 3 路线）。"
     )
-    lines.append("- 评分粒度：整篇摘要打分，非逐段（Phase 1 有意取舍，全文分析在 Phase 3 路线）。")
+    lines.append(granularity)
     lines.append("- 评分性质：AI 可引用性为规则推断，不代表真实 AI 平台引用情况；实测引用在 Phase 2 落地。")
-    lines.append("- 反爬说明：知乎 zh-zse-ck 拦截全文抓取，Phase 1 不做全文抓取。")
+    channel_note = {
+        "browser": (
+            "- 浏览器采集：只读 + 低频不批量；隐藏自动化特征（禁用自动化标记、"
+            "移除 webdriver、UA 去 HeadlessChrome 标记——不伪造特定版本）；"
+            "失败自动降级 API 摘要。"
+        ),
+        "api_summary_fallback": (
+            "- 本次 --full 全文抓取未成功，已降级 API 摘要（原因见 CLI 输出）。"
+        ),
+        "api_summary": (
+            "- 反爬说明：知乎 zh-zse-ck 拦截全文抓取，"
+            "可用 `audit --url <url> --full` 尝试浏览器全文通道。"
+        ),
+    }.get(content_source, "- 数据说明：见 CLI 输出。")
+    # 已尝试过 --full（如 URL 不适用被跳过）：由「全文抓取说明」一行承担，
+    # 不输出独立的 channel_note，避免语义重复
+    if not (content_source == "api_summary" and fetch_note):
+        lines.append(channel_note)
+    if fetch_note:
+        lines.append(f"- 全文抓取说明：{fetch_note}")
     lines.append("")
     return "\n".join(lines)
 
@@ -405,6 +437,8 @@ def render_json(
     benchmark: dict,
     recs: list[Recommendation],
     query: str | None = None,
+    content_source: str = "api_summary",
+    fetch_note: str | None = None,
 ) -> dict:
     """生成 JSON 快照（供 Dashboard/趋势分析）"""
     dims = {}
@@ -441,7 +475,13 @@ def render_json(
             "dimensions": dims,
         },
         "recommendations": [r.__dict__ for r in recs],
-        "source_note": "知乎开放平台 API ContentText 摘要（300-800 字），整篇粒度评分，非逐段。",
+        "content_source": content_source,
+        "fetch_note": fetch_note,
+        "source_note": {
+            "browser": "本机浏览器采集的完整正文（audit --full），整篇粒度评分，非逐段",
+            "api_summary_fallback": "API 摘要（浏览器全文抓取失败已降级），整篇粒度评分，非逐段",
+            "api_summary": "知乎开放平台 API ContentText 摘要（300-800 字），整篇粒度评分，非逐段",
+        }.get(content_source, "未知内容来源，整篇粒度评分，非逐段"),
     }
 
 
@@ -452,6 +492,8 @@ def save_report(
     recs: list[Recommendation],
     query: str | None = None,
     out_dir: Path | None = None,
+    content_source: str = "api_summary",
+    fetch_note: str | None = None,
 ) -> list[Path]:
     """报告落盘：Markdown + JSON，返回生成的文件路径列表"""
     out_dir = Path(out_dir) if out_dir else SNAPSHOT_DIR
@@ -460,9 +502,20 @@ def save_report(
     slug = make_slug(item.title)
     md_path = out_dir / f"audit-{slug}-{ts}.md"
     json_path = out_dir / f"audit-{slug}-{ts}.json"
-    md_path.write_text(render_markdown(item, scores, benchmark, recs, query), encoding="utf-8")
+    md_path.write_text(
+        render_markdown(
+            item, scores, benchmark, recs, query, content_source, fetch_note
+        ),
+        encoding="utf-8",
+    )
     json_path.write_text(
-        json.dumps(render_json(item, scores, benchmark, recs, query), ensure_ascii=False, indent=2),
+        json.dumps(
+            render_json(
+                item, scores, benchmark, recs, query, content_source, fetch_note
+            ),
+            ensure_ascii=False,
+            indent=2,
+        ),
         encoding="utf-8",
     )
     return [md_path, json_path]
@@ -473,8 +526,18 @@ def _print_single_summary(
     scores: AuditScores,
     recs: list[Recommendation],
     paths: list[Path],
+    content_source: str = "api_summary",
+    fetch_note: str | None = None,
 ) -> None:
     print(f"标题：{item.title}")
+    source_label = {
+        "browser": "浏览器全文",
+        "api_summary_fallback": "API 摘要（全文失败已降级）",
+        "api_summary": "API 摘要",
+    }.get(content_source, "未知")
+    print(f"内容来源：{source_label}")
+    if fetch_note:
+        print(f"全文抓取说明：{fetch_note}")
     print(f"综合得分：{scores.overall}/100 · {scores.grade}")
     for b in scores.blockers:
         print(f"  [阻断] {b}（总分已封顶）")
@@ -513,6 +576,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--index", type=int, help="--me 时只审计第 N 篇（从 0 开始）")
     parser.add_argument("--top", type=_positive_int, default=1, help="--topic 时审计前 N 篇（默认 1）")
     parser.add_argument("--output", help="输出目录（默认 data/snapshots/）")
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="仅 --url 模式：用本机浏览器抓取完整正文后评分（失败自动降级 API 摘要）",
+    )
     return parser
 
 
@@ -525,6 +593,9 @@ def _parse_keywords(raw: str | None) -> list[str] | None:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.full and not args.url:
+        print("--full 仅支持 --url 模式（需指定文章 URL）", file=sys.stderr)
+        return 2
     keywords = _parse_keywords(args.keywords)
     out_dir = Path(args.output) if args.output else None
 
@@ -536,9 +607,35 @@ def main(argv: list[str] | None = None) -> int:
                 if not args.query:
                     print("提示：URL 不在本人创作中时，请加 --query <关键词> 帮助定位", file=sys.stderr)
                 return 2
+            content_source = "api_summary"
+            fetch_note = None
+            if args.full:
+                fetched = fetch_full_content(args.url)
+                if "content" in fetched:
+                    item.content_text = fetched["content"]
+                    content_source = "browser"
+                else:
+                    err = fetched.get("error", "")
+                    if "仅支持知乎" in err:
+                        content_source = "api_summary"
+                        fetch_note = f"--full 已跳过：{err}"
+                        print(
+                            f"  [提示] {err}（--full 已跳过，使用 API 摘要）",
+                            file=sys.stderr,
+                        )
+                    else:
+                        content_source = "api_summary_fallback"
+                        fetch_note = f"--full 全文抓取失败：{err}"
+                        print(
+                            f"  [提示] 浏览器全文抓取失败（{err}），已降级 API 摘要",
+                            file=sys.stderr,
+                        )
             scores, benchmark, recs = audit_one(item, args.query, keywords)
-            paths = save_report(item, scores, benchmark, recs, args.query, out_dir)
-            _print_single_summary(item, scores, recs, paths)
+            paths = save_report(
+                item, scores, benchmark, recs, args.query, out_dir,
+                content_source, fetch_note,
+            )
+            _print_single_summary(item, scores, recs, paths, content_source, fetch_note)
             return 0
 
         if args.me:

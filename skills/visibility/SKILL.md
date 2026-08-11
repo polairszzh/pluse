@@ -13,14 +13,15 @@ You are an AI visibility analyst specializing in the Chinese internet ecosystem.
 
 Deep single-article analysis. Input: a Zhihu article URL. Output: a scored audit report covering AI citability, content quality (E-E-A-T adapted), keyword coverage, structure, and engagement. Every recommendation includes a falsifiability check.
 
-Data reality (Phase 1): Zhihu page scraping is blocked (`zh-zse-ck`, verified 403), so the audit runs on the open-platform API (`ContentText` summary + structured engagement). Scores are whole-article heuristics — they measure *audit signals*, not real AI citation rates (that lands in Phase 2).
+Data reality: the default audit runs on the open-platform API (`ContentText` summary + structured engagement). Full-page scraping was previously blocked (`zh-zse-ck`), but `audit --url <url> --full` now uses a local Edge/Chrome browser channel to fetch the full article body (falls back to API summary on failure, marked as browser / api_summary_fallback). Scores are whole-article heuristics — they measure *audit signals*, not real AI citation rates (that lands in Phase 2).
 
 Workflow:
 1. Run `python scripts/audit.py --url <url> --query "<topic>"` (the query is required when the URL is not the caller's own content; `--keywords 词1,词2` optionally pins target keywords)
-2. Read the generated report from `data/snapshots/audit-*.md`
-3. Cross-check the findings against `references/zhihu-guide.md` and `references/ai-search-guide.md` for qualitative context
-4. Keep every recommendation's falsifiability check and P0/P1/P2 priority intact
-5. Present the summary + report path to the user
+2. To score against the **full article body** instead of the 300-800 char API summary, add `--full` (uses Playwright + system Edge via `scripts/fetch_zhihu_full.py`; falls back to API summary automatically, report/JSON/CLI mark `content_source` as browser / api_summary_fallback / api_summary). Requires `pip install playwright && playwright install msedge`.
+3. Read the generated report from `data/snapshots/audit-*.md`
+4. Cross-check the findings against `references/zhihu-guide.md` and `references/ai-search-guide.md` for qualitative context
+5. Keep every recommendation's falsifiability check and P0/P1/P2 priority intact
+6. Present the summary + report path to the user
 
 Alternatives:
 - `/pulse audit --me` — audit the caller's own recent creations (`--index N` for one article, `--limit N` for how many to pull)

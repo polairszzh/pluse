@@ -240,6 +240,124 @@ class TestMain:
         assert code == 0
         assert list(tmp_path.glob("*.md"))
 
+    def test_audit_url_full_browser(self, item, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("audit.resolve_article", lambda u, q: item)
+        monkeypatch.setattr(
+            "audit.zhihu_api.topic_benchmark",
+            lambda q, count=10: {},
+        )
+        monkeypatch.setattr(
+            "audit.fetch_full_content",
+            lambda url: {"title": "标题", "content": "完整正文内容。" * 50},
+        )
+        code = main(["--url", item.url, "--full", "--output", str(tmp_path)])
+        assert code == 0
+        assert item.content_text.startswith("完整正文内容")
+        captured = capsys.readouterr().out
+        assert "浏览器全文" in captured
+        scores, _, _ = audit_one(item)
+        payload = render_json(item, scores, {}, [], content_source="browser")
+        assert payload["content_source"] == "browser"
+        assert "整篇粒度评分，非逐段" in payload["source_note"]
+
+    def test_audit_url_full_fallback(self, item, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("audit.resolve_article", lambda u, q: item)
+        monkeypatch.setattr(
+            "audit.zhihu_api.topic_benchmark",
+            lambda q, count=10: {},
+        )
+        monkeypatch.setattr(
+            "audit.fetch_full_content",
+            lambda url: {"error": "Playwright 未安装"},
+        )
+        code = main(["--url", item.url, "--full", "--output", str(tmp_path)])
+        assert code == 0
+        captured = capsys.readouterr().out
+        assert "降级" in captured
+        md = list(tmp_path.glob("*.md"))[-1].read_text(encoding="utf-8")
+        assert "降级" in md
+        payload = json.loads(
+            list(tmp_path.glob("audit-*.json"))[-1].read_text(encoding="utf-8")
+        )
+        assert payload["content_source"] == "api_summary_fallback"
+        assert "失败" in payload["fetch_note"]
+
+    def test_audit_url_full_url_error_hint(self, item, tmp_path, monkeypatch, capsys):
+        # URL 类错误（非知乎/非文章）不提示检查 Playwright，避免误导
+        monkeypatch.setattr("audit.resolve_article", lambda u, q: item)
+        monkeypatch.setattr(
+            "audit.zhihu_api.topic_benchmark",
+            lambda q, count=10: {},
+        )
+        monkeypatch.setattr(
+            "audit.fetch_full_content",
+            lambda url: {"error": "仅支持知乎文章/回答（/p/ 或 /answer/ 链接）"},
+        )
+        code = main(["--url", item.url, "--full", "--output", str(tmp_path)])
+        assert code == 0
+        err = capsys.readouterr().err
+        assert "仅支持知乎文章/回答" in err
+        assert "浏览器全文抓取失败" not in err
+        payload = json.loads(
+            list(tmp_path.glob("audit-*.json"))[-1].read_text(encoding="utf-8")
+        )
+        # URL 类错误：标为 api_summary（等同跳过）而非 fallback，原因写入 JSON
+        assert payload["content_source"] == "api_summary"
+        assert "已跳过" in payload["fetch_note"]
+
+    def test_render_markdown_content_source_browser(self, item):
+        scores, benchmark, recs = audit_one(item, "AI搜索优化")
+        md = render_markdown(
+            item, scores, benchmark, recs, "AI搜索优化", content_source="browser"
+        )
+        assert "本机浏览器采集的完整正文" in md
+        assert "整篇正文打分" in md
+        assert "摘要打分" not in md
+
+    def test_render_markdown_fallback_not_suggesting_full(self, item):
+        scores, benchmark, recs = audit_one(item, "AI搜索优化")
+        md = render_markdown(
+            item, scores, benchmark, recs, "AI搜索优化",
+            content_source="api_summary_fallback",
+        )
+        assert "已降级" in md
+        assert "可用 audit --url" not in md
+        assert "Playwright" not in md
+
+    def test_render_markdown_api_summary_suggests_full(self, item):
+        scores, benchmark, recs = audit_one(item, "AI搜索优化")
+        md = render_markdown(
+            item, scores, benchmark, recs, "AI搜索优化",
+            content_source="api_summary",
+        )
+        assert "可用 `audit --url <url> --full`" in md
+
+    def test_render_markdown_skipped_full_no_suggestion(self, item):
+        # 已尝试 --full 但 URL 被跳过：不再提示「可用 --full」
+        scores, benchmark, recs = audit_one(item, "AI搜索优化")
+        md = render_markdown(
+            item, scores, benchmark, recs, "AI搜索优化",
+            content_source="api_summary",
+            fetch_note="--full 已跳过：仅支持知乎文章/回答（/p/ 或 /answer/ 链接）",
+        )
+        assert "可用 `audit --url" not in md
+        assert "全文抓取说明：--full 已跳过" in md
+        # 合并后无重复的「本次已尝试 --full」独立行
+        assert "本次已尝试" not in md
+
+    def test_render_unknown_content_source_no_keyerror(self, item):
+        # 新增来源未同步字典时用默认值，不抛 KeyError
+        scores, benchmark, recs = audit_one(item, "AI搜索优化")
+        md = render_markdown(
+            item, scores, benchmark, recs, "AI搜索优化",
+            content_source="unknown_future_source",
+        )
+        assert "数据来源" in md
+        payload = render_json(
+            item, scores, {}, [], content_source="unknown_future_source"
+        )
+        assert payload["content_source"] == "unknown_future_source"
+
     def test_url_not_found(self, tmp_path, monkeypatch):
         monkeypatch.setattr("audit.resolve_article", lambda u, q: None)
         assert main(["--url", "https://zhuanlan.zhihu.com/p/1", "--query", "q"]) == 2
@@ -260,6 +378,11 @@ class TestMain:
     def test_missing_source_arg_exits(self):
         with pytest.raises(SystemExit):
             main(["--query", "q"])
+
+    def test_full_requires_url(self):
+        # --full 仅支持 --url 模式，与 --me/--topic 连用显式报错
+        assert main(["--me", "--full"]) == 2
+        assert main(["--topic", "x", "--full"]) == 2
 
     def test_topic_top_zero_rejected(self):
         with pytest.raises(SystemExit):
