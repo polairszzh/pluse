@@ -96,10 +96,12 @@ PLATFORM_HOSTS: dict[str, tuple[str, ...]] = {
     "公众号": ("mp.weixin.qq.com",),
     "今日头条": ("toutiao.com",),
     "百家号": ("baijiahao.baidu.com",),
+    "百度知道": ("zhidao.baidu.com",),
+    "百度百科": ("baike.baidu.com",),
     "搜狐号": ("sohu.com",),
     "网易号": ("163.com",),
     "小红书": ("xiaohongshu.com",),
-    "腾讯新闻": ("qq.com",),
+    "腾讯新闻": ("news.qq.com",),
     "搜狗号": ("weixin.sogou.com",),
     "抖音生态": ("douyin.com",),
 }

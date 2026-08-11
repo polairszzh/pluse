@@ -14,6 +14,11 @@ class TestPlatformOf:
         assert recommend._platform_of("https://blog.csdn.net/x/article/1") == "CSDN"
         assert recommend._platform_of("https://mp.weixin.qq.com/s/abc") == "公众号"
         assert recommend._platform_of("https://www.toutiao.com/article/1") == "今日头条"
+        assert recommend._platform_of("https://zhidao.baidu.com/question/1") == "百度知道"
+        assert recommend._platform_of("https://baike.baidu.com/item/x") == "百度百科"
+        assert recommend._platform_of("https://news.qq.com/a/1") == "腾讯新闻"
+        # 视频子域不得误判为腾讯新闻
+        assert recommend._platform_of("https://v.qq.com/x/cover/1") is None
 
     def test_unknown_host(self):
         assert recommend._platform_of("https://example.com/p/1") is None
@@ -44,6 +49,12 @@ class TestRecommendUrl:
         lines = recommend.recommend_url("https://example.com/p/1")
         assert lines[0] == "文章所在平台：未识别"
         assert any("未识别" in line for line in lines)
+
+    def test_baidu_zhidao_ranking(self):
+        # 百度知道与文心权重表一致：不再输出未识别
+        lines = recommend.recommend_url("https://zhidao.baidu.com/question/1")
+        assert lines[0] == "文章所在平台：百度知道"
+        assert any("文心一言 18.5%（第 2 位）" in line for line in lines)
 
 
 class TestMain:
