@@ -61,6 +61,13 @@ Workflow:
 - B3 引用质量：`--mine` 命中且非 `--mine-owned` 记为 earned（原创被引）；仅命中 `--mine-owned` 记为 owned（转载/自有渠道被引）。「风险提示」里的未核实断言来自 AI 回答的数字/版本提取，只做提示不做事实判定，需人工复核。
 - B1 多采样（Phase 4）：默认每平台采样 5 次，被提及 = 多数样本命中，概率 = 命中数/样本数，置信区间为 Wilson 95%；单次采样（--samples 1）时退化为是/否判定。原始样本回答存 JSON meta.sample_answers 供复核。
 
+### `/pulse recommend <engine>`
+
+Output citation-source ranking for an AI engine (B6 平台信源推荐):
+1. Run `python scripts/recommend.py --engine deepseek` (choices: deepseek/doubao/tongyi/wenxin/yuanbao/all) — prints per-platform citation weight ranking + content strategy + data source note
+2. To verify with any article (not necessarily yours), run `python scripts/recommend.py --url <文章URL>` — identifies the article's platform and prints its weight rank per engine (e.g. a Zhihu article → 知乎 weight in DeepSeek/豆包/通义/文心/元宝)
+3. Weights come from 2026 3-5月 16800-query measurements (see docs/国内收录三路径.md); 元宝 is an ecosystem estimate marked 待校准
+
 ### `/pulse adapt <topic>`
 
 Generate platform-adapted content from a local Markdown draft. Input: a local source file (`--source draft.md`). Output: an AI 搜索优化版 (Q&A blocks for citation) and a 知乎版 (structured long-form), each with a falsifiability check; the draft is scored on four text dimensions (AI citability / content quality / keyword coverage / structure; engagement is marked 未发布 until published).
