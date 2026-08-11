@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import re
 from urllib.parse import urlsplit
 
 BROWSER_UA = (
@@ -20,11 +21,25 @@ _CONTENT_SELECTOR = ".Post-RichText, .RichText, .post-content"
 
 
 def _is_zhihu_url(url: str) -> bool:
+    """知乎域名校验"""
     try:
         host = urlsplit(url).netloc.lower()
     except ValueError:
         return False
     return host == "zhihu.com" or host.endswith(".zhihu.com")
+
+
+def _is_article_url(url: str) -> bool:
+    """校验是否为单篇知乎内容（文章 /p/ 或回答 /answer/）
+
+    问题页（/question/）含多个回答，视频/想法等正文容器不同，均拒绝，
+    避免 --full 抓到非文章正文导致评分语义错误。
+    """
+    try:
+        path = urlsplit(url).path or ""
+    except ValueError:
+        return False
+    return bool(re.search(r"/(?:p|answer)/\d+", path))
 
 
 def fetch_full_content(url: str, timeout: int = 30) -> dict:
@@ -34,6 +49,13 @@ def fetch_full_content(url: str, timeout: int = 30) -> dict:
     """
     if not _is_zhihu_url(url):
         return {"error": f"仅支持知乎链接：{url}"}
+    if not _is_article_url(url):
+        return {
+            "error": (
+                "仅支持知乎文章/回答（/p/ 或 /answer/ 链接），"
+                "问题页/视频/想法等非单篇内容不支持"
+            )
+        }
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
