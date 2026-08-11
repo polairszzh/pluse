@@ -20,6 +20,14 @@ class TestPlatformOf:
         # 视频子域不得误判为腾讯新闻
         assert recommend._platform_of("https://v.qq.com/x/cover/1") is None
 
+    def test_sohu_163_path_dependent(self):
+        # 新闻频道（news.sohu.com / news.163.com）不误判为号
+        assert recommend._platform_of("https://news.sohu.com/1.html") is None
+        assert recommend._platform_of("https://www.sohu.com/a/123") == "搜狐号"
+        assert recommend._platform_of("https://mp.sohu.com/profile?xpt=1") == "搜狐号"
+        assert recommend._platform_of("https://news.163.com/1.html") is None
+        assert recommend._platform_of("https://www.163.com/dy/article/abc.html") == "网易号"
+
     def test_unknown_host(self):
         assert recommend._platform_of("https://example.com/p/1") is None
 
@@ -63,6 +71,7 @@ class TestMain:
         out = capsys.readouterr().out
         assert "推荐发布平台（目标引擎：DeepSeek）" in out
         assert "CSDN（24.6%）" in out
+        assert "相对值" in out
 
     def test_url(self, capsys):
         assert recommend.main(["--url", "https://zhuanlan.zhihu.com/p/1"]) == 0
@@ -82,3 +91,9 @@ class TestMain:
         with pytest.raises(SystemExit) as exc:
             recommend.main([])
         assert exc.value.code == 2
+
+    def test_empty_url_no_keyerror(self, capsys):
+        # --url "" 走 URL 分支（未识别），不落入 engine 分支触发 KeyError
+        assert recommend.main(["--url", ""]) == 0
+        out = capsys.readouterr().out
+        assert "文章所在平台：未识别" in out

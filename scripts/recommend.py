@@ -110,11 +110,22 @@ PLATFORM_HOSTS: dict[str, tuple[str, ...]] = {
 def _platform_of(url: str) -> str | None:
     """按域名识别文章所在平台，无法识别返回 None"""
     try:
-        host = urlsplit(url).netloc.lower()
+        parts = urlsplit(url)
+        host = parts.netloc.lower()
+        path = parts.path or ""
     except ValueError:
         return None
     for platform, hosts in PLATFORM_HOSTS.items():
-        if any(host == h or host.endswith("." + h) for h in hosts):
+        for h in hosts:
+            if not (host == h or host.endswith("." + h)):
+                continue
+            # 搜狐号/网易号用一级域名时需路径确认：新闻频道（news.sohu.com 等）不误判
+            if platform == "搜狐号" and not (
+                host == "mp.sohu.com" or path.startswith("/a/")
+            ):
+                continue
+            if platform == "网易号" and not path.startswith("/dy/"):
+                continue
             return platform
     return None
 
@@ -133,6 +144,7 @@ def recommend_engine(engine: str) -> list[str]:
         lines.append("数据说明：元宝无公开实测，权重为生态位估计，待真实数据校准")
     else:
         lines.append("数据说明：2026 年 3-5 月实测（16800 次查询），见 docs/国内收录三路径.md")
+    lines.append("权重为相对值：各平台权重之和可能不足 100%，未列平台占剩余份额")
     return lines
 
 
@@ -172,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument("--url", help="文章 URL：识别平台并输出该平台在各引擎的权重排名")
     args = parser.parse_args(argv)
 
-    if args.url:
+    if args.url is not None:
         print("\n".join(recommend_url(args.url)))
         return 0
     if args.engine == "all":
