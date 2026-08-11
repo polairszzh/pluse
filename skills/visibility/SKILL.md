@@ -17,10 +17,11 @@ Data reality (Phase 1): Zhihu page scraping is blocked (`zh-zse-ck`, verified 40
 
 Workflow:
 1. Run `python scripts/audit.py --url <url> --query "<topic>"` (the query is required when the URL is not the caller's own content; `--keywords 词1,词2` optionally pins target keywords)
-2. Read the generated report from `data/snapshots/audit-*.md`
-3. Cross-check the findings against `references/zhihu-guide.md` and `references/ai-search-guide.md` for qualitative context
-4. Keep every recommendation's falsifiability check and P0/P1/P2 priority intact
-5. Present the summary + report path to the user
+2. To score against the **full article body** instead of the 300-800 char API summary, add `--full` (uses Playwright + system Edge via `scripts/fetch_zhihu_full.py`; falls back to API summary automatically, report/JSON/CLI mark `content_source` as browser / api_summary_fallback / api_summary). Requires `pip install playwright && playwright install msedge`.
+3. Read the generated report from `data/snapshots/audit-*.md`
+4. Cross-check the findings against `references/zhihu-guide.md` and `references/ai-search-guide.md` for qualitative context
+5. Keep every recommendation's falsifiability check and P0/P1/P2 priority intact
+6. Present the summary + report path to the user
 
 Alternatives:
 - `/pulse audit --me` — audit the caller's own recent creations (`--index N` for one article, `--limit N` for how many to pull)

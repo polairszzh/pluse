@@ -240,6 +240,49 @@ class TestMain:
         assert code == 0
         assert list(tmp_path.glob("*.md"))
 
+    def test_audit_url_full_browser(self, item, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("audit.resolve_article", lambda u, q: item)
+        monkeypatch.setattr(
+            "audit.zhihu_api.topic_benchmark",
+            lambda q, count=10: {},
+        )
+        monkeypatch.setattr(
+            "audit.fetch_full_content",
+            lambda url: {"title": "标题", "content": "完整正文内容。" * 50},
+        )
+        code = main(["--url", item.url, "--full", "--output", str(tmp_path)])
+        assert code == 0
+        assert item.content_text.startswith("完整正文内容")
+        captured = capsys.readouterr().out
+        assert "浏览器全文" in captured
+        scores, _, _ = audit_one(item)
+        payload = render_json(item, scores, {}, [], content_source="browser")
+        assert payload["content_source"] == "browser"
+
+    def test_audit_url_full_fallback(self, item, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("audit.resolve_article", lambda u, q: item)
+        monkeypatch.setattr(
+            "audit.zhihu_api.topic_benchmark",
+            lambda q, count=10: {},
+        )
+        monkeypatch.setattr(
+            "audit.fetch_full_content",
+            lambda url: {"error": "Playwright 未安装"},
+        )
+        code = main(["--url", item.url, "--full", "--output", str(tmp_path)])
+        assert code == 0
+        captured = capsys.readouterr().out
+        assert "降级" in captured
+        md = list(tmp_path.glob("*.md"))[-1].read_text(encoding="utf-8")
+        assert "降级" in md
+
+    def test_render_markdown_content_source_browser(self, item):
+        scores, benchmark, recs = audit_one(item, "AI搜索优化")
+        md = render_markdown(
+            item, scores, benchmark, recs, "AI搜索优化", content_source="browser"
+        )
+        assert "本机浏览器采集的完整正文" in md
+
     def test_url_not_found(self, tmp_path, monkeypatch):
         monkeypatch.setattr("audit.resolve_article", lambda u, q: None)
         assert main(["--url", "https://zhuanlan.zhihu.com/p/1", "--query", "q"]) == 2

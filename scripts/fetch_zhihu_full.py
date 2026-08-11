@@ -1,0 +1,90 @@
+"""知乎文章全文抓取（可选：Playwright + 本机 Edge/Chrome）
+
+背景：知乎开放平台 API 只返回 300-800 字摘要，评分粒度受限。
+本模块用系统自带浏览器（关闭自动化特征 + 正常 UA）抓取完整正文，
+供 `audit --full` 使用；失败/未安装 Playwright 时由调用方降级 API 摘要。
+
+实测结论（2026-08-06）：Edge + --disable-blink-features=AutomationControlled
++ 删除 navigator.webdriver + 正常 UA，headful/headless 均能抓取知乎文章完整正文，
+无需登录。只读 + 低频，不做 stealth 指纹伪装；批量监测不依赖此通道。
+"""
+from __future__ import annotations
+
+from urllib.parse import urlsplit
+
+BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+_CONTENT_SELECTOR = ".Post-RichText, .RichText, .post-content"
+
+
+def _is_zhihu_url(url: str) -> bool:
+    try:
+        host = urlsplit(url).netloc.lower()
+    except ValueError:
+        return False
+    return host == "zhihu.com" or host.endswith(".zhihu.com")
+
+
+def fetch_full_content(url: str, timeout: int = 30) -> dict:
+    """抓取知乎文章完整正文
+
+    返回 {"title": str, "content": str}（成功）或 {"error": str}（失败/不可用）。
+    """
+    if not _is_zhihu_url(url):
+        return {"error": f"仅支持知乎链接：{url}"}
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return {
+            "error": (
+                "Playwright 未安装：pip install playwright && "
+                "playwright install msedge（本机需有 Edge）"
+            )
+        }
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                channel="msedge",
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+            page = browser.new_page(user_agent=BROWSER_UA)
+            page.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
+            page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
+            page.wait_for_selector(
+                _CONTENT_SELECTOR, timeout=timeout * 1000
+            )
+            # 懒加载：分次滚动到底部再回到顶部，触发正文渲染
+            for _ in range(5):
+                page.mouse.wheel(0, 4000)
+                page.wait_for_timeout(600)
+            page.mouse.wheel(0, -20000)
+            page.wait_for_timeout(500)
+            content = page.eval_on_selector(
+                _CONTENT_SELECTOR, "el => el.innerText"
+            )
+            title = page.title()
+            browser.close()
+            if not content or not content.strip():
+                return {"error": "正文提取为空（页面结构变化或内容需登录/付费）"}
+            return {"title": title, "content": content.strip()}
+    except Exception as exc:  # noqa: BLE001 — 浏览器/网络/选择器异常统一降级
+        return {"error": str(exc)}
+
+
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) < 2:
+        print("用法：python scripts/fetch_zhihu_full.py <知乎文章URL>")
+        raise SystemExit(2)
+    result = fetch_full_content(sys.argv[1])
+    if "error" in result:
+        print(f"抓取失败：{result['error']}")
+        raise SystemExit(1)
+    print(f"标题：{result['title']}")
+    print(f"正文长度：{len(result['content'])} 字")
