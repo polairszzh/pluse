@@ -338,7 +338,13 @@ def render_markdown(
     lines.append(f"- **审计时间**：{datetime.now().astimezone().strftime('%Y-%m-%d %H:%M')}")
     lines.append("")
 
-    lines.append(f"## 综合得分：{scores.overall}/100 · {scores.grade}")
+    cap_note = "（已封顶）" if scores.blockers else ""
+    lines.append(f"## 综合得分：{scores.overall}/100 · {scores.grade}{cap_note}")
+    if scores.blockers:
+        lines.append("")
+        lines.append("**阻断原因（一票封顶）**：")
+        for b in scores.blockers:
+            lines.append(f"- {b}")
     lines.append("")
     lines.append("| 维度 | 得分 | 等级 |")
     lines.append("|---|---|---|")
@@ -426,6 +432,7 @@ def render_json(
         "scores": {
             "overall": scores.overall,
             "grade": scores.grade,
+            "blockers": scores.blockers,
             "ai_citability": scores.ai_citability,
             "content_quality": scores.content_quality,
             "keyword_coverage": scores.keyword_coverage,
@@ -469,6 +476,8 @@ def _print_single_summary(
 ) -> None:
     print(f"标题：{item.title}")
     print(f"综合得分：{scores.overall}/100 · {scores.grade}")
+    for b in scores.blockers:
+        print(f"  [阻断] {b}（总分已封顶）")
     for dim_score in scores.sub_scores.values():
         print(f"  {dim_score.label}: {dim_score.score}/100")
     print(f"行动建议：{len(recs)} 条（P0={sum(1 for r in recs if r.priority == 'P0')}）")

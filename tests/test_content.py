@@ -151,6 +151,19 @@ class TestParse:
 class TestScore:
     def test_draft_score_shape(self):
         s = score_draft("WorkBuddy 是什么", SAMPLE_DRAFT, ["workbuddy"])
+        assert s["blockers"] == []
+
+    def test_score_draft_short_content_blocked(self):
+        s = score_draft("WorkBuddy 是什么", "太短", ["workbuddy"])
+        assert s["blockers"]
+        assert any("过短" in b for b in s["blockers"])
+        assert s["overall"] <= 40
+
+    def test_score_draft_missing_title_blocked(self):
+        s = score_draft("", SAMPLE_DRAFT, ["workbuddy"])
+        assert s["blockers"]
+        assert any("标题" in b for b in s["blockers"])
+        assert s["overall"] <= 40
         assert s["engagement"]["status"] == "未发布"
         assert set(s["dimensions"]) == {
             "AI 可引用性", "内容质量 (E-E-A-T)", "关键词覆盖", "结构与格式",

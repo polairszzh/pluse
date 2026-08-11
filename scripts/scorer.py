@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 # ── 常量 ────────────────────────────────────────────────
 
 TITLE_OPT_MIN, TITLE_OPT_MAX = 15, 35             # 知乎标题最佳字数区间
+BLOCKED_CEILING = 40                              # 有 blocker 时总分封顶值（C 档）
+MIN_CONTENT_LEN = 100                             # 正文最短可评分长度
 
 
 # ── 打分输出 ────────────────────────────────────────────
@@ -34,6 +36,7 @@ class AuditScores:
     engagement: int = 0
     sub_scores: dict[str, DimensionScore] = field(default_factory=dict)
     details: list[str] = field(default_factory=list)
+    blockers: list[str] = field(default_factory=list)  # 一票封顶的阻断原因
 
 
 def grade(score: int) -> str:
@@ -394,6 +397,21 @@ def score_engagement(
 
 # ── 综合 ────────────────────────────────────────────────
 
+def _detect_blockers(title: str, content_text: str) -> list[str]:
+    """检测文章级阻断项：缺标题/缺正文/正文过短（一票封顶）"""
+    blockers = []
+    if not title or not title.strip():
+        blockers.append("缺少标题（AI 与读者无法定位内容主题）")
+    if not content_text or not content_text.strip():
+        blockers.append("缺少正文内容（无可评分/可引用素材）")
+    elif len(content_text.strip()) < MIN_CONTENT_LEN:
+        blockers.append(
+            f"正文过短（{len(content_text.strip())} 字 < {MIN_CONTENT_LEN} 字，"
+            "AI 难以引用为独立来源）"
+        )
+    return blockers
+
+
 def audit_article(
     title: str,
     content_text: str,
@@ -405,6 +423,7 @@ def audit_article(
     updated_at: int | None = None,
     keywords: list[str] | None = None,
     benchmark_avg_votes: float = 0,
+    extra_blockers: list[str] | None = None,
 ) -> AuditScores:
     """对单篇文章进行全维度评分
 
@@ -419,6 +438,7 @@ def audit_article(
         updated_at:   EditTime Unix 时间戳
         keywords:     目标关键词列表
         benchmark_avg_votes: 话题平均赞同数（来自 topic_benchmark）
+        extra_blockers: 站点级/外部阻断项（如全站不可索引、账号零内容）
 
     Returns:
         AuditScores — 包含 overall、grade、五个维度分、子维度细节
@@ -436,6 +456,11 @@ def audit_article(
         0.10 * struct.score +
         0.10 * engagement.score
     )
+
+    blockers = _detect_blockers(title, content_text) + list(extra_blockers or [])
+    if blockers:
+        # 一票封顶：关键阻断项存在时总分封在低档并提示
+        overall = min(overall, BLOCKED_CEILING)
 
     all_details = []
     for dim in [citability, quality, kw, struct, engagement]:
@@ -461,4 +486,5 @@ def audit_article(
             "互动数据": engagement,
         },
         details=all_details,
+        blockers=blockers,
     )

@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from scorer import (
+    BLOCKED_CEILING,
     _authority,
     _citation_density,
     _data_citability,
@@ -338,3 +339,43 @@ class TestBenchmarkArticles:
             # 但两者之间的相对趋势应该一致
             assert avg_high > avg_low * 0.7, \
                 f"avg_high={avg_high:.0f}, avg_low={avg_low:.0f}"
+
+
+class TestBlockers:
+    """C1 一票封顶：关键阻断项存在时总分封在低档"""
+
+    LONG_TEXT = (
+        "本文介绍 WorkBuddy 的安装配置方法。根据官方文档 https://codebuddy.cn/work/，"
+        "安装约需 5 分钟，支持 3 种模型接入。笔者实测处理 1000 行代码耗时 2 秒，"
+        "参考《WorkBuddy 官方指南》与知乎专栏。据官方公告最新版本 2.3.1 已发布，"
+        "RAG、LLM、API、SDK、CLI 等接口详见附录。"
+    ) * 8  # >100 字且含引用/数据/术语/第一人称
+
+    def test_missing_title_blocked(self):
+        scores = audit_article("", self.LONG_TEXT)
+        assert any("标题" in b for b in scores.blockers)
+        assert scores.overall <= BLOCKED_CEILING
+        assert scores.grade == grade(BLOCKED_CEILING)
+
+    def test_missing_content_blocked(self):
+        scores = audit_article("有效标题", "")
+        assert any("正文" in b for b in scores.blockers)
+        assert scores.overall <= BLOCKED_CEILING
+
+    def test_short_content_blocked(self):
+        scores = audit_article("有效标题", "太短")
+        assert any("过短" in b for b in scores.blockers)
+        assert scores.overall <= BLOCKED_CEILING
+
+    def test_extra_blocker(self):
+        scores = audit_article(
+            "有效标题", self.LONG_TEXT,
+            extra_blockers=["账号零内容"],
+        )
+        assert "账号零内容" in scores.blockers
+        assert scores.overall <= BLOCKED_CEILING
+
+    def test_normal_no_blocker(self):
+        scores = audit_article("有效标题", self.LONG_TEXT)
+        assert scores.blockers == []
+        assert scores.overall > BLOCKED_CEILING
