@@ -194,6 +194,7 @@
 - **设计**：`references/` 每个文件带 `Updated: YYYY-MM-DD` 标记，CI 检查超过 90 天未更新的文件并告警。平台规则会过期，这是防止「知识腐烂」的机制。
 - **做法**：`reference_freshness.py` + CI job。
 - **优先级**：P1。
+  **实现**（2026-08-11，PR #16）：知识文件统一 `Updated: YYYY-MM-DD` 标记（references/ 3 个 + docs/国内收录三路径.md）；`scripts/reference_freshness.py` 检查缺失/超过 90 天/未来日期，`--ci` 模式告警退出 1；接入 CI（ci.yml Knowledge freshness 步骤）；content_adapter 兼容新旧标记格式。
 
 ### D4. 双引擎同步校验（Agentic-SEO-Skill validate_skill_inventory）
 - **设计**：Claude Code（SKILL.md + agents/*.md）与 Codex（agents/*.toml）命令清单、脚本引用一致性校验，防双引擎漂移。
