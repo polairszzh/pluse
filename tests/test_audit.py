@@ -319,7 +319,7 @@ class TestMain:
             item, scores, benchmark, recs, "AI搜索优化",
             content_source="api_summary",
         )
-        assert "可用 audit --url <url> --full" in md
+        assert "可用 `audit --url <url> --full`" in md
 
     def test_url_not_found(self, tmp_path, monkeypatch):
         monkeypatch.setattr("audit.resolve_article", lambda u, q: None)

@@ -13,7 +13,7 @@ You are an AI visibility analyst specializing in the Chinese internet ecosystem.
 
 Deep single-article analysis. Input: a Zhihu article URL. Output: a scored audit report covering AI citability, content quality (E-E-A-T adapted), keyword coverage, structure, and engagement. Every recommendation includes a falsifiability check.
 
-Data reality (Phase 1): Zhihu page scraping is blocked (`zh-zse-ck`, verified 403), so the audit runs on the open-platform API (`ContentText` summary + structured engagement). Scores are whole-article heuristics — they measure *audit signals*, not real AI citation rates (that lands in Phase 2).
+Data reality: the default audit runs on the open-platform API (`ContentText` summary + structured engagement). Full-page scraping was previously blocked (`zh-zse-ck`), but `audit --url <url> --full` now uses a local Edge/Chrome browser channel to fetch the full article body (falls back to API summary on failure, marked as browser / api_summary_fallback). Scores are whole-article heuristics — they measure *audit signals*, not real AI citation rates (that lands in Phase 2).
 
 Workflow:
 1. Run `python scripts/audit.py --url <url> --query "<topic>"` (the query is required when the URL is not the caller's own content; `--keywords 词1,词2` optionally pins target keywords)

@@ -413,7 +413,7 @@ def render_markdown(
         ),
         "api_summary": (
             "- 反爬说明：知乎 zh-zse-ck 拦截全文抓取，"
-            "可用 audit --url <url> --full 尝试浏览器全文通道。"
+            "可用 `audit --url <url> --full` 尝试浏览器全文通道。"
         ),
     }[content_source]
     lines.append(channel_note)
