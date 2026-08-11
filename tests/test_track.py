@@ -865,6 +865,8 @@ class TestB5IndexCheck:
         )
         # query/fragment 是噪音，不参与 site: 匹配
         assert search_ai._site_query("https://a.com/p?id=1#top") == "site:a.com/p"
+        # 无协议且带 query：同样剥离
+        assert search_ai._site_query("a.com/p?x=1") == "site:a.com/p"
 
     def test_baidu_target_url_restores_jump_link(self):
         jump = "http://www.baidu.com/link?url=https%3A%2F%2Fzhuanlan.zhihu.com%2Fp%2F123&wd=site%3A"
@@ -923,6 +925,32 @@ class TestB5IndexCheck:
         items = search_ai._parse_baidu(html)
         assert len(items) == 1
         assert "zhuanlan.zhihu.com/p/123" in items[0]["snippet"]
+
+    def test_parse_baidu_unescapes_href(self):
+        # href 含 &amp;：解码后才能被 _baidu_target_url 正确解析跳转参数
+        html = """
+        <div class="result c-container">
+          <h3 class="t"><a href="http://www.baidu.com/link?url=https%3A%2F%2Fzhuanlan.zhihu.com%2Fp%2F123&amp;wd=site%3A">标题</a></h3>
+          <span>摘要</span>
+        </div>
+        """
+        items = search_ai._parse_baidu(html)
+        assert items[0]["url"].endswith("&wd=site%3A")
+        assert search_ai._baidu_target_url(items[0]["url"]) == (
+            "https://zhuanlan.zhihu.com/p/123"
+        )
+
+    def test_parse_baidu_snippet_truncated_footer(self):
+        # 最后一个结果块混入页脚：snippet 截断到 300 字符，避免页脚 URL 误判疑似收录
+        html = """
+        <div class="result c-container">
+          <h3 class="t"><a href="http://www.baidu.com/link?url=x">标题</a></h3>
+          <span>摘要开始</span>
+        </div>
+        <div class="footer">页脚""" + "x" * 500 + """ https://footer.example.com/1</div>
+        """
+        items = search_ai._parse_baidu(html)
+        assert len(items[0]["snippet"]) <= 300
 
     def test_check_index_bing_indexed(self, monkeypatch):
         def fake_get(base, params=None, headers=None, timeout=None):

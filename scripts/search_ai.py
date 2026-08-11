@@ -689,16 +689,18 @@ def _parse_baidu(html_text: str, limit: int = 10) -> list[dict]:
         link = re.search(r'<h3[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', block, re.DOTALL)
         if not link:
             continue
-        url = link.group(1)
+        # href 先做 HTML 实体解码（&amp; → &），否则 parse_qs 无法正确切分跳转参数
+        url = html_module.unescape(link.group(1))
         title = html_module.unescape(re.sub(r"<[^>]+>", "", link.group(2))).strip()
         if not title:
             continue
         # 摘要取 h3 之后整段可见文本（去标签后拼接）：嵌套 span/a 不截断，
-        # 保证「疑似收录」判定能覆盖摘要中的 URL
+        # 保证「疑似收录」判定能覆盖摘要中的 URL；截断到 300 字符，
+        # 避免最后一个结果块混入页脚噪音造成误判
         after = block[link.end() :]
         snippet = " ".join(
             html_module.unescape(re.sub(r"<[^>]+>", " ", after)).split()
-        )
+        )[:300]
         results.append({"title": title, "url": url, "snippet": snippet})
         if len(results) >= limit:
             break
@@ -717,8 +719,9 @@ def _site_query(url: str) -> str:
         return f"site:{url}"
     if not parts.netloc:
         # 无协议输入（如 zhuanlan.zhihu.com/p/123）：netloc 为空、path 为整串，
-        # 直接按原样构造，避免 host+path 重复
-        return f"site:{url}"
+        # 直接按原样构造，避免 host+path 重复；query/fragment 同归一化剥离
+        path_only = url.split("?", 1)[0].split("#", 1)[0]
+        return f"site:{path_only}"
     host = parts.netloc or url
     path = parts.path or ""
     return f"site:{host}{path}"
