@@ -29,7 +29,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import requests
 from audit import Recommendation
@@ -644,6 +644,7 @@ def probe_deepseek(
 
 
 BING_URL = "https://www.bing.com/search"
+BAIDU_URL = "https://www.baidu.com/s"
 BING_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -668,6 +669,179 @@ def _parse_bing(html_text: str, limit: int = 10) -> list[dict]:
         if len(results) >= limit:
             break
     return results
+
+
+def _parse_baidu(html_text: str, limit: int = 10) -> list[dict]:
+    """从百度结果页 HTML 提取 (title, url, snippet)，解析失败返回空列表
+
+    百度链接多为跳转（www.baidu.com/link?url=...），收录判定主要靠标题/摘要，
+    url 字段保留原始跳转链接供参考。
+    """
+    results: list[dict] = []
+    # 块边界到下一个结果块或结尾：避免 .*?</div> 在嵌套 div 处提前截断
+    block_class = r'class="(?=[^"]*result)(?=[^"]*c-container)[^"]*"'
+    for block in re.findall(
+        r"<div[^>]*" + block_class + r"[^>]*>"
+        r"(.*?)(?=<div[^>]*" + block_class + r"|$)",
+        html_text,
+        re.DOTALL,
+    ):
+        link = re.search(r'<h3[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', block, re.DOTALL)
+        if not link:
+            continue
+        # href 先做 HTML 实体解码（&amp; → &），否则 parse_qs 无法正确切分跳转参数
+        url = html_module.unescape(link.group(1))
+        title = html_module.unescape(re.sub(r"<[^>]+>", "", link.group(2))).strip()
+        if not title:
+            continue
+        # 摘要取 h3 之后整段可见文本（去标签后拼接）：嵌套 span/a 不截断，
+        # 保证「疑似收录」判定能覆盖摘要中的 URL；截断到 300 字符，
+        # 避免最后一个结果块混入页脚噪音造成误判
+        after = block[link.end() :]
+        snippet = " ".join(
+            html_module.unescape(re.sub(r"<[^>]+>", " ", after)).split()
+        )[:300]
+        results.append({"title": title, "url": url, "snippet": snippet})
+        if len(results) >= limit:
+            break
+    return results
+
+
+def _site_query(url: str) -> str:
+    """构造 site: 收录探测查询（去协议，保留域名与路径）
+
+    query/fragment 不参与：跟踪参数/锚点是噪音，与 _url_present 的
+    「query 不参与比较」设计一致；site: 用 path 匹配范围更宽更稳。
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return f"site:{url}"
+    if not parts.netloc:
+        # 无协议输入（如 zhuanlan.zhihu.com/p/123）：netloc 为空、path 为整串，
+        # 直接按原样构造，避免 host+path 重复；query/fragment 同归一化剥离
+        path_only = url.split("?", 1)[0].split("#", 1)[0]
+        return f"site:{path_only}"
+    host = parts.netloc or url
+    path = parts.path or ""
+    return f"site:{host}{path}"
+
+
+def _baidu_target_url(item_url: str) -> str:
+    """从百度跳转链接（www.baidu.com/link?url=...）还原真实目标 URL"""
+    try:
+        parts = urlsplit(item_url)
+    except ValueError:
+        return item_url
+    host = parts.netloc or ""
+    if host != "baidu.com" and not host.endswith(".baidu.com"):
+        return item_url
+    # parse_qs 已做一次 percent 解码，不得再 unquote（避免 %25 双重解码）
+    target = parse_qs(parts.query).get("url", [""])[0]
+    return target if target else item_url
+
+
+_NO_RESULT_MARKERS = (
+    "没有找到",
+    "抱歉，没有找到",
+    "未找到相关",
+    "no results",
+    "there are no results",
+)
+_BLOCK_MARKERS = (
+    "安全验证",
+    "wappass",
+    "verify",
+    "captcha",
+    "网络不给力",
+    "访问过于频繁",
+)
+
+
+def _classify_empty_page(html_text: str) -> str:
+    """区分空解析结果页的语义：not_indexed（有效无结果）vs error（反爬/解析失败）
+
+    反爬/拦截标记 → 探测失败；明确的无结果标记 → 未收录；
+    无明确特征时不猜测（避免把大体积反爬页误判为未收录），一律按探测失败处理。
+    """
+    lower = html_text.lower()
+    if any(m in lower for m in _BLOCK_MARKERS):
+        return "error"
+    if any(m in lower for m in _NO_RESULT_MARKERS):
+        return "not_indexed"
+    return "error"
+
+
+def check_index(
+    url: str,
+    timeout: int = 20,
+    session: requests.Session | None = None,
+) -> dict:
+    """检查单篇内容在主流检索源（Bing/百度）的收录状态
+
+    对每个源发 site: 查询：命中该 URL（精确匹配，百度跳转链接还原后比较）→ 已收录；
+    查询成功但无命中 → 未收录；请求/解析失败 → 探测失败。
+    摘要文本含 URL 作为疑似收录的辅助信号（重定向/参数变体时 URL 可能不完全一致）。
+    """
+    http = session or requests
+    headers = {
+        "User-Agent": BING_UA,
+        "Accept-Language": "zh-CN,zh;q=0.9",
+    }
+    q = _site_query(url)
+    sources: dict[str, dict] = {}
+
+    for name, base, params in (
+        ("bing", BING_URL, {"q": q, "count": "10", "setlang": "zh-hans"}),
+        ("baidu", BAIDU_URL, {"wd": q}),
+    ):
+        try:
+            resp = http.get(base, params=params, headers=headers, timeout=timeout)
+            resp.raise_for_status()
+            html_text = resp.text
+        except requests.exceptions.RequestException as exc:
+            sources[name] = {"status": "error", "error": str(exc), "found": None}
+            continue
+        # 反爬/验证拦截优先于解析：拦截页即使解析出少量结果也不得误判收录
+        if any(m in html_text.lower() for m in _BLOCK_MARKERS):
+            sources[name] = {
+                "status": "error",
+                "error": "blocked（反爬/验证拦截）",
+                "found": None,
+            }
+            continue
+        items = _parse_bing(html_text) if name == "bing" else _parse_baidu(html_text)
+        if not items:
+            if _classify_empty_page(html_text) == "not_indexed":
+                sources[name] = {"status": "not_indexed", "found": False, "results": []}
+                continue
+            sources[name] = {
+                "status": "error",
+                "error": "no_results_parsed（页面结构变化或触发反爬）",
+                "found": None,
+            }
+            continue
+        url_hit = any(
+            _url_present(url, item.get("url", ""))
+            or _url_present(url, _baidu_target_url(item.get("url", "")))
+            for item in items
+        )
+        # 疑似收录：摘要文本里出现该 URL（百度跳转链接/参数变体场景）
+        snippet_hit = any(
+            _url_present(url, item.get("snippet", "")) for item in items
+        )
+        if url_hit:
+            status = "indexed"
+        elif snippet_hit:
+            status = "likely_indexed"
+        else:
+            status = "not_indexed"
+        sources[name] = {
+            "status": status,
+            "found": url_hit,
+            "results": items[:3],
+        }
+    return {"url": url, "query": q, "sources": sources}
 
 
 def probe_search_inference(
@@ -1703,7 +1877,13 @@ def build_parser() -> argparse.ArgumentParser:
         description="Pulse AI 平台引用监控 —— 探测品牌在 DeepSeek/Kimi/豆包/元宝的被提及情况，"
                     "写入 monitor.db 并对比历史快照生成趋势",
     )
-    parser.add_argument("--query", required=True, type=_non_empty_query, help="品牌名或关键词")
+    entry = parser.add_mutually_exclusive_group(required=True)
+    entry.add_argument("--query", type=_non_empty_query, help="品牌名或关键词（与 --index-check 二选一）")
+    entry.add_argument(
+        "--index-check",
+        type=_non_empty_query,
+        help="检查单篇内容 URL 在主流检索源（Bing/百度）的收录状态（与 --query 二选一）",
+    )
     parser.add_argument(
         "--mine",
         action="append",
@@ -1728,8 +1908,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--samples",
         type=_positive_int,
-        default=5,
-        help="每平台采样次数（默认 5）：多次探测计算被提及概率与置信区间；1 为单次判定",
+        default=argparse.SUPPRESS,
+        help="每平台采样次数（未指定时取 5）：多次探测计算被提及概率与置信区间；1 为单次判定",
     )
     parser.add_argument(
         "--platforms",
@@ -1743,6 +1923,49 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.index_check:
+        conflicting = [
+            name
+            for name, val in (
+                ("--mine", args.mine),
+                ("--mine-owned", args.mine_owned),
+                ("--competitor", args.competitor),
+                ("--platforms", args.platforms),
+                ("--samples", getattr(args, "samples", None)),
+                ("--output", args.output),
+                ("--db", args.db),
+            )
+            if val
+        ]
+        if conflicting:
+            print(
+                f"--index-check 与 {'、'.join(conflicting)} 互斥，请勿同时传入",
+                file=sys.stderr,
+            )
+            return 2
+        result = check_index(args.index_check)
+        label = {"bing": "Bing", "baidu": "百度"}
+        status_txt = {
+            "indexed": "已收录",
+            "likely_indexed": "疑似收录",
+            "not_indexed": "未收录",
+            "error": "探测失败",
+        }
+        print(f"收录检查：{result['url']}")
+        print(f"查询：{result['query']}")
+        for name, src in result["sources"].items():
+            txt = status_txt.get(src["status"], src["status"])
+            extra = f"（{src['error']}）" if src["status"] == "error" else ""
+            print(f"  {label.get(name, name)}：{txt}{extra}")
+        ts = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S-%f")
+        out_path = SNAPSHOT_DIR / f"index-check-{re_slug(args.index_check)}-{ts}.json"
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"已保存：{out_path}")
+        return 0
     platforms = args.platforms or list(PLATFORMS)
     earned_ids = list(dict.fromkeys(m.strip() for m in args.mine if m.strip()))
     owned_ids = list(dict.fromkeys(m.strip() for m in args.mine_owned if m.strip()))
@@ -1757,7 +1980,8 @@ def main(argv: list[str] | None = None) -> int:
     mine_ids = list(dict.fromkeys(earned_ids + owned_ids))
     db_path = Path(args.db) if args.db else DEFAULT_DB
     out_dir = Path(args.output) if args.output else None
-    samples = args.samples
+    # --samples 用 SUPPRESS 默认：未传时 args.samples 属性不存在，须 getattr 兜底
+    samples = getattr(args, "samples", None) or 5
 
     try:
         raw_samples: list[ProbeResult] = []

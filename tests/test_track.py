@@ -833,6 +833,269 @@ class TestB1Sampling:
         captured = capsys.readouterr().out
         assert "被提及 未知" in captured
 
+
+BAIDU_HTML = """
+<div class="result c-container">
+  <h3 class="t"><a href="http://www.baidu.com/link?url=x">文章标题</a></h3>
+  <span>摘要内容 https://zhuanlan.zhihu.com/p/123</span>
+</div>
+"""
+
+BING_INDEXED_HTML = """
+<ol id="b_results">
+  <li class="b_algo">
+    <h2><a href="https://zhuanlan.zhihu.com/p/123">文章标题</a></h2>
+    <p>摘要内容。</p>
+  </li>
+</ol>
+"""
+
+
+class TestB5IndexCheck:
+    """B5 国内收录检查：site: 探测、Bing/百度解析、收录判定"""
+
+    def test_site_query_strips_protocol(self):
+        assert search_ai._site_query("https://zhuanlan.zhihu.com/p/123") == (
+            "site:zhuanlan.zhihu.com/p/123"
+        )
+        assert search_ai._site_query("https://a.com") == "site:a.com"
+        # 无协议输入：不得 host+path 重复
+        assert search_ai._site_query("zhuanlan.zhihu.com/p/123") == (
+            "site:zhuanlan.zhihu.com/p/123"
+        )
+        # query/fragment 是噪音，不参与 site: 匹配
+        assert search_ai._site_query("https://a.com/p?id=1#top") == "site:a.com/p"
+        # 无协议且带 query：同样剥离
+        assert search_ai._site_query("a.com/p?x=1") == "site:a.com/p"
+
+    def test_baidu_target_url_restores_jump_link(self):
+        jump = "http://www.baidu.com/link?url=https%3A%2F%2Fzhuanlan.zhihu.com%2Fp%2F123&wd=site%3A"
+        assert search_ai._baidu_target_url(jump) == (
+            "https://zhuanlan.zhihu.com/p/123"
+        )
+        assert search_ai._baidu_target_url("https://other.com/x") == "https://other.com/x"
+        # parse_qs 只解码一次，%25 不被二次解码
+        assert search_ai._baidu_target_url(
+            "http://www.baidu.com/link?url=https%3A%2F%2Fa.com%2Fp%3Fv%3D1%2525"
+        ) == "https://a.com/p?v=1%25"
+        # 域名边界：notbaidu.com 不视为百度跳转
+        assert search_ai._baidu_target_url(
+            "http://notbaidu.com/link?url=https%3A%2F%2Fx.com"
+        ) == "http://notbaidu.com/link?url=https%3A%2F%2Fx.com"
+
+    def test_parse_baidu(self):
+        items = search_ai._parse_baidu(BAIDU_HTML)
+        assert len(items) == 1
+        assert items[0]["title"] == "文章标题"
+        assert "zhuanlan.zhihu.com/p/123" in items[0]["snippet"]
+
+    def test_parse_baidu_nested_div_snippet(self):
+        # 摘要 span 在嵌套 div 之后：块匹配不得在首个 </div> 提前截断
+        html = """
+        <div class="result c-container">
+          <h3 class="t"><a href="http://www.baidu.com/link?url=x">文章标题</a></h3>
+          <div class="a"></div>
+          <span class="b">摘要内容 https://zhuanlan.zhihu.com/p/123</span>
+        </div>
+        """
+        items = search_ai._parse_baidu(html)
+        assert len(items) == 1
+        assert "zhuanlan.zhihu.com/p/123" in items[0]["snippet"]
+
+    def test_parse_baidu_class_order_independent(self):
+        # class 顺序变化（c-container result）不因正则顺序漏解析
+        html = """
+        <div class="c-container result">
+          <h3 class="t"><a href="http://www.baidu.com/link?url=x">文章标题</a></h3>
+          <span>摘要内容 https://zhuanlan.zhihu.com/p/123</span>
+        </div>
+        """
+        items = search_ai._parse_baidu(html)
+        assert len(items) == 1
+        assert items[0]["title"] == "文章标题"
+
+    def test_parse_baidu_nested_tags_in_snippet(self):
+        # 摘要内嵌 span/a：整段可见文本拼接，URL 不被截断
+        html = """
+        <div class="result c-container">
+          <h3 class="t"><a href="http://www.baidu.com/link?url=x">文章标题</a></h3>
+          <span class="b">摘要 <a href="http://x">链接</a> 内容 https://zhuanlan.zhihu.com/p/123</span>
+        </div>
+        """
+        items = search_ai._parse_baidu(html)
+        assert len(items) == 1
+        assert "zhuanlan.zhihu.com/p/123" in items[0]["snippet"]
+
+    def test_parse_baidu_unescapes_href(self):
+        # href 含 &amp;：解码后才能被 _baidu_target_url 正确解析跳转参数
+        html = """
+        <div class="result c-container">
+          <h3 class="t"><a href="http://www.baidu.com/link?url=https%3A%2F%2Fzhuanlan.zhihu.com%2Fp%2F123&amp;wd=site%3A">标题</a></h3>
+          <span>摘要</span>
+        </div>
+        """
+        items = search_ai._parse_baidu(html)
+        assert items[0]["url"].endswith("&wd=site%3A")
+        assert search_ai._baidu_target_url(items[0]["url"]) == (
+            "https://zhuanlan.zhihu.com/p/123"
+        )
+
+    def test_parse_baidu_snippet_truncated_footer(self):
+        # 最后一个结果块混入页脚：snippet 截断到 300 字符，避免页脚 URL 误判疑似收录
+        html = """
+        <div class="result c-container">
+          <h3 class="t"><a href="http://www.baidu.com/link?url=x">标题</a></h3>
+          <span>摘要开始</span>
+        </div>
+        <div class="footer">页脚""" + "x" * 500 + """ https://footer.example.com/1</div>
+        """
+        items = search_ai._parse_baidu(html)
+        assert len(items[0]["snippet"]) <= 300
+
+    def test_check_index_bing_indexed(self, monkeypatch):
+        def fake_get(base, params=None, headers=None, timeout=None):
+            if "bing.com" in base:
+                return FakeResponse(text=BING_INDEXED_HTML)
+            return FakeResponse(text="<html>no results</html>")
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        result = search_ai.check_index("https://zhuanlan.zhihu.com/p/123")
+        assert result["sources"]["bing"]["status"] == "indexed"
+
+    def test_check_index_baidu_likely_via_snippet(self, monkeypatch):
+        def fake_get(base, params=None, headers=None, timeout=None):
+            if "baidu.com" in base:
+                return FakeResponse(text=BAIDU_HTML)
+            return FakeResponse(text="<html>no results</html>")
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        result = search_ai.check_index("https://zhuanlan.zhihu.com/p/123")
+        # 百度跳转链接场景：摘要含 URL → 疑似收录
+        assert result["sources"]["baidu"]["status"] == "likely_indexed"
+
+    def test_check_index_baidu_jump_link_restored(self, monkeypatch):
+        # 百度跳转链接：还原真实 URL 后精确命中 → 已收录（不再误判未收录）
+        html = """
+        <div class="result c-container">
+          <h3 class="t"><a href="http://www.baidu.com/link?url=https%3A%2F%2Fzhuanlan.zhihu.com%2Fp%2F123">文章标题</a></h3>
+          <span>摘要内容</span>
+        </div>
+        """
+
+        def fake_get(base, params=None, headers=None, timeout=None):
+            if "baidu.com" in base:
+                return FakeResponse(text=html)
+            return FakeResponse(text="<html>没有找到</html>")
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        result = search_ai.check_index("https://zhuanlan.zhihu.com/p/123")
+        assert result["sources"]["baidu"]["status"] == "indexed"
+
+    def test_check_index_not_indexed(self, monkeypatch):
+        def fake_get(base, params=None, headers=None, timeout=None):
+            return FakeResponse(
+                text='<ol id="b_results"><li class="b_algo"><h2><a href="https://other.com/x">别的</a></h2><p>无关</p></li></ol>'
+            )
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        result = search_ai.check_index("https://zhuanlan.zhihu.com/p/123")
+        assert result["sources"]["bing"]["status"] == "not_indexed"
+
+    def test_check_index_empty_results_page_is_not_indexed(self, monkeypatch):
+        # 有效结果页但无命中（含无结果标记）→ 未收录，而非探测失败
+        html = "<html><body>抱歉，没有找到与 site: 相关的网页</body></html>"
+
+        def fake_get(base, params=None, headers=None, timeout=None):
+            return FakeResponse(text=html)
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        result = search_ai.check_index("https://zhuanlan.zhihu.com/p/123")
+        assert result["sources"]["bing"]["status"] == "not_indexed"
+        assert result["sources"]["baidu"]["status"] == "not_indexed"
+
+    def test_check_index_block_page_is_error_even_when_large(self, monkeypatch):
+        # 反爬页体积大（>2KB）也判探测失败，不因大小阈值误判未收录
+        html = ("<html><title>百度安全验证</title>" + "<div>填充内容</div>" * 400 + "</html>")
+
+        def fake_get(base, params=None, headers=None, timeout=None):
+            return FakeResponse(text=html)
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        result = search_ai.check_index("https://zhuanlan.zhihu.com/p/123")
+        assert result["sources"]["bing"]["status"] == "error"
+        assert result["sources"]["baidu"]["status"] == "error"
+
+    def test_check_index_block_marker_wins_over_parsed_results(self, monkeypatch):
+        # 反爬页即使解析出结果块也判探测失败，不得误判收录
+        html = (
+            '<html><title>百度安全验证</title>'
+            '<ol id="b_results"><li class="b_algo"><h2><a href="https://zhuanlan.zhihu.com/p/123">标题</a></h2><p>摘要</p></li></ol>'
+            "</html>"
+        )
+
+        def fake_get(base, params=None, headers=None, timeout=None):
+            return FakeResponse(text=html)
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        result = search_ai.check_index("https://zhuanlan.zhihu.com/p/123")
+        assert result["sources"]["bing"]["status"] == "error"
+
+    def test_check_index_no_result_marker_small_page(self, monkeypatch):
+        # 小体积但含无结果标记 → 未收录
+        html = "<html><body>抱歉，没有找到与 site: 相关的网页</body></html>"
+
+        def fake_get(base, params=None, headers=None, timeout=None):
+            return FakeResponse(text=html)
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        result = search_ai.check_index("https://zhuanlan.zhihu.com/p/123")
+        assert result["sources"]["bing"]["status"] == "not_indexed"
+
+    def test_check_index_no_result_marker_lowercase_english(self, monkeypatch):
+        # 小写英文 no results 变体也应判未收录（大小写不敏感匹配）
+        html = "<html><body>there are no results for site query</body></html>"
+
+        def fake_get(base, params=None, headers=None, timeout=None):
+            return FakeResponse(text=html)
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        result = search_ai.check_index("https://zhuanlan.zhihu.com/p/123")
+        assert result["sources"]["bing"]["status"] == "not_indexed"
+
+    def test_check_index_request_error(self, monkeypatch):
+        def boom(*a, **kw):
+            raise requests.exceptions.ConnectionError("network down")
+
+        monkeypatch.setattr(requests, "get", boom)
+        result = search_ai.check_index("https://zhuanlan.zhihu.com/p/123")
+        assert result["sources"]["bing"]["status"] == "error"
+        assert result["sources"]["baidu"]["status"] == "error"
+
+    def test_main_index_check(self, tmp_path, monkeypatch, capsys):
+        fake = {
+            "url": "https://a.com/p/1",
+            "query": "site:a.com/p/1",
+            "sources": {
+                "bing": {"status": "indexed", "found": True, "results": []},
+                "baidu": {"status": "not_indexed", "found": False, "results": []},
+            },
+        }
+        monkeypatch.setattr(search_ai, "check_index", lambda url: fake)
+        monkeypatch.setattr(search_ai, "SNAPSHOT_DIR", tmp_path)
+        code = main(["--index-check", "https://a.com/p/1"])
+        assert code == 0
+        captured = capsys.readouterr().out
+        assert "收录检查：https://a.com/p/1" in captured
+        assert "Bing：已收录" in captured
+        assert "百度：未收录" in captured
+        assert len(list(tmp_path.glob("index-check-*.json"))) == 1
+
+    def test_main_index_check_rejects_conflicting_args(self, monkeypatch, capsys):
+        code = main(["--index-check", "https://a.com/p/1", "--mine", "https://a.com/1"])
+        assert code == 2
+        assert "互斥" in capsys.readouterr().err
+
+
     def test_render_markdown_probability(self):
         r = ProbeResult(
             "品牌A", "deepseek", "ok", True, "positive", "c", "api", False,
