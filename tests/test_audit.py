@@ -332,6 +332,19 @@ class TestMain:
         )
         assert "可用 `audit --url <url> --full`" in md
 
+    def test_render_unknown_content_source_no_keyerror(self, item):
+        # 新增来源未同步字典时用默认值，不抛 KeyError
+        scores, benchmark, recs = audit_one(item, "AI搜索优化")
+        md = render_markdown(
+            item, scores, benchmark, recs, "AI搜索优化",
+            content_source="unknown_future_source",
+        )
+        assert "数据来源" in md
+        payload = render_json(
+            item, scores, {}, [], content_source="unknown_future_source"
+        )
+        assert payload["content_source"] == "unknown_future_source"
+
     def test_url_not_found(self, tmp_path, monkeypatch):
         monkeypatch.setattr("audit.resolve_article", lambda u, q: None)
         assert main(["--url", "https://zhuanlan.zhihu.com/p/1", "--query", "q"]) == 2

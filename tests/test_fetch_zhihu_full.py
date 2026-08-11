@@ -36,3 +36,32 @@ class TestFetchFullContent:
         result = fzf.fetch_full_content("https://www.zhihu.com/question/123")
         assert "error" in result
         assert "文章/回答" in result["error"]
+
+
+class TestExtractContent:
+    def test_prefers_specific_selector_with_content(self):
+        class FakePage:
+            def eval_on_selector(self, selector, _expr):
+                if selector == ".Post-RichText":
+                    return ""
+                if selector == ".RichText":
+                    return "正文内容足够长。" * 20
+                raise RuntimeError("not found")
+
+        assert fzf._extract_content(FakePage()) == "正文内容足够长。" * 20
+
+    def test_short_or_empty_skipped(self):
+        class FakePage:
+            def eval_on_selector(self, selector, _expr):
+                if selector == ".Post-RichText":
+                    return "太短"
+                raise RuntimeError("not found")
+
+        assert fzf._extract_content(FakePage()) is None
+
+    def test_all_selectors_fail_returns_none(self):
+        class FakePage:
+            def eval_on_selector(self, selector, _expr):
+                raise RuntimeError("not found")
+
+        assert fzf._extract_content(FakePage()) is None

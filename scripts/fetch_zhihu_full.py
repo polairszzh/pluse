@@ -14,11 +14,8 @@ from __future__ import annotations
 import re
 from urllib.parse import urlsplit
 
-BROWSER_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-)
-_CONTENT_SELECTOR = ".Post-RichText, .RichText, .post-content"
+_CONTENT_SELECTORS = (".Post-RichText", ".RichText", ".post-content")
+_MIN_CONTENT_LEN = 100
 
 
 def _is_zhihu_url(url: str) -> bool:
@@ -41,6 +38,18 @@ def _is_article_url(url: str) -> bool:
     except ValueError:
         return False
     return bool(re.search(r"/(?:p|answer)/\d+", path))
+
+
+def _extract_content(page) -> str | None:
+    """按选择器优先级提取正文：精确选择器优先，空/过短结果跳过，全部失败返回 None"""
+    for selector in _CONTENT_SELECTORS:
+        try:
+            text = page.eval_on_selector(selector, "el => el.innerText")
+        except Exception:  # noqa: BLE001, S112 — 选择器不存在/异常，尝试下一个
+            continue
+        if text and len(text.strip()) >= _MIN_CONTENT_LEN:
+            return text.strip()
+    return None
 
 
 def fetch_full_content(url: str, timeout: int = 30) -> dict:
@@ -87,13 +96,22 @@ def fetch_full_content(url: str, timeout: int = 30) -> dict:
                     + "（可用 playwright install msedge 安装）"
                 )
             try:
-                page = browser.new_page(user_agent=BROWSER_UA)
+                # 用浏览器内置桌面 UA（去掉 Headless 标记），不硬编码具体版本：
+                # headless 默认 UA 含 HeadlessChrome 易被识别，移除标记后走正常桌面形态
+                ctx = browser.new_context()
+                page = ctx.new_page()
+                ua = page.evaluate("navigator.userAgent")
+                if "HeadlessChrome" in ua:
+                    ua = ua.replace("HeadlessChrome", "Chrome")
+                    ctx.close()
+                    ctx = browser.new_context(user_agent=ua)
+                    page = ctx.new_page()
                 page.add_init_script(
                     "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
                 )
                 page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
                 page.wait_for_selector(
-                    _CONTENT_SELECTOR, timeout=timeout * 1000
+                    ", ".join(_CONTENT_SELECTORS), timeout=timeout * 1000
                 )
                 # 懒加载：分次滚动到底部再回到顶部，触发正文渲染
                 for _ in range(5):
@@ -101,13 +119,11 @@ def fetch_full_content(url: str, timeout: int = 30) -> dict:
                     page.wait_for_timeout(600)
                 page.mouse.wheel(0, -20000)
                 page.wait_for_timeout(500)
-                content = page.eval_on_selector(
-                    _CONTENT_SELECTOR, "el => el.innerText"
-                )
+                content = _extract_content(page)
                 title = page.title()
-                if not content or not content.strip():
+                if content is None:
                     return {"error": "正文提取为空（页面结构变化或内容需登录/付费）"}
-                return {"title": title, "content": content.strip()}
+                return {"title": title, "content": content}
             finally:
                 # 无论提取成功/失败都显式关闭浏览器，避免依赖上下文隐式清理
                 try:

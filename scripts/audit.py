@@ -398,7 +398,7 @@ def render_markdown(
             "- 数据来源：知乎开放平台 API 的 ContentText 摘要（约 300-800 字）"
             " + 结构化互动数据（赞同/评论/收藏）。"
         ),
-    }[content_source]
+    }.get(content_source, "- 数据来源：API 摘要 + 结构化互动数据。")
     lines.append(source_note)
     granularity = (
         "- 评分粒度：整篇正文打分，非逐段。"
@@ -419,7 +419,7 @@ def render_markdown(
             "- 反爬说明：知乎 zh-zse-ck 拦截全文抓取，"
             "可用 `audit --url <url> --full` 尝试浏览器全文通道。"
         ),
-    }[content_source]
+    }.get(content_source, "- 数据说明：见 CLI 输出。")
     lines.append(channel_note)
     if fetch_note:
         lines.append(f"- 全文抓取说明：{fetch_note}")
@@ -477,7 +477,7 @@ def render_json(
             "browser": "本机浏览器采集的完整正文（audit --full），整篇粒度评分，非逐段",
             "api_summary_fallback": "API 摘要（浏览器全文抓取失败已降级），整篇粒度评分，非逐段",
             "api_summary": "知乎开放平台 API ContentText 摘要（300-800 字），整篇粒度评分，非逐段",
-        }[content_source],
+        }.get(content_source, "未知内容来源，整篇粒度评分，非逐段"),
     }
 
 
@@ -530,7 +530,7 @@ def _print_single_summary(
         "browser": "浏览器全文",
         "api_summary_fallback": "API 摘要（全文失败已降级）",
         "api_summary": "API 摘要",
-    }[content_source]
+    }.get(content_source, "未知")
     print(f"内容来源：{source_label}")
     if fetch_note:
         print(f"全文抓取说明：{fetch_note}")
