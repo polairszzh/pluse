@@ -870,6 +870,14 @@ class TestB5IndexCheck:
             "https://zhuanlan.zhihu.com/p/123"
         )
         assert search_ai._baidu_target_url("https://other.com/x") == "https://other.com/x"
+        # parse_qs 只解码一次，%25 不被二次解码
+        assert search_ai._baidu_target_url(
+            "http://www.baidu.com/link?url=https%3A%2F%2Fa.com%2Fp%3Fv%3D1%2525"
+        ) == "https://a.com/p?v=1%25"
+        # 域名边界：notbaidu.com 不视为百度跳转
+        assert search_ai._baidu_target_url(
+            "http://notbaidu.com/link?url=https%3A%2F%2Fx.com"
+        ) == "http://notbaidu.com/link?url=https%3A%2F%2Fx.com"
 
     def test_parse_baidu(self):
         items = search_ai._parse_baidu(BAIDU_HTML)

@@ -29,7 +29,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import requests
 from audit import Recommendation
@@ -726,10 +726,12 @@ def _baidu_target_url(item_url: str) -> str:
         parts = urlsplit(item_url)
     except ValueError:
         return item_url
-    if "baidu.com" not in (parts.netloc or ""):
+    host = parts.netloc or ""
+    if host != "baidu.com" and not host.endswith(".baidu.com"):
         return item_url
+    # parse_qs 已做一次 percent 解码，不得再 unquote（避免 %25 双重解码）
     target = parse_qs(parts.query).get("url", [""])[0]
-    return unquote(target) if target else item_url
+    return target if target else item_url
 
 
 _NO_RESULT_MARKERS = (
