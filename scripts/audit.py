@@ -466,9 +466,9 @@ def render_json(
         "recommendations": [r.__dict__ for r in recs],
         "content_source": content_source,
         "source_note": {
-            "browser": "本机浏览器采集的完整正文（audit --full）",
-            "api_summary_fallback": "API 摘要（浏览器全文抓取失败已降级）",
-            "api_summary": "知乎开放平台 API ContentText 摘要（300-800 字）",
+            "browser": "本机浏览器采集的完整正文（audit --full），整篇粒度评分，非逐段",
+            "api_summary_fallback": "API 摘要（浏览器全文抓取失败已降级），整篇粒度评分，非逐段",
+            "api_summary": "知乎开放平台 API ContentText 摘要（300-800 字），整篇粒度评分，非逐段",
         }[content_source],
     }
 

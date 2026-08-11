@@ -258,6 +258,7 @@ class TestMain:
         scores, _, _ = audit_one(item)
         payload = render_json(item, scores, {}, [], content_source="browser")
         assert payload["content_source"] == "browser"
+        assert "整篇粒度评分，非逐段" in payload["source_note"]
 
     def test_audit_url_full_fallback(self, item, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr("audit.resolve_article", lambda u, q: item)
