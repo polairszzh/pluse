@@ -414,6 +414,22 @@ class TestEvidenceCitation:
         dim = score_evidence_citation("据 gov.cn官网 数据，覆盖 1000 万人。")
         assert any("权威" in d for d in dim.details)
 
+    def test_ju_official_hits(self):
+        # 据官方统计（官方前是「据」非「非」）命中权威
+        dim = score_evidence_citation("据官方统计，覆盖 1000 万人。")
+        assert any("权威" in d for d in dim.details)
+
+    def test_fake_authority_suffix_not_counted(self):
+        # moe.gov.evil.com / nmpa.evil.com 等假后缀不命中；moe.gov.cn / nmpa.gov.cn 命中
+        dim = score_evidence_citation(
+            "参考 moe.gov.evil.com 与 nmpa.evil.com 的资料。"
+        )
+        assert not any("权威" in d for d in dim.details)
+        dim2 = score_evidence_citation(
+            "据 moe.gov.cn 与 nmpa.gov.cn 数据，覆盖 1000 万人。"
+        )
+        assert any("权威" in d for d in dim2.details)
+
     def test_plain_units_not_counted_as_stats(self):
         # 裸「3 人」「5 次」不带数量级/百分号：不计入统计密度
         dim = score_evidence_citation("3 人使用，5 次尝试，10 元定价。")

@@ -439,9 +439,9 @@ def score_evidence_citation(text: str) -> DimensionScore:
     authority = re.findall(
         # ASCII 边界（汉字非 \w 但属 unicode 字）：域名后紧跟中文（如 gov.cn官网）也能命中
         r"(?<![A-Za-z0-9])"
-        r"(?:gov\.cn|edu\.cn|moe\.gov|nmpa|cdc|who\.int|wikipedia\.org)"
+        r"(?:gov\.cn|edu\.cn|moe\.gov\.cn|nmpa\.gov\.cn|cdc\.gov|who\.int|wikipedia\.org)"
         r"(?![A-Za-z0-9])"
-        r"|(?<!\w)(?:官方|官网)",
+        r"|(?<!非)(?:官方|官网)",
         text,
         re.IGNORECASE,
     )
