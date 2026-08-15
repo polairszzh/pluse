@@ -409,7 +409,7 @@ def score_evidence_citation(text: str) -> DimensionScore:
     score = 30
     quotes = re.findall(
         r"《[^》]{2,40}》|\"[^\"]{10,}\"|「[^」]{10,}」|"
-        r"“[^”]{10,}”|‘[^’]{10,}’",
+        r"“[^”]{2,}”|‘[^’]{2,}’",
         text,
     )
     if quotes:
@@ -428,7 +428,7 @@ def score_evidence_citation(text: str) -> DimensionScore:
         score += 15
         details.append(f"{len(stats)} 处统计数据")
     sources = re.findall(
-        r"https?://|参考|来源|出处|"
+        r"https?://|(?:参考|数据|信息)来源|出处[:：]|"
         r"(?:据|根据)\s*(?:统计|测算|数据|报告|报道|公告|消息|官方)|"
         r"据\s*\S{2,8}(?:报道|消息)",
         text,

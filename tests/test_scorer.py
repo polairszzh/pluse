@@ -422,7 +422,12 @@ class TestEvidenceCitation:
     def test_curly_quotes_counted(self):
         # 中文弯引号直接引语也应检测
         dim = score_evidence_citation("他指出：“这个方案值得推广。”")
-        assert any("引语" in d for d in dim.details)
+        assert any(d.startswith("检测到") and "引语" in d for d in dim.details)
+
+    def test_bare_reference_word_not_counted(self):
+        # 裸「参考」「来源」不是强来源信号，不计数
+        dim = score_evidence_citation("仅供参考，来源不明。")
+        assert not any("来源标记" in d for d in dim.details)
 
     def test_tongji_and_full_report_sources(self):
         # 据统计/据新华社报道 完整命中，不被截断
