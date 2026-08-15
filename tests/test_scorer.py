@@ -402,6 +402,18 @@ class TestEvidenceCitation:
         assert dim.score < 50
         assert any("缺少" in d for d in dim.details)
 
+    def test_fake_authority_not_counted(self):
+        # medu.cn 含 edu.cn 子串、非官方含 官方 子串：不得命中权威
+        dim = score_evidence_citation(
+            "参考 medu.cn 与非官方渠道的说法，数据 30%。"
+        )
+        assert not any("权威" in d for d in dim.details)
+
+    def test_plain_units_not_counted_as_stats(self):
+        # 裸「3 人」「5 次」不带数量级/百分号：不计入统计密度
+        dim = score_evidence_citation("3 人使用，5 次尝试，10 元定价。")
+        assert not any("处统计数据" in d for d in dim.details)
+
     def test_audit_article_includes_evidence_dimension(self):
         text = (
             "据官方统计 500 万人使用，参考《报告》（edu.cn）与 https://www.gov.cn 数据。"

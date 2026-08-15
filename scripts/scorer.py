@@ -413,7 +413,8 @@ def score_evidence_citation(text: str) -> DimensionScore:
         details.append(f"检测到 {len(quotes)} 处引语（专著/论文/原文）")
     stats = re.findall(
         r"\d+(?:\.\d+)?[%％]|"
-        r"\d+(?:\.\d+)?\s*(?:万|亿|千|人|次|元|GB|MB|TB)",
+        r"\d+(?:\.\d+)?\s*(?:万|亿|千)"
+        r"(?:\s*(?:人|次|元|用户|份|台|家|条|GB|MB|TB))?",
         text,
     )
     if len(stats) >= 3:
@@ -427,7 +428,8 @@ def score_evidence_citation(text: str) -> DimensionScore:
         score += 15
         details.append(f"{len(sources)} 处来源标记")
     authority = re.findall(
-        r"(?:gov\.cn|edu\.cn|moe\.gov|nmpa|cdc|who\.int|wikipedia\.org|官方|官网)",
+        r"\b(?:gov\.cn|edu\.cn|moe\.gov|nmpa|cdc|who\.int|wikipedia\.org)\b"
+        r"|(?<!\w)(?:官方|官网)",
         text,
         re.IGNORECASE,
     )
