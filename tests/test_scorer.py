@@ -409,6 +409,11 @@ class TestEvidenceCitation:
         )
         assert not any("权威" in d for d in dim.details)
 
+    def test_domain_followed_by_chinese_hits(self):
+        # gov.cn官网（域名后紧跟中文）也应命中权威（ASCII 边界，汉字不算边界）
+        dim = score_evidence_citation("据 gov.cn官网 数据，覆盖 1000 万人。")
+        assert any("权威" in d for d in dim.details)
+
     def test_plain_units_not_counted_as_stats(self):
         # 裸「3 人」「5 次」不带数量级/百分号：不计入统计密度
         dim = score_evidence_citation("3 人使用，5 次尝试，10 元定价。")
