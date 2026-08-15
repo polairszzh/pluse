@@ -407,7 +407,11 @@ def score_evidence_citation(text: str) -> DimensionScore:
     """
     details: list[str] = []
     score = 30
-    quotes = re.findall(r"《[^》]{2,40}》|\"[^\"]{10,}\"|「[^」]{10,}」", text)
+    quotes = re.findall(
+        r"《[^》]{2,40}》|\"[^\"]{10,}\"|「[^」]{10,}」|"
+        r"“[^”]{10,}”|‘[^’]{10,}’",
+        text,
+    )
     if quotes:
         score += 20
         details.append(f"检测到 {len(quotes)} 处引语（专著/论文/原文）")
@@ -423,7 +427,11 @@ def score_evidence_citation(text: str) -> DimensionScore:
     elif stats:
         score += 15
         details.append(f"{len(stats)} 处统计数据")
-    sources = re.findall(r"https?://|参考|来源|出处|据\S{2,4}[报说称指]", text)
+    sources = re.findall(
+        r"https?://|参考|来源|出处|"
+        r"(?:据|根据)\s*(?:统计|测算|数据|报告|报道|公告|消息|官方)",
+        text,
+    )
     if sources:
         score += 15
         details.append(f"{len(sources)} 处来源标记")

@@ -414,6 +414,16 @@ class TestEvidenceCitation:
         dim = score_evidence_citation("3 人使用，5 次尝试，10 元定价。")
         assert not any("处统计数据" in d for d in dim.details)
 
+    def test_curly_quotes_counted(self):
+        # 中文弯引号直接引语也应检测
+        dim = score_evidence_citation("他指出：“这个方案值得推广。”")
+        assert any("引语" in d for d in dim.details)
+
+    def test_tongji_and_full_report_sources(self):
+        # 据统计/据新华社报道 完整命中，不被截断
+        dim = score_evidence_citation("据统计，市场增长；据新华社报道，政策落地。")
+        assert any("来源" in d for d in dim.details)
+
     def test_audit_article_includes_evidence_dimension(self):
         text = (
             "据官方统计 500 万人使用，参考《报告》（edu.cn）与 https://www.gov.cn 数据。"
