@@ -430,6 +430,22 @@ class TestEvidenceCitation:
         )
         assert any("权威" in d for d in dim2.details)
 
+    def test_domain_label_boundary(self):
+        # fake-edu.cn / not-gov.cn / gov.cn.evil.com 不命中；a.edu.cn 子域命中
+        dim = score_evidence_citation(
+            "参考 fake-edu.cn、not-gov.cn 与 gov.cn.evil.com 的资料。"
+        )
+        assert not any("权威" in d for d in dim.details)
+        dim2 = score_evidence_citation("数据来自 a.edu.cn 与 gov.cn官网。")
+        assert any("权威" in d for d in dim2.details)
+
+    def test_incomplete_statistics_hits(self):
+        # 据不完全统计 命中；据，报道（标点当媒体名）不命中
+        dim = score_evidence_citation("据不完全统计，覆盖 1000 万人。")
+        assert any("来源" in d for d in dim.details)
+        dim2 = score_evidence_citation("据，报道，情况不明。")
+        assert not any("来源标记" in d for d in dim2.details)
+
     def test_plain_units_not_counted_as_stats(self):
         # 裸「3 人」「5 次」不带数量级/百分号：不计入统计密度
         dim = score_evidence_citation("3 人使用，5 次尝试，10 元定价。")
