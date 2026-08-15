@@ -57,6 +57,27 @@ class TestDiagnose:
         assert result["layer"] == "memory_index"
         assert "未被搜索引擎收录" in result["reason"]
 
+    def test_index_status_priority_over_no_data(self, tmp_path):
+        # 无 track 历史但显式提供未收录：优先判收录层，不抢 no_data
+        result = bottleneck.diagnose(
+            "话题A", db_path=tmp_path / "m.db", index_status="not_indexed"
+        )
+        assert result["layer"] == "memory_index"
+
+    def test_index_status_priority_over_invalid_history(self, tmp_path):
+        db = tmp_path / "m.db"
+        search_ai.store_results(
+            [search_ai.ProbeResult(
+                "话题A", "deepseek", "error", None, None, "boom", "api", True,
+                error="x",
+            )],
+            db_path=db, run_at="2026-08-01T10:00:00+08:00",
+        )
+        result = bottleneck.diagnose(
+            "话题A", db_path=db, index_status="not_indexed"
+        )
+        assert result["layer"] == "memory_index"
+
     def test_mentioned_but_mine_not_checked(self, tmp_path):
         db = tmp_path / "m.db"
         search_ai.store_results(

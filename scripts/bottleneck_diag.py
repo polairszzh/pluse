@@ -74,7 +74,12 @@ def diagnose(
     layer = "unknown"
     reason = ""
     direction = ""
-    if not has_track_data:
+    if index_status == "not_indexed":
+        # 用户显式提供收录状态时优先：未收录是硬证据，先解决收录
+        layer = "memory_index"
+        reason = "内容未被搜索引擎收录（site: 无命中）——话题就算被检索也召回不到你的内容"
+        direction = "先解决收录（渠道/平台收录机制），改内容无效"
+    elif not has_track_data:
         layer = "no_data"
         reason = "该话题没有 track 历史，先跑 /pulse track 建立基线"
         direction = "先建立基线（track --samples 5）"
@@ -82,10 +87,6 @@ def diagnose(
         layer = "unknown"
         reason = "话题有 track 历史但均为失败/未配置，无有效探测数据"
         direction = "重跑 track（检查网络/密钥）后再诊断"
-    elif index_status == "not_indexed":
-        layer = "memory_index"
-        reason = "内容未被搜索引擎收录（site: 无命中）——话题就算被检索也召回不到你的内容"
-        direction = "先解决收录（渠道/平台收录机制），改内容无效"
     elif not any_cited:
         layer = "memory_index"
         reason = "话题从未被任何平台提及——AI 检索库里没有该话题的存在信号"
