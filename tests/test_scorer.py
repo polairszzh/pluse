@@ -27,6 +27,7 @@ from scorer import (
     score_ai_citability,
     score_content_quality,
     score_engagement,
+    score_evidence_citation,
     score_keyword_coverage,
     score_structure,
 )
@@ -379,3 +380,106 @@ class TestBlockers:
         scores = audit_article("有效标题", self.LONG_TEXT)
         assert scores.blockers == []
         assert scores.overall > BLOCKED_CEILING
+
+
+class TestEvidenceCitation:
+    """C2 证据引用层权重：引语/统计/来源/权威"""
+
+    def test_rich_evidence_high_score(self):
+        text = (
+            "据《2026 人工智能发展报告》统计，中国 AI 市场规模达 5000 亿元，"
+            "年增长 30%。官方（https://www.gov.cn）数据显示 1000 万人使用。"
+            "参考知乎专栏与教育部文件（edu.cn）。"
+        )
+        dim = score_evidence_citation(text)
+        assert dim.score >= 80
+        assert any("引语" in d for d in dim.details)
+        assert any("统计" in d for d in dim.details)
+        assert any("权威" in d for d in dim.details)
+
+    def test_no_evidence_low_score(self):
+        dim = score_evidence_citation("我认为这个产品很好，体验不错。")
+        assert dim.score < 50
+        assert any("缺少" in d for d in dim.details)
+
+    def test_fake_authority_not_counted(self):
+        # medu.cn 含 edu.cn 子串、非官方含 官方 子串：不得命中权威
+        dim = score_evidence_citation(
+            "参考 medu.cn 与非官方渠道的说法，数据 30%。"
+        )
+        assert not any("权威" in d for d in dim.details)
+
+    def test_domain_followed_by_chinese_hits(self):
+        # gov.cn官网（域名后紧跟中文）也应命中权威（ASCII 边界，汉字不算边界）
+        dim = score_evidence_citation("据 gov.cn官网 数据，覆盖 1000 万人。")
+        assert any("权威" in d for d in dim.details)
+
+    def test_ju_official_hits(self):
+        # 据官方统计（官方前是「据」非「非」）命中权威
+        dim = score_evidence_citation("据官方统计，覆盖 1000 万人。")
+        assert any("权威" in d for d in dim.details)
+
+    def test_fake_authority_suffix_not_counted(self):
+        # moe.gov.evil.com / nmpa.evil.com 等假后缀不命中；moe.gov.cn / nmpa.gov.cn 命中
+        dim = score_evidence_citation(
+            "参考 moe.gov.evil.com 与 nmpa.evil.com 的资料。"
+        )
+        assert not any("权威" in d for d in dim.details)
+        dim2 = score_evidence_citation(
+            "据 moe.gov.cn 与 nmpa.gov.cn 数据，覆盖 1000 万人。"
+        )
+        assert any("权威" in d for d in dim2.details)
+
+    def test_domain_label_boundary(self):
+        # fake-edu.cn / not-gov.cn / gov.cn.evil.com 不命中；a.edu.cn 子域命中
+        dim = score_evidence_citation(
+            "参考 fake-edu.cn、not-gov.cn、gov.cn.evil.com 与 gov.cn-evil.com 的资料。"
+        )
+        assert not any("权威" in d for d in dim.details)
+        dim2 = score_evidence_citation("数据来自 a.edu.cn 与 gov.cn官网。")
+        assert any("权威" in d for d in dim2.details)
+
+    def test_incomplete_statistics_hits(self):
+        # 据不完全统计 命中；据，报道（标点当媒体名）不命中
+        dim = score_evidence_citation("据不完全统计，覆盖 1000 万人。")
+        assert any("来源" in d for d in dim.details)
+        dim2 = score_evidence_citation("据，报道，情况不明。")
+        assert not any("来源标记" in d for d in dim2.details)
+
+    def test_source_colon_hits(self):
+        # 来源：新华网（裸来源带冒号）命中
+        dim = score_evidence_citation("来源：新华网 2026 年报道，覆盖 1000 万人。")
+        assert any("来源标记" in d for d in dim.details)
+
+    def test_plain_units_not_counted_as_stats(self):
+        # 裸「3 人」「5 次」不带数量级/百分号：不计入统计密度
+        dim = score_evidence_citation("3 人使用，5 次尝试，10 元定价。")
+        assert not any("处统计数据" in d for d in dim.details)
+
+    def test_curly_quotes_counted(self):
+        # 中文弯引号直接引语也应检测
+        dim = score_evidence_citation("他指出：“这个方案值得推广。”")
+        assert any(d.startswith("检测到") and "引语" in d for d in dim.details)
+
+    def test_bare_reference_word_not_counted(self):
+        # 裸「参考」「来源」不是强来源信号，不计数
+        dim = score_evidence_citation("仅供参考，来源不明。")
+        assert not any("来源标记" in d for d in dim.details)
+
+    def test_tongji_and_full_report_sources(self):
+        # 据统计/据新华社报道 完整命中，不被截断
+        dim = score_evidence_citation("据统计，市场增长；据新华社报道，政策落地。")
+        assert any("来源" in d for d in dim.details)
+
+    def test_media_name_report_source(self):
+        # 仅媒体名场景（不含据统计）：据新华社报道 单独命中
+        dim = score_evidence_citation("据新华社报道，政策落地；据央视消息，数据公布。")
+        assert any("来源" in d for d in dim.details)
+
+    def test_audit_article_includes_evidence_dimension(self):
+        text = (
+            "据官方统计 500 万人使用，参考《报告》（edu.cn）与 https://www.gov.cn 数据。"
+        ) * 5
+        scores = audit_article("有效标题", text)
+        assert "证据引用" in scores.sub_scores
+        assert scores.evidence_citation == scores.sub_scores["证据引用"].score

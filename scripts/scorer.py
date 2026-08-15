@@ -34,6 +34,7 @@ class AuditScores:
     keyword_coverage: int = 0
     structure: int = 0
     engagement: int = 0
+    evidence_citation: int = 0
     sub_scores: dict[str, DimensionScore] = field(default_factory=dict)
     details: list[str] = field(default_factory=list)
     blockers: list[str] = field(default_factory=list)  # 一票封顶的阻断原因
@@ -395,6 +396,67 @@ def score_engagement(
     return DimensionScore(score=clamp(score), label="互动数据", details=details)
 
 
+# ── 证据引用（C2） ──────────────────────────────────────
+
+
+def score_evidence_citation(text: str) -> DimensionScore:
+    """证据引用层权重（C2）：权威原文引语 + 统计数据 + 可验证来源
+
+    与被引用第一杠杆（约 43%）对应：权威来源、统计数据、来源标注
+    是可被 AI 直接引用/追溯的核心信号。
+    """
+    details: list[str] = []
+    score = 30
+    quotes = re.findall(
+        r"《[^》]{2,40}》|\"[^\"]{10,}\"|「[^」]{10,}」|"
+        r"“[^”]{2,}”|‘[^’]{2,}’",
+        text,
+    )
+    if quotes:
+        score += 20
+        details.append(f"检测到 {len(quotes)} 处引语（专著/论文/原文）")
+    stats = re.findall(
+        r"\d+(?:\.\d+)?[%％]|"
+        r"\d+(?:\.\d+)?\s*(?:万|亿|千)"
+        r"(?:\s*(?:人|次|元|用户|份|台|家|条|GB|MB|TB))?",
+        text,
+    )
+    if len(stats) >= 3:
+        score += 25
+        details.append(f"{len(stats)} 处统计数据，密度高")
+    elif stats:
+        score += 15
+        details.append(f"{len(stats)} 处统计数据")
+    sources = re.findall(
+        r"https?://|来源[:：]|(?:参考|数据|信息)来源|出处[:：]|"
+        r"(?:据|根据)\s*(?:不完全)?(?:统计|测算|数据|报告|报道|公告|消息|官方)|"
+        r"据\s*[\u4e00-\u9fffA-Za-z]{2,8}(?:报道|消息)",
+        text,
+    )
+    if sources:
+        score += 15
+        details.append(f"{len(sources)} 处来源标记")
+    authority = re.findall(
+        # ASCII 边界（汉字非 \w 但属 unicode 字）：域名后紧跟中文（如 gov.cn官网）也能命中
+        r"(?<![A-Za-z0-9-])"
+        r"(?:gov\.cn|edu\.cn|moe\.gov\.cn|nmpa\.gov\.cn|cdc\.gov|who\.int|wikipedia\.org)"
+        r"(?![A-Za-z0-9.\-])"
+        r"|(?<!非)(?:官方|官网)",
+        text,
+        re.IGNORECASE,
+    )
+    if authority:
+        score += 20
+        details.append("检测到权威来源/官方域名")
+    if not details:
+        details.append("缺少引语、统计数据与可验证来源")
+    return DimensionScore(
+        score=clamp(score),
+        label="证据引用 (C2)",
+        details=details,
+    )
+
+
 # ── 综合 ────────────────────────────────────────────────
 
 def _detect_blockers(title: str, content_text: str) -> list[str]:
@@ -441,20 +503,25 @@ def audit_article(
         extra_blockers: 站点级/外部阻断项（如全站不可索引、账号零内容）
 
     Returns:
-        AuditScores — 包含 overall、grade、五个维度分、子维度细节
+        AuditScores — 包含 overall、grade、六个维度分（AI可引用性/证据引用/内容质量/
+        关键词覆盖/结构/互动）、子维度细节
     """
     citability  = score_ai_citability(title, content_text, updated_at)
+    evidence    = score_evidence_citation(content_text)
     quality     = score_content_quality(content_text, author_name, author_badge)
     kw          = score_keyword_coverage(title, content_text, keywords)
     struct      = score_structure(title, content_text)
     engagement  = score_engagement(votes, comments, favorites, benchmark_avg_votes)
 
+    # C2 权重校准：证据引用(18%) + AI 可引用性(25%) 合计 43%（被引用第一杠杆），
+    # 内容质量 22 / 关键词 17 / 结构 9 / 互动 9
     overall = int(
-        0.35 * citability.score +
-        0.25 * quality.score +
-        0.20 * kw.score +
-        0.10 * struct.score +
-        0.10 * engagement.score
+        0.25 * citability.score +
+        0.18 * evidence.score +
+        0.22 * quality.score +
+        0.17 * kw.score +
+        0.09 * struct.score +
+        0.09 * engagement.score
     )
 
     blockers = _detect_blockers(title, content_text) + list(extra_blockers or [])
@@ -463,7 +530,7 @@ def audit_article(
         overall = min(overall, BLOCKED_CEILING)
 
     all_details = []
-    for dim in [citability, quality, kw, struct, engagement]:
+    for dim in [citability, evidence, quality, kw, struct, engagement]:
         all_details.append(f"**{dim.label}**: {dim.score}/100")
         for sub_name, sub_score in dim.sub_scores.items():
             all_details.append(f"  - {sub_name}: {sub_score}/100")
@@ -474,12 +541,14 @@ def audit_article(
         overall=overall,
         grade=grade(overall),
         ai_citability=citability.score,
+        evidence_citation=evidence.score,
         content_quality=quality.score,
         keyword_coverage=kw.score,
         structure=struct.score,
         engagement=engagement.score,
         sub_scores={
             "AI 可引用性": citability,
+            "证据引用": evidence,
             "内容质量": quality,
             "关键词覆盖": kw,
             "结构与格式": struct,

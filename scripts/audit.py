@@ -482,6 +482,7 @@ def render_json(
             "grade": scores.grade,
             "blockers": scores.blockers,
             "ai_citability": scores.ai_citability,
+            "evidence_citation": scores.evidence_citation,
             "content_quality": scores.content_quality,
             "keyword_coverage": scores.keyword_coverage,
             "structure": scores.structure,
