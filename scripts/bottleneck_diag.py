@@ -65,7 +65,10 @@ def diagnose(
             if mine_ids and set(p.get("mine_ids") or []) == set(mine_ids)
         ]
         mine_checked_any = mine_checked_any or bool(matched_points)
-        mine_cited = any(p.get("mine_cited") is True for p in matched_points)
+        mine_cited = (
+            any(p.get("mine_cited") is True for p in matched_points)
+            if matched_points else None  # 无匹配历史点 = 未检查，非「否」
+        )
         risk = any(p.get("fact_risks") or p.get("competitor_matched") for p in ok_points)
         platform_summary[platform] = {
             "mentioned": cited,
@@ -142,7 +145,8 @@ def main(argv: list[str] | None = None) -> int:
         "--index-status",
         choices=["indexed", "not_indexed", "unknown"],
         default=None,
-        help="收录状态（来自 index-check），提供后优先判定收录层",
+        help="收录状态（来自 index-check）；仅 not_indexed 优先判定收录层，"
+             "indexed/unknown 仍走 track 历史判定",
     )
     parser.add_argument("--db", help="monitor.db 路径（默认 data/monitor.db）")
     args = parser.parse_args(argv)
@@ -154,6 +158,8 @@ def main(argv: list[str] | None = None) -> int:
         index_status=args.index_status,
     )
     print(f"瓶颈定位：{result['layer_label']}")
+    if result.get("index_status"):
+        print(f"收录状态：{result['index_status']}")
     print(f"依据：{result['reason']}")
     print(f"方向：{result['direction']}")
     if result["platform_summary"]:
@@ -162,7 +168,12 @@ def main(argv: list[str] | None = None) -> int:
             label = search_ai.PLATFORMS.get(platform, {}).get("label", platform)
             print(
                 f"  {label}：被提及 {'是' if info['mentioned'] else '否'}"
-                f" · 我的内容 {'是' if info['mine_cited'] else '否'}"
+                f" · 我的内容 "
+                + (
+                    "是" if info["mine_cited"] is True
+                    else "否" if info["mine_cited"] is False
+                    else "未检查"
+                )
                 + (" · 有风险信号" if info["risk"] else "")
             )
     return 0

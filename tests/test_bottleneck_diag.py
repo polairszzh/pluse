@@ -101,6 +101,18 @@ class TestDiagnose:
         assert result["layer"] == "unknown"
         assert "未用本次 --mine" in result["reason"]
         assert "重跑 track 带 --mine" in result["direction"]
+        # 平台摘要 mine_cited 应为 None（未检查），不是 False（否）
+        assert result["platform_summary"]["deepseek"]["mine_cited"] is None
+
+    def test_indexed_status_shown_but_history_used(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.setattr(
+            bottleneck, "DEFAULT_DB", tmp_path / "m.db"
+        )
+        assert bottleneck.main(
+            ["--query", "话题A", "--index-status", "indexed"]
+        ) == 0
+        out = capsys.readouterr().out
+        assert "收录状态：indexed" in out
 
     def test_mentioned_but_mine_not_cited(self, tmp_path):
         db = tmp_path / "m.db"
