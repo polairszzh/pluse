@@ -73,6 +73,8 @@ Output citation-source ranking for an AI engine (B6 平台信源推荐):
 
 Generate platform-adapted content from a local Markdown draft. Input: a local source file (`--source draft.md`). Output: an AI 搜索优化版 (Q&A blocks for citation) and a 知乎版 (structured long-form), each with a falsifiability check; the draft is scored on four text dimensions (AI citability / content quality / keyword coverage / structure; engagement is marked 未发布 until published).
 
+Before rewriting, `adapt` runs an A2 bottleneck diagnosis (scripts/bottleneck_diag.py) against the topic's track history. Because the draft is unpublished, the automatic diagnosis covers the topic layer only: 记忆/索引层 (not indexed/never mentioned → fix indexing first, rewriting is ineffective) vs 检索/选择层 (topic mentioned → content adaptation is the right lever). Content-ownership layers (your content selected/cited, risks) need a published identifier: run standalone `python scripts/bottleneck_diag.py --query <话题> --mine <标识> [--index-status indexed|not_indexed|unknown]` or re-run track with `--mine` first. The diagnosis appears in the CLI output and manifest as `bottleneck`.
+
 Workflow:
   1. Run `python scripts/content_adapter.py --source <draft.md> --query <话题>` (optionally `--platforms zhihu,ai` to limit; `--no-llm` forces the deterministic rule scaffold)
   2. Read `references/content-format.md` for platform-specific rules

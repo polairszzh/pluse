@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+import bottleneck_diag
 import requests
 import search_ai
 from fact_checker import risk_severity, verify_facts
@@ -1027,6 +1028,7 @@ def build_manifest(
     gaps: list[dict] | None = None,
     checklist_path: Path | None = None,
     postprocess_warnings: list[str] | None = None,
+    bottleneck: dict | None = None,
 ) -> dict:
     """生成输出清单：每个版本带 falsifiability check"""
     gaps = gaps or []
@@ -1044,6 +1046,7 @@ def build_manifest(
         "source_title": doc.title,
         "source_chars": len(doc.raw),
         "query": query,
+        "bottleneck": bottleneck,
         "draft_score": draft_score,
         "material_gaps": gaps,
         "llm_postprocess_warnings": postprocess_warnings or [],
@@ -1197,6 +1200,11 @@ def main(argv: list[str] | None = None) -> int:
         keywords = _query_keywords(query)
         draft_score = score_draft(doc.title, doc.body_text or doc.raw, keywords)
         gaps = detect_material_gaps(doc, query)
+        # A2 瓶颈定位：改写前先看话题在 AI 检索库里的状态（尽力而为，失败降级不阻断）
+        try:
+            bottleneck_result = bottleneck_diag.diagnose(query)
+        except Exception:  # noqa: BLE001 — 诊断失败不影响生成
+            bottleneck_result = None
 
         high_promo = [
             g for g in gaps
@@ -1288,7 +1296,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         manifest = build_manifest(
             doc, query, versions, draft_score, out_dir, gaps, checklist_path,
-            postprocess_warnings,
+            postprocess_warnings, bottleneck_result,
         )
         manifest_path = save_manifest(manifest, out_dir)
     except OSError as exc:
@@ -1299,6 +1307,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(f"草稿：{doc.title}（{len(doc.raw)} 字）")
+    bn = manifest.get("bottleneck")
+    if bn:
+        print(f"瓶颈定位：{bn['layer_label']} —— {bn['reason']}")
+        print(f"  方向：{bn['direction']}")
     print(f"草稿得分：{draft_score['overall']}/100 · {draft_score['grade']}（互动维度未发布）")
     for b in draft_score.get("blockers", []):
         print(f"  [阻断] {b}（总分已封顶）")
