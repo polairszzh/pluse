@@ -428,7 +428,7 @@ def score_evidence_citation(text: str) -> DimensionScore:
         score += 15
         details.append(f"{len(stats)} 处统计数据")
     sources = re.findall(
-        r"https?://|(?:参考|数据|信息)来源|出处[:：]|"
+        r"https?://|来源[:：]|(?:参考|数据|信息)来源|出处[:：]|"
         r"(?:据|根据)\s*(?:不完全)?(?:统计|测算|数据|报告|报道|公告|消息|官方)|"
         r"据\s*[\u4e00-\u9fffA-Za-z]{2,8}(?:报道|消息)",
         text,
@@ -440,7 +440,7 @@ def score_evidence_citation(text: str) -> DimensionScore:
         # ASCII 边界（汉字非 \w 但属 unicode 字）：域名后紧跟中文（如 gov.cn官网）也能命中
         r"(?<![A-Za-z0-9-])"
         r"(?:gov\.cn|edu\.cn|moe\.gov\.cn|nmpa\.gov\.cn|cdc\.gov|who\.int|wikipedia\.org)"
-        r"(?![A-Za-z0-9.])"
+        r"(?![A-Za-z0-9.\-])"
         r"|(?<!非)(?:官方|官网)",
         text,
         re.IGNORECASE,
