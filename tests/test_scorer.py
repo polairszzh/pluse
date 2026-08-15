@@ -27,6 +27,7 @@ from scorer import (
     score_ai_citability,
     score_content_quality,
     score_engagement,
+    score_evidence_citation,
     score_keyword_coverage,
     score_structure,
 )
@@ -379,3 +380,32 @@ class TestBlockers:
         scores = audit_article("有效标题", self.LONG_TEXT)
         assert scores.blockers == []
         assert scores.overall > BLOCKED_CEILING
+
+
+class TestEvidenceCitation:
+    """C2 证据引用层权重：引语/统计/来源/权威"""
+
+    def test_rich_evidence_high_score(self):
+        text = (
+            "据《2026 人工智能发展报告》统计，中国 AI 市场规模达 5000 亿元，"
+            "年增长 30%。官方（https://www.gov.cn）数据显示 1000 万人使用。"
+            "参考知乎专栏与教育部文件（edu.cn）。"
+        )
+        dim = score_evidence_citation(text)
+        assert dim.score >= 80
+        assert any("引语" in d for d in dim.details)
+        assert any("统计" in d for d in dim.details)
+        assert any("权威" in d for d in dim.details)
+
+    def test_no_evidence_low_score(self):
+        dim = score_evidence_citation("我认为这个产品很好，体验不错。")
+        assert dim.score < 50
+        assert any("缺少" in d for d in dim.details)
+
+    def test_audit_article_includes_evidence_dimension(self):
+        text = (
+            "据官方统计 500 万人使用，参考《报告》（edu.cn）与 https://www.gov.cn 数据。"
+        ) * 5
+        scores = audit_article("有效标题", text)
+        assert "证据引用" in scores.sub_scores
+        assert scores.evidence_citation == scores.sub_scores["证据引用"].score
