@@ -489,7 +489,8 @@ def audit_article(
         extra_blockers: 站点级/外部阻断项（如全站不可索引、账号零内容）
 
     Returns:
-        AuditScores — 包含 overall、grade、五个维度分、子维度细节
+        AuditScores — 包含 overall、grade、六个维度分（AI可引用性/证据引用/内容质量/
+        关键词覆盖/结构/互动）、子维度细节
     """
     citability  = score_ai_citability(title, content_text, updated_at)
     evidence    = score_evidence_citation(content_text)
