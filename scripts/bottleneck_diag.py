@@ -51,13 +51,21 @@ def diagnose(
     any_cited = False
     any_mine_cited = False
     any_risk = False
+    mine_checked_any = False
     for platform, points in series.items():
         ok_points = [p for p in points if p.get("status") == "ok"]
         if not ok_points:
             continue
         has_ok_data = True
         cited = any(p.get("cited") is True for p in ok_points)
-        mine_cited = any(p.get("mine_cited") is True for p in ok_points)
+        # 归属匹配：历史点的 mine_ids 与本次传入的 mine_ids 一致才采信 mine_cited，
+        # 避免「第一次用新 --mine」把未检查误判为未被选中/已被引用
+        matched_points = [
+            p for p in ok_points
+            if mine_ids and set(p.get("mine_ids") or []) == set(mine_ids)
+        ]
+        mine_checked_any = mine_checked_any or bool(matched_points)
+        mine_cited = any(p.get("mine_cited") is True for p in matched_points)
         risk = any(p.get("fact_risks") or p.get("competitor_matched") for p in ok_points)
         platform_summary[platform] = {
             "mentioned": cited,
@@ -67,8 +75,6 @@ def diagnose(
         any_cited = any_cited or cited
         any_mine_cited = any_mine_cited or mine_cited
         any_risk = any_risk or risk
-
-    mine_checked = bool(mine_ids)
 
     # 判定层
     layer = "unknown"
@@ -95,10 +101,14 @@ def diagnose(
         layer = "citation"
         reason = "内容已被引用"
         direction = "保持/加固；如有风险信号再进治理层"
-    elif mine_checked:
+    elif mine_checked_any:
         layer = "retrieval_selection"
         reason = "话题被提及但你的内容未被选中——检索召回但内容没被引用"
         direction = "内容适配（评分驱动改写 + 强化品牌锚定）"
+    elif mine_ids:
+        layer = "unknown"
+        reason = "话题被提及，但历史快照未用本次 --mine 标识检查过内容归属"
+        direction = "重跑 track 带 --mine（或 index-check）后再诊断归属"
     else:
         layer = "retrieval_selection"
         reason = "话题被提及；未检查你的内容是否被引用（未传 --mine）"

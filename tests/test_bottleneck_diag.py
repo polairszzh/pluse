@@ -88,6 +88,20 @@ class TestDiagnose:
         assert result["layer"] == "retrieval_selection"
         assert "未传 --mine" in result["reason"]
 
+    def test_new_mine_unchecked_in_history_unknown(self, tmp_path):
+        # 历史用旧 mine 检查过、本次传新 mine：不得沿用旧 mine_cited 误判
+        db = tmp_path / "m.db"
+        search_ai.store_results(
+            [_mk("deepseek", True, mine_cited=True, mine_ids=["https://a.com/1"])],
+            db_path=db, run_at="2026-08-01T10:00:00+08:00",
+        )
+        result = bottleneck.diagnose(
+            "话题A", db_path=db, mine_ids=["https://b.com/2"]
+        )
+        assert result["layer"] == "unknown"
+        assert "未用本次 --mine" in result["reason"]
+        assert "重跑 track 带 --mine" in result["direction"]
+
     def test_mentioned_but_mine_not_cited(self, tmp_path):
         db = tmp_path / "m.db"
         search_ai.store_results(
