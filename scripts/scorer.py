@@ -429,7 +429,8 @@ def score_evidence_citation(text: str) -> DimensionScore:
         details.append(f"{len(stats)} 处统计数据")
     sources = re.findall(
         r"https?://|参考|来源|出处|"
-        r"(?:据|根据)\s*(?:统计|测算|数据|报告|报道|公告|消息|官方)",
+        r"(?:据|根据)\s*(?:统计|测算|数据|报告|报道|公告|消息|官方)|"
+        r"据\s*\S{2,8}(?:报道|消息)",
         text,
     )
     if sources:

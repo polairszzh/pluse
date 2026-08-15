@@ -424,6 +424,11 @@ class TestEvidenceCitation:
         dim = score_evidence_citation("据统计，市场增长；据新华社报道，政策落地。")
         assert any("来源" in d for d in dim.details)
 
+    def test_media_name_report_source(self):
+        # 仅媒体名场景（不含据统计）：据新华社报道 单独命中
+        dim = score_evidence_citation("据新华社报道，政策落地；据央视消息，数据公布。")
+        assert any("来源" in d for d in dim.details)
+
     def test_audit_article_includes_evidence_dimension(self):
         text = (
             "据官方统计 500 万人使用，参考《报告》（edu.cn）与 https://www.gov.cn 数据。"
