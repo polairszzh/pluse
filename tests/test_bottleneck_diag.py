@@ -1,7 +1,7 @@
 """A2 八层瓶颈定位测试"""
 
 
-import bottleneck
+import bottleneck_diag as bottleneck
 import search_ai
 
 
@@ -20,6 +20,20 @@ class TestDiagnose:
         result = bottleneck.diagnose("话题A", db_path=tmp_path / "m.db")
         assert result["layer"] == "no_data"
         assert "先建立基线" in result["direction"]
+
+    def test_all_invalid_history_unknown(self, tmp_path):
+        # 有历史但全部失败/未配置：不得误判「从未提及」
+        db = tmp_path / "m.db"
+        search_ai.store_results(
+            [search_ai.ProbeResult(
+                "话题A", "deepseek", "error", None, None, "boom", "api", True,
+                error="x",
+            )],
+            db_path=db, run_at="2026-08-01T10:00:00+08:00",
+        )
+        result = bottleneck.diagnose("话题A", db_path=db)
+        assert result["layer"] == "unknown"
+        assert "无有效探测数据" in result["reason"]
 
     def test_never_mentioned_memory_index(self, tmp_path):
         db = tmp_path / "m.db"

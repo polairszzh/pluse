@@ -11,7 +11,7 @@
   - 风险/治理层：被引用但有负面/竞品夺走/未核实断言 → 治理
 
 用法：
-  python scripts/bottleneck.py --query <话题> [--mine <内容标识>] [--index-status <indexed|not_indexed|unknown>]
+  python scripts/bottleneck_diag.py --query <话题> [--mine <内容标识>] [--index-status <indexed|not_indexed|unknown>]
 """
 from __future__ import annotations
 
@@ -44,6 +44,7 @@ def diagnose(
     trend = search_ai.build_trend(query, db_path=db_path)
     series = trend["series"]
     has_track_data = bool(series)
+    has_ok_data = False
 
     # 平台汇总：被提及 / 我的内容被引用 / 风险信号
     platform_summary: dict[str, dict] = {}
@@ -54,7 +55,8 @@ def diagnose(
         ok_points = [p for p in points if p.get("status") == "ok"]
         if not ok_points:
             continue
-        cited = any(p["cited"] is True for p in ok_points)
+        has_ok_data = True
+        cited = any(p.get("cited") is True for p in ok_points)
         mine_cited = any(p.get("mine_cited") is True for p in ok_points)
         risk = any(p.get("fact_risks") or p.get("competitor_matched") for p in ok_points)
         platform_summary[platform] = {
@@ -76,6 +78,10 @@ def diagnose(
         layer = "no_data"
         reason = "该话题没有 track 历史，先跑 /pulse track 建立基线"
         direction = "先建立基线（track --samples 5）"
+    elif not has_ok_data:
+        layer = "unknown"
+        reason = "话题有 track 历史但均为失败/未配置，无有效探测数据"
+        direction = "重跑 track（检查网络/密钥）后再诊断"
     elif index_status == "not_indexed":
         layer = "memory_index"
         reason = "内容未被搜索引擎收录（site: 无命中）——话题就算被检索也召回不到你的内容"

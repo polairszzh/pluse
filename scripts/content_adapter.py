@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-import bottleneck
+import bottleneck_diag
 import requests
 import search_ai
 from fact_checker import risk_severity, verify_facts
@@ -1202,7 +1202,7 @@ def main(argv: list[str] | None = None) -> int:
         gaps = detect_material_gaps(doc, query)
         # A2 瓶颈定位：改写前先看话题在 AI 检索库里的状态（尽力而为，失败降级不阻断）
         try:
-            bottleneck_result = bottleneck.diagnose(query)
+            bottleneck_result = bottleneck_diag.diagnose(query)
         except Exception:  # noqa: BLE001 — 诊断失败不影响生成
             bottleneck_result = None
 
