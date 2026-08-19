@@ -4,3 +4,8 @@ pythonpath = ["scripts"]
 
 [tool.ruff]
 target-version = "py312"
+
+[tool.ruff.lint.per-file-ignores]
+# CLI 门面：整文件以再导出公共接口为主，未在本文件使用的导入是接口面而非死代码
+"scripts/search_ai.py" = ["F401"]
+"scripts/content_adapter.py" = ["F401"]
